@@ -12,7 +12,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
+
+// defaultHTTPClient is the bounded-timeout fallback when no client is injected, so
+// a stalled Bot API endpoint can't hang a send forever (http.DefaultClient has no
+// timeout).
+var defaultHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // Update is the minimal inbound event the bot reacts to: who sent what.
 type Update struct {
@@ -95,7 +101,7 @@ func postForm(ctx context.Context, doer httpDoer, endpoint string, form url.Valu
 
 func doExpectOK(_ context.Context, doer httpDoer, req *http.Request) error {
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = defaultHTTPClient
 	}
 	resp, err := doer.Do(req)
 	if err != nil {

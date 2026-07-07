@@ -8,7 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// defaultHTTPClient is the bounded-timeout fallback for DoH when no client is
+// injected, so a stalled resolver can't hang the lookup (http.DefaultClient has
+// no timeout).
+var defaultHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // Do53Resolver adapts net.Resolver to the Lookup interface (plain UDP/TCP DNS).
 // The system or a config-supplied resolver answers; nothing is hardcoded here.
@@ -69,7 +75,7 @@ func (c DoHClient) LookupTXT(ctx context.Context, name string) ([]string, error)
 
 	doer := c.HTTP
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = defaultHTTPClient
 	}
 	resp, err := doer.Do(req)
 	if err != nil {
