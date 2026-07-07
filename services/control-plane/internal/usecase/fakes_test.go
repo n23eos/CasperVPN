@@ -166,6 +166,59 @@ func (r *fakeSubRepo) Get(_ context.Context, id string) (contracts.Subscription,
 	return s, nil
 }
 
+func (r *fakeSubRepo) Update(_ context.Context, s contracts.Subscription) error {
+	if _, ok := r.subs[s.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	stored := s
+	stored.Token = "" // never persist plaintext
+	r.subs[s.ID] = stored
+	return nil
+}
+
+func (r *fakeSubRepo) UpdateTokenHash(_ context.Context, id, tokenHash, tokenPrefix string) error {
+	if _, ok := r.subs[id]; !ok {
+		return domain.ErrNotFound
+	}
+	r.hashes[id] = tokenHash
+	r.prefix[id] = tokenPrefix
+	return nil
+}
+
+// fakeRevoker records downstream revocations/registrations (TZ-token-revocation).
+type fakeRevoker struct {
+	revokedUsers []string
+	revokedSubs  []string
+	registered   []struct{ token, userID, subID string }
+	fail         bool
+}
+
+func newFakeRevoker() *fakeRevoker { return &fakeRevoker{} }
+
+func (f *fakeRevoker) RevokeUser(_ context.Context, userID string) error {
+	if f.fail {
+		return context.DeadlineExceeded
+	}
+	f.revokedUsers = append(f.revokedUsers, userID)
+	return nil
+}
+
+func (f *fakeRevoker) RevokeSubscription(_ context.Context, subID string) error {
+	if f.fail {
+		return context.DeadlineExceeded
+	}
+	f.revokedSubs = append(f.revokedSubs, subID)
+	return nil
+}
+
+func (f *fakeRevoker) RegisterToken(_ context.Context, token, userID, subID string) error {
+	if f.fail {
+		return context.DeadlineExceeded
+	}
+	f.registered = append(f.registered, struct{ token, userID, subID string }{token, userID, subID})
+	return nil
+}
+
 type fakeRotationRepo struct {
 	nodeRecs []domain.RotationRecord
 	userRecs []domain.UserSecretRotation

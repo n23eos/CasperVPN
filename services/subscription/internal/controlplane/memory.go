@@ -17,6 +17,8 @@ type Memory struct {
 	tokens map[string]tokenRef
 }
 
+// tokenRef is one index entry. The map key is HashToken(token) — plaintext
+// tokens are never stored at rest (TZ-token-revocation §3).
 type tokenRef struct{ userID, subID string }
 
 // NewMemory returns an empty in-memory store.
@@ -94,22 +96,23 @@ func (m *Memory) ListNodes(_ context.Context, f NodeFilter) ([]contracts.Node, e
 	return out, nil
 }
 
-// Lookup implements TokenIndex.
+// Lookup implements TokenIndex. The incoming plaintext token is hashed before
+// the lookup — only hashes live in the map.
 func (m *Memory) Lookup(_ context.Context, token string) (string, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	ref, ok := m.tokens[token]
+	ref, ok := m.tokens[HashToken(token)]
 	if !ok {
 		return "", "", ErrNotFound
 	}
 	return ref.userID, ref.subID, nil
 }
 
-// Register implements TokenIndex.
+// Register implements TokenIndex, storing only the token hash.
 func (m *Memory) Register(_ context.Context, token, userID, subID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.tokens[token] = tokenRef{userID: userID, subID: subID}
+	m.tokens[HashToken(token)] = tokenRef{userID: userID, subID: subID}
 	return nil
 }
 
@@ -117,6 +120,35 @@ func (m *Memory) Register(_ context.Context, token, userID, subID string) error 
 func (m *Memory) Revoke(_ context.Context, token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.tokens, token)
+	delete(m.tokens, HashToken(token))
 	return nil
+}
+
+// RevokeByUser implements TokenIndex (ban/suspend: every link of the user dies).
+func (m *Memory) RevokeByUser(_ context.Context, userID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for h, ref := range m.tokens {
+		if ref.userID == userID {
+			delete(m.tokens, h)
+			n++
+		}
+	}
+	return n, nil
+}
+
+// RevokeBySubscription implements TokenIndex (cancel/expire/rotate: only this
+// subscription's link dies; the user's other tokens are untouched).
+func (m *Memory) RevokeBySubscription(_ context.Context, subID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for h, ref := range m.tokens {
+		if ref.subID == subID {
+			delete(m.tokens, h)
+			n++
+		}
+	}
+	return n, nil
 }

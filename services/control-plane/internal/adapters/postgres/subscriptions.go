@@ -38,6 +38,39 @@ func (s *SubscriptionStore) Create(ctx context.Context, sub contracts.Subscripti
 	return nil
 }
 
+// Update persists mutable entitlement fields (status, expires_at, updated_at).
+// The token hash is not touched here — see UpdateTokenHash.
+func (s *SubscriptionStore) Update(ctx context.Context, sub contracts.Subscription) error {
+	tag, err := s.q.Exec(ctx, `
+		UPDATE subscriptions
+		SET status=$2, expires_at=$3, updated_at=$4
+		WHERE id=$1`,
+		sub.ID, string(sub.Status), sub.ExpiresAt, sub.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("postgres: update subscription: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateTokenHash swaps the stored token hash/prefix (rotation). Plaintext
+// never reaches this layer.
+func (s *SubscriptionStore) UpdateTokenHash(ctx context.Context, id, tokenHash, tokenPrefix string) error {
+	tag, err := s.q.Exec(ctx, `
+		UPDATE subscriptions
+		SET token_hash=$2, token_prefix=$3
+		WHERE id=$1`, id, tokenHash, tokenPrefix)
+	if err != nil {
+		return fmt.Errorf("postgres: rotate subscription token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 // Get returns a subscription by id. The token is never selected/exposed.
 func (s *SubscriptionStore) Get(ctx context.Context, id string) (contracts.Subscription, error) {
 	var (
