@@ -60,10 +60,11 @@ func (r *Resolver) Resolve(ctx context.Context, token string) (Resolved, error) 
 		}
 		return Resolved{}, err
 	}
-	// Defense in depth: the token must match the subscription's own secret.
-	if sub.Token != token {
-		return Resolved{}, ErrUnknownToken
-	}
+	// The token is already authenticated by idx.Lookup above (the token index is
+	// the source of truth for token->sub binding). We intentionally do NOT compare
+	// against sub.Token: control-plane never returns the plaintext token on read
+	// (GET /v1/subscriptions/{id} zeroes it), so such a check would reject every
+	// real resolve — and returning the plaintext token just to compare would leak it.
 	if err := r.checkSubscription(sub); err != nil {
 		return Resolved{}, err
 	}
