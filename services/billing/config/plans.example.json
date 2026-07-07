@@ -1,0 +1,30 @@
+{
+  "plans": [
+    {
+      "id": "basic",
+      "duration": "720h",
+      "grace": "72h",
+      "traffic_limit_bytes": 107374182400,
+      "speed_limit_mbps": 50,
+      "device_limit": 2,
+      "prices": {
+        "BTC": "0.00012",
+        "XMR": "0.05",
+        "USDT_TRC20": "1.5"
+      }
+    },
+    {
+      "id": "unlimited",
+      "duration": "720h",
+      "grace": "72h",
+      "traffic_limit_bytes": 0,
+      "speed_limit_mbps": 0,
+      "device_limit": 5,
+      "prices": {
+        "BTC": "0.0003",
+        "XMR": "0.12",
+        "USDT_TRC20": "3.5"
+      }
+    }
+  ]
+}
