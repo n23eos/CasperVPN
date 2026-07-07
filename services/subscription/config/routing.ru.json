@@ -1,0 +1,46 @@
+{
+  "_comment": "RU split-tunnel policy. Data, not code: RU geo categories, rule-set URLs, DNS resolvers and the probe URL live HERE (config), never in Go source. Operators or the control-plane may replace this file wholesale. Reserved outbound tags used below: direct, proxy, auto.",
+  "probe_url": "https://www.gstatic.com/generate_204",
+  "probe_interval": "3m",
+  "singbox": {
+    "dns": {
+      "servers": [
+        { "tag": "proxy-dns", "address": "https://1.1.1.1/dns-query", "detour": "proxy" },
+        { "tag": "direct-dns", "address": "https://77.88.8.8/dns-query", "detour": "direct" }
+      ],
+      "rules": [
+        { "rule_set": ["geosite-ru"], "server": "direct-dns" }
+      ],
+      "final": "proxy-dns",
+      "strategy": "prefer_ipv4"
+    },
+    "rule_sets": [
+      { "tag": "geosite-ru", "type": "remote", "format": "binary", "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ru.srs", "download_detour": "proxy", "update_interval": "24h" },
+      { "tag": "geoip-ru", "type": "remote", "format": "binary", "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs", "download_detour": "proxy", "update_interval": "24h" }
+    ],
+    "rules": [
+      { "ip_is_private": true, "outbound": "direct" },
+      { "rule_set": ["geosite-ru", "geoip-ru"], "outbound": "direct" }
+    ],
+    "final": "proxy"
+  },
+  "clash": {
+    "dns": {
+      "enable": true,
+      "prefer-h3": true,
+      "nameserver": ["https://1.1.1.1/dns-query"],
+      "nameserver-policy": {
+        "geosite:category-ru": ["https://77.88.8.8/dns-query"]
+      }
+    },
+    "rule_providers": {
+      "geosite-ru": { "type": "http", "behavior": "domain", "format": "mrs", "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ru.mrs", "path": "./ruleset/geosite-ru.mrs", "interval": 86400 },
+      "geoip-ru": { "type": "http", "behavior": "ipcidr", "format": "mrs", "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/ru.mrs", "path": "./ruleset/geoip-ru.mrs", "interval": 86400 }
+    },
+    "rules": [
+      "GEOIP,private,DIRECT,no-resolve",
+      "RULE-SET,geosite-ru,DIRECT",
+      "RULE-SET,geoip-ru,DIRECT"
+    ]
+  }
+}
