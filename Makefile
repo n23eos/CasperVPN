@@ -29,11 +29,11 @@ build:
 		( cd $$m && go build -o $(CURDIR)/$(BIN)/ ./... ) || exit 1; \
 	done
 
-## test: run tests across the workspace (stubs only for now)
+## test: run tests across the workspace with the race detector (webhook/poller/sweeper are concurrent)
 test:
 	@for m in $(MODULES); do \
 		echo ">> test $$m"; \
-		( cd $$m && go test ./... ) || exit 1; \
+		( cd $$m && go test -race ./... ) || exit 1; \
 	done
 
 ## vet: go vet across the workspace

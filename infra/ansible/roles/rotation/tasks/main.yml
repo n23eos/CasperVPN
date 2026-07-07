@@ -19,13 +19,18 @@
   changed_when: true
 
 - name: Override transports var with the rotated REALITY material
+  # ADD the fresh short-id to the existing pool — never replace it. The pool
+  # holds per-user short-ids (per-user isolation); a bare [ new ] would wipe them
+  # all and collapse every user onto one short-id (monoculture). The pool is
+  # re-seeded from control-plane on each converge, so it does not grow unbounded.
   ansible.builtin.set_fact:
     transports: >-
       {{
         transports | combine({
           'vless_reality': transports.vless_reality | combine({
             'private_key': new_reality_private_key,
-            'short_ids': [ new_short_id_cmd.stdout | trim ]
+            'short_ids': (transports.vless_reality.short_ids | default([]))
+                         + [ new_short_id_cmd.stdout | trim ]
           })
         }, recursive=True)
       }}

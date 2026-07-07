@@ -48,12 +48,33 @@ NEW_PUB="$(printf '%s' "${ART}" | base64 -d | awk -F= '/^public_key/{print $2}')
 NEW_SID="$(printf '%s' "${ART}" | base64 -d | awk -F= '/^short_id/{print $2}')"
 log "rekeyed REALITY: pub=${NEW_PUB:0:12}... short_id=${NEW_SID}"
 
-# 4. Update the Node in the control-plane: new advertised entry IP.
+# 4. Update the Node in the control-plane: new advertised entry IP AND propagate
+#    the rotated REALITY material. The frozen contracts.Node has NO node-level
+#    field for the REALITY pubkey/short-id — it lives inside
+#    transports[].vless_reality (public_key + the short_ids pool). So read the
+#    current Node, patch its vless-reality transport in place (bump public_key,
+#    ADD the new short-id to the pool — never replace it, that would collapse
+#    per-user isolation), and PATCH the whole object back (keeps the Node schema's
+#    additionalProperties:false + tagged-union validation happy).
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
-  cp_patch_node "${NODE}" "$(jq -n \
-    --arg id "${NODE}" --arg ip "${NEW_ENTRY_IP}" --argjson eph true \
-    '{id:$id, entry_ip:$ip, ephemeral_entry_ip:$eph, status:"active"}')"
-  log "control-plane updated for ${NODE} (reality pubkey ${NEW_PUB:0:12}... via transports sync)"
+  CUR_NODE="$(cp_get_node "${NODE}")"
+  PATCHED_NODE="$(printf '%s' "${CUR_NODE}" | jq \
+    --arg ip "${NEW_ENTRY_IP}" --arg pub "${NEW_PUB}" --arg sid "${NEW_SID}" '
+      .entry_ip = $ip
+      | .ephemeral_entry_ip = true
+      | .status = "active"
+      | .transports = ((.transports // []) | map(
+          if .type == "vless-reality" and (.vless_reality // empty) then
+            .vless_reality.public_key = $pub
+            | .vless_reality.short_ids = ((.vless_reality.short_ids // []) + [$sid] | unique)
+          else . end))')"
+  # If no vless-reality transport is registered yet, the contract has nowhere to
+  # carry the pubkey — fail loud rather than silently dropping the rotation.
+  if ! printf '%s' "${PATCHED_NODE}" | jq -e '[.transports[]? | select(.type=="vless-reality")] | length > 0' >/dev/null; then
+    log "WARN: ${NODE} has no vless-reality transport in control-plane — new REALITY pubkey ${NEW_PUB:0:12}... NOT propagated (register transports first)"
+  fi
+  cp_patch_node "${NODE}" "${PATCHED_NODE}"
+  log "control-plane updated for ${NODE}: entry_ip=${NEW_ENTRY_IP}, REALITY pub=${NEW_PUB:0:12}... short_id=${NEW_SID}"
 else
   log "CONTROL_PLANE_URL unset — skipping control-plane update"
 fi

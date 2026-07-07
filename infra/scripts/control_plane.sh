@@ -55,6 +55,13 @@ cp_register_node() {
   rm -f "/tmp/cp_reg.$$"
 }
 
+# cp_get_node <id> — GET /v1/nodes/{id}, echoes the Node JSON (contracts.Node).
+cp_get_node() {
+  local id="$1"
+  curl -fsS -X GET "${CONTROL_PLANE_URL:?}/v1/nodes/${id}" -H "$(_cp_auth)" \
+    || die "get node ${id} failed"
+}
+
 # cp_patch_node <id> <partial-json> — PATCH /v1/nodes/{id}.
 cp_patch_node() {
   local id="$1" body="$2"

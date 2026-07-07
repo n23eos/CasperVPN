@@ -1,7 +1,11 @@
 ---
 # sing-box core install (ADR-002). Download URL is the software SOURCE, not a
 # mimicry domain — it is a variable so mirrors can be swapped freely.
-singbox_version: "1.11.4"
+#
+# CANONICAL sing-box version pin for the whole repo. It MUST stay in lockstep
+# with .github/workflows/subscription.yml (env.SINGBOX_VERSION) so the fleet and
+# the subscription `sing-box check` render/validate against the same schema.
+singbox_version: "1.11.11"
 singbox_download_base: "https://github.com/SagerNet/sing-box/releases/download"
 
 singbox_user: "sing-box"
