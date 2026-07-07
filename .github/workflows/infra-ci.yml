@@ -1,0 +1,106 @@
+name: infra-ci
+
+# Validates the fleet infra layer WITHOUT touching a real cloud (no apply).
+on:
+  push:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-ci.yml"
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: terraform fmt (check, informative)
+        continue-on-error: true
+        run: terraform -chdir=infra/terraform fmt -check -diff -recursive
+
+      - name: terraform validate (every module + example env)
+        run: |
+          set -e
+          for d in \
+            infra/terraform/modules/compute/hetzner \
+            infra/terraform/modules/compute/vultr \
+            infra/terraform/modules/compute/oci \
+            infra/terraform/modules/entry-node \
+            infra/terraform/modules/exit-node \
+            infra/terraform/envs/example; do
+            echo "== validate $d =="
+            terraform -chdir="$d" init -backend=false -input=false
+            terraform -chdir="$d" validate
+          done
+
+      - name: terraform plan (example env, no creds — allowed to fail)
+        continue-on-error: true
+        env:
+          TF_VAR_ssh_pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICI ci@caspervpn"
+        run: |
+          terraform -chdir=infra/terraform/envs/example init -backend=false -input=false
+          terraform -chdir=infra/terraform/envs/example plan -input=false || \
+            echo "plan needs provider creds; validate is the gating check in CI"
+
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install ansible
+        run: pip install "ansible-core>=2.16"
+
+      - name: install collections
+        run: ansible-galaxy collection install -r infra/ansible/requirements.yml
+
+      - name: ansible syntax-check
+        working-directory: infra/ansible
+        run: |
+          set -e
+          for p in playbooks/*.yml; do
+            echo "== syntax $p =="
+            ansible-playbook --syntax-check -i inventory/hosts.example.ini "$p"
+          done
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -x infra/scripts/*.sh infra/ci/*.sh
+
+  no-hardcode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no hardcoded mimicry domain / IP
+        run: infra/ci/no-hardcode.sh
+
+  molecule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install molecule + docker driver
+        run: pip install "molecule>=6" "molecule-plugins[docker]" "ansible-core>=2.16"
+      - name: install collections
+        run: ansible-galaxy collection install -r infra/ansible/requirements.yml
+      - name: molecule test (bring up node, assert REALITY listener)
+        working-directory: infra/ansible
+        run: molecule test

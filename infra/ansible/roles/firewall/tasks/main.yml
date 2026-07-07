@@ -1,0 +1,40 @@
+---
+- name: Ensure nftables is installed
+  ansible.builtin.package:
+    name: nftables
+    state: present
+
+- name: Read allowed_entry_ip from cloud-init file when not set (exit only)
+  when:
+    - node_role == 'exit'
+    - allowed_entry_ip | length == 0
+  block:
+    - name: Slurp allowed_entry_ip
+      ansible.builtin.slurp:
+        src: /etc/caspervpn/allowed_entry_ip
+      register: aei_file
+
+    - name: Set allowed_entry_ip fact
+      ansible.builtin.set_fact:
+        allowed_entry_ip: "{{ (aei_file.content | b64decode) | trim }}"
+
+- name: Fail fast if exit has no paired entry IP
+  when: node_role == 'exit'
+  ansible.builtin.assert:
+    that:
+      - allowed_entry_ip | length > 0
+    fail_msg: "Exit node requires allowed_entry_ip (the paired entry). Refusing to open the exit to the world."
+
+- name: Render nftables ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0640"
+  notify: reload nftables
+
+- name: Enable nftables
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true

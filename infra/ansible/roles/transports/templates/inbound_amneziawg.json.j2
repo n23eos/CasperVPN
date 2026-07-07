@@ -1,0 +1,32 @@
+{# AmneziaWG: obfuscated WireGuard. The jc/jmin/jmax/s1/s2/h1..h4 junk knobs
+   break WG entropy/signature detection. Requires an amneziawg-capable sing-box
+   build; adjust the obfuscation key path to your build if it differs. #}
+{
+      "type": "wireguard",
+      "tag": "{{ transports.amneziawg.tag }}",
+      "listen": "::",
+      "listen_port": {{ transports.amneziawg.port }},
+      "private_key": "{{ transports.amneziawg.private_key }}",
+      "mtu": {{ transports.amneziawg.mtu }},
+      "peers": [
+{% for p in transports.amneziawg.peers %}
+        {
+          "public_key": "{{ p.public_key }}",
+          "allowed_ips": {{ p.allowed_ips | tojson }}{% if p.preshared_key is defined %},
+          "pre_shared_key": "{{ p.preshared_key }}"{% endif %}
+
+        }{{ "," if not loop.last else "" }}
+{% endfor %}
+      ],
+      "amnezia_wg": {
+        "jc": {{ transports.amneziawg.jc }},
+        "jmin": {{ transports.amneziawg.jmin }},
+        "jmax": {{ transports.amneziawg.jmax }},
+        "s1": {{ transports.amneziawg.s1 }},
+        "s2": {{ transports.amneziawg.s2 }},
+        "h1": {{ transports.amneziawg.h1 }},
+        "h2": {{ transports.amneziawg.h2 }},
+        "h3": {{ transports.amneziawg.h3 }},
+        "h4": {{ transports.amneziawg.h4 }}
+      }
+}

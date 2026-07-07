@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Emit anonymous FieldSignal batch to the telemetry ingest. Checks each enabled
+# transport's listener and reports ok / handshake_fail. NO user identity — this
+# is node/transport health only (FieldSignal privacy invariant).
+set -euo pipefail
+
+NODE_ID="$(cat /etc/caspervpn/node_id 2>/dev/null || echo 'unknown')"
+REGION="{{ health_region }}"
+CLIENT_VERSION="{{ node_agent_version }}"
+TELEMETRY_URL="{{ telemetry_ingest_url }}"
+
+now()    { date -u +%Y-%m-%dT%H:%M:%SZ; }
+gen_id() { cat /proc/sys/kernel/random/uuid; }
+
+signals=()
+
+# check_listener <tcp|udp> <port> <transport_type>
+check_listener() {
+  local proto="$1" port="$2" ttype="$3" flag ok sigtype
+  if [ "${proto}" = "udp" ]; then flag="-lnu"; else flag="-lnt"; fi
+  if ss ${flag} 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"; then
+    ok=true;  sigtype="ok"
+  else
+    ok=false; sigtype="handshake_fail"
+  fi
+  signals+=("{\"signal_id\":\"$(gen_id)\",\"node_id\":\"${NODE_ID}\",\"transport_type\":\"${ttype}\",\"transport_version\":\"v1\",\"region\":\"${REGION}\",\"signal_type\":\"${sigtype}\",\"success\":${ok},\"client_version\":\"${CLIENT_VERSION}\",\"platform\":\"linux\",\"observed_at\":\"$(now)\"}")
+}
+
+{% if transports.vless_reality.enabled %}
+check_listener tcp {{ transports.vless_reality.port }} "vless-reality"
+{% endif %}
+{% if transports.amneziawg.enabled %}
+check_listener udp {{ transports.amneziawg.port }} "amneziawg"
+{% endif %}
+{% if transports.hysteria2.enabled %}
+check_listener udp {{ transports.hysteria2.port }} "hysteria2"
+{% endif %}
+{% if transports.shadowsocks_2022.enabled %}
+check_listener tcp {{ transports.shadowsocks_2022.port }} "shadowsocks-2022"
+{% endif %}
+
+if [ "${#signals[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+body="{\"signals\":[$(IFS=,; echo "${signals[*]}")]}"
+
+curl -fsS -m 10 -X POST \
+  -H 'Content-Type: application/json' \
+  -d "${body}" \
+  "${TELEMETRY_URL}/v1/signals" \
+  || { echo "casper-health-report: telemetry POST failed" >&2; exit 1; }

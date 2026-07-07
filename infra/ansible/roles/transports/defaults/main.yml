@@ -1,0 +1,63 @@
+---
+# Transport matrix. Every value is overridable; NOTHING mimicry-related is
+# hardcoded here (server_names/handshake/sni are empty and MUST be supplied).
+# A node runs SEVERAL transports at once (diversity over monoculture).
+
+singbox_config_dir: "/etc/sing-box"
+singbox_bin: "/usr/local/bin/sing-box"
+
+# per-user VLESS users (uuid + optional personal short_id) — filled by control-plane.
+reality_users: []
+
+# optional entry->exit chaining. When set on an entry, decrypted client traffic
+# is forwarded to the exit endpoint (server IP comes from provisioning, not code).
+exit_endpoint: {}
+
+transports:
+  vless_reality:
+    enabled: true
+    tag: "vless-reality-in"
+    port: 443
+    flow: "xtls-rprx-vision"
+    server_names: []          # mimicry SNI(s) — REQUIRED, from docs/mimicry-domains.md
+    handshake_server: ""      # real upstream host stolen for the handshake — REQUIRED
+    handshake_port: 443
+    private_key: ""           # server REALITY x25519 private key — REQUIRED (secret)
+    short_ids: []             # short-id pool; per-user id appended by control-plane
+
+  amneziawg:
+    enabled: false
+    tag: "awg-in"
+    port: 51820
+    private_key: ""
+    mtu: 1420
+    # obfuscation knobs that defeat WG entropy/signature detection (from AmneziaWGParams)
+    jc: 4
+    jmin: 40
+    jmax: 70
+    s1: 0
+    s2: 0
+    h1: 1
+    h2: 2
+    h3: 3
+    h4: 4
+    peers: []                 # [{public_key, allowed_ips: [...], preshared_key?}]
+
+  hysteria2:
+    enabled: false
+    tag: "hysteria2-in"
+    port: 8443
+    password: ""
+    obfs_type: "salamander"
+    obfs_password: ""
+    masquerade_url: ""        # real site to masquerade unauthenticated probes to
+    tls_sni: ""              # CN for the node's self-signed QUIC cert (mimicry)
+    tls_cert_path: "/etc/sing-box/hysteria2.crt"
+    tls_key_path: "/etc/sing-box/hysteria2.key"
+
+  shadowsocks_2022:
+    enabled: false
+    tag: "ss2022-in"
+    port: 8388
+    method: "2022-blake3-aes-256-gcm"
+    psk: ""

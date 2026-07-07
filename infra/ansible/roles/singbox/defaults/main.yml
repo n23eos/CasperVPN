@@ -1,0 +1,17 @@
+---
+# sing-box core install (ADR-002). Download URL is the software SOURCE, not a
+# mimicry domain — it is a variable so mirrors can be swapped freely.
+singbox_version: "1.11.4"
+singbox_download_base: "https://github.com/SagerNet/sing-box/releases/download"
+
+singbox_user: "sing-box"
+singbox_group: "sing-box"
+singbox_bin: "/usr/local/bin/sing-box"
+singbox_config_dir: "/etc/sing-box"
+singbox_state_dir: "/var/lib/sing-box"
+
+# arch mapping from ansible_architecture -> sing-box release arch.
+singbox_arch_map:
+  x86_64: "amd64"
+  aarch64: "arm64"
+  armv7l: "armv7"

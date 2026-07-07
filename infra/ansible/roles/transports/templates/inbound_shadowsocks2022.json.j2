@@ -1,0 +1,9 @@
+{# Shadowsocks-2022 (AEAD-2022) — lightweight fallback family. PSK from vars. #}
+{
+      "type": "shadowsocks",
+      "tag": "{{ transports.shadowsocks_2022.tag }}",
+      "listen": "::",
+      "listen_port": {{ transports.shadowsocks_2022.port }},
+      "method": "{{ transports.shadowsocks_2022.method }}",
+      "password": "{{ transports.shadowsocks_2022.psk }}"
+}

@@ -1,0 +1,51 @@
+---
+# Provision the container node. Mimicry values live HERE (a test file), never in
+# the roles — proving the role templates take mimicry as data. Firewall is
+# skipped in-container (nftables needs host kernel); it is covered by CI
+# syntax-check + nft -c.
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    node_id: "nd_test_1"
+    health_region: "RU-MOW"
+    telemetry_ingest_url: "http://127.0.0.1:9"
+  tasks:
+    - name: Install sing-box core
+      ansible.builtin.include_role:
+        name: singbox
+
+    - name: Generate a REALITY keypair for the test
+      ansible.builtin.command: /usr/local/bin/sing-box generate reality-keypair
+      register: kp
+      changed_when: false
+
+    - name: Provide transport matrix (mimicry supplied as data, not hardcoded)
+      ansible.builtin.set_fact:
+        reality_users:
+          - uuid: "b831381d-6324-4d53-ad4f-8cda48b30811"
+        transports:
+          vless_reality:
+            enabled: true
+            tag: "vless-reality-in"
+            port: 443
+            flow: "xtls-rprx-vision"
+            server_names: ["www.mimicry-example.test"]
+            handshake_server: "www.mimicry-example.test"
+            handshake_port: 443
+            private_key: "{{ kp.stdout | regex_search('PrivateKey:\\s*(\\S+)', '\\1') }}"
+            short_ids: ["0123456789abcdef"]
+          amneziawg:
+            enabled: false
+          hysteria2:
+            enabled: false
+          shadowsocks_2022:
+            enabled: false
+
+    - name: Configure transports (renders + validates sing-box config)
+      ansible.builtin.include_role:
+        name: transports
+
+    - name: Install health reporting
+      ansible.builtin.include_role:
+        name: health_metrics

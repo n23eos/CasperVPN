@@ -1,0 +1,40 @@
+#cloud-config
+# Minimal bootstrap ONLY (Ansible does the real build over SSH). The exit writes
+# its allowed_entry_ip so the firewall role can pin ingress to the paired entry.
+hostname: ${hostname}
+preserve_hostname: false
+
+users:
+  - name: ${ops_user}
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    ssh_authorized_keys:
+      - ${ssh_pubkey}
+
+package_update: true
+packages:
+  - python3
+  - nftables
+  - curl
+  - ca-certificates
+
+write_files:
+  - path: /etc/caspervpn/role
+    permissions: "0644"
+    content: |
+      ${role}
+  - path: /etc/caspervpn/allowed_entry_ip
+    permissions: "0644"
+    content: |
+      ${allowed_entry_ip}
+  - path: /etc/caspervpn/ready
+    permissions: "0644"
+    content: |
+      bootstrap-ok
+
+runcmd:
+  - [ sysctl, -w, net.ipv4.ip_forward=1 ]
+  - [ sysctl, -w, net.ipv6.conf.all.forwarding=1 ]
+  - [ sh, -c, "printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' > /etc/sysctl.d/99-caspervpn.conf" ]
+  - [ systemctl, enable, --now, nftables ]

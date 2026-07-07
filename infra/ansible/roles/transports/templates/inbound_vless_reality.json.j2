@@ -1,0 +1,32 @@
+{# VLESS + XTLS-Vision + REALITY. INVARIANT: NO own certificate, NO acme, NO
+   key_path — REALITY borrows a real site's TLS handshake, so active probing sees
+   the genuine site and the flow looks like ordinary HTTPS, not entropy noise.
+   server_name / handshake.server ARE the mimicry target and come from vars. #}
+{
+      "type": "vless",
+      "tag": "{{ transports.vless_reality.tag }}",
+      "listen": "::",
+      "listen_port": {{ transports.vless_reality.port }},
+      "users": [
+{% for u in reality_users %}
+        { "uuid": "{{ u.uuid }}", "flow": "{{ transports.vless_reality.flow }}" }{{ "," if not loop.last else "" }}
+{% endfor %}
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "{{ transports.vless_reality.server_names[0] }}",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "{{ transports.vless_reality.handshake_server }}",
+            "server_port": {{ transports.vless_reality.handshake_port }}
+          },
+          "private_key": "{{ transports.vless_reality.private_key }}",
+          "short_id": [
+{% for sid in transports.vless_reality.short_ids %}
+            "{{ sid }}"{{ "," if not loop.last else "" }}
+{% endfor %}
+          ]
+        }
+      }
+}

@@ -1,0 +1,45 @@
+---
+# Generate a fresh REALITY keypair + short-id, re-render the sing-box config with
+# it, and drop an artifact (public key + short-id) for scripts/node_rotate.sh to
+# push to the control-plane (PATCH /v1/nodes/{id}).
+
+- name: Generate a new REALITY keypair
+  ansible.builtin.command: "{{ singbox_bin }} generate reality-keypair"
+  register: reality_keypair
+  changed_when: true
+
+- name: Parse REALITY private/public key
+  ansible.builtin.set_fact:
+    new_reality_private_key: "{{ reality_keypair.stdout | regex_search('PrivateKey:\\s*(\\S+)', '\\1') }}"
+    new_reality_public_key: "{{ reality_keypair.stdout | regex_search('PublicKey:\\s*(\\S+)', '\\1') }}"
+
+- name: Generate a fresh short-id
+  ansible.builtin.command: "openssl rand -hex 8"
+  register: new_short_id_cmd
+  changed_when: true
+
+- name: Override transports var with the rotated REALITY material
+  ansible.builtin.set_fact:
+    transports: >-
+      {{
+        transports | combine({
+          'vless_reality': transports.vless_reality | combine({
+            'private_key': new_reality_private_key,
+            'short_ids': [ new_short_id_cmd.stdout | trim ]
+          })
+        }, recursive=True)
+      }}
+
+- name: Re-render sing-box config with rotated keys (via transports role)
+  ansible.builtin.include_role:
+    name: transports
+
+- name: Write rotation artifact (public key + short-id) for control-plane push
+  ansible.builtin.copy:
+    dest: "{{ reality_pub_artifact }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      public_key={{ new_reality_public_key }}
+      short_id={{ new_short_id_cmd.stdout | trim }}

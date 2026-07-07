@@ -1,0 +1,23 @@
+[Unit]
+Description=sing-box (CasperVPN node core)
+Documentation=https://sing-box.sagernet.org
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+User={{ singbox_user }}
+Group={{ singbox_group }}
+ExecStart={{ singbox_bin }} run -c {{ singbox_config_dir }}/config.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+# CAP_NET_BIND_SERVICE: bind :443. CAP_NET_ADMIN: wireguard/tun for AmneziaWG.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ singbox_state_dir }} {{ singbox_config_dir }}
+
+[Install]
+WantedBy=multi-user.target
