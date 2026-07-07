@@ -28,6 +28,31 @@ type Subscription struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
+// SubscriptionPatch is the body of PATCH /v1/subscriptions/{id} — a true
+// partial update: nil fields are left untouched. Additive, backward-compatible
+// extension of the frozen contract (Wave 2, TZ-contract-changes §1). It exists
+// so billing can activate/renew entitlements against a live control-plane.
+type SubscriptionPatch struct {
+	// Status transitions the subscription (e.g. billing settles -> active,
+	// grace expires -> expired). Optional.
+	Status *SubscriptionStatus `json:"status,omitempty"`
+	// ExpiresAt moves the paid-through instant (renewal). Optional.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// Validate checks the provided (non-nil) patch fields.
+func (p SubscriptionPatch) Validate() error {
+	if p.Status != nil && !p.Status.Valid() {
+		return fmt.Errorf("contracts: unknown subscription status %q", *p.Status)
+	}
+	return nil
+}
+
+// IsZero reports whether the patch carries no changes.
+func (p SubscriptionPatch) IsZero() bool {
+	return p.Status == nil && p.ExpiresAt == nil
+}
+
 // Validate performs shallow structural checks on a Subscription.
 func (s Subscription) Validate() error {
 	if s.ID == "" {

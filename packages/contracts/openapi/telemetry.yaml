@@ -70,6 +70,26 @@ paths:
         "202": { description: Accepted }
         "400": { description: Malformed batch }
         "401": { description: Unauthorized (probe auth required) }
+  /v1/recommendations:
+    get:
+      summary: Current feedback-loop recommendations (orchestrator input)
+      description: >
+        Additive Wave-2 extension (TZ-contract-changes §3). Returns the
+        canonical Recommendations payload — node blocks and per-region
+        transport priorities derived from anonymous FieldSignals plus
+        authoritative HealthEvents over the evaluation window. Consumed by the
+        orchestrator and control-plane. Internal (service token required).
+      operationId: getRecommendations
+      security:
+        - internalToken: []
+      responses:
+        "200":
+          description: Recommendations for the current window
+          content:
+            application/json:
+              schema: { $ref: "../schema/contracts.schema.json#/$defs/Recommendations" }
+        "401": { description: Unauthorized (internal auth required) }
+
 components:
   securitySchemes:
     internalToken:

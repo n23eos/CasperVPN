@@ -170,6 +170,57 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
         "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [subscriptions]
+      summary: Partially update a subscription (status, expires_at)
+      description: >
+        Additive Wave-2 extension (TZ-contract-changes §1). TRUE partial update:
+        fields absent from the body are left untouched. Unblocks billing
+        activation/renewal against a live control-plane. The token is never
+        returned on this path.
+      operationId: patchSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schema/contracts.schema.json#/$defs/SubscriptionPatch" }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/subscriptions/{id}/rotate-token:
+    post:
+      tags: [subscriptions]
+      summary: Rotate the subscription token (revoke a leaked link)
+      description: >
+        Additive Wave-2 extension (TZ-contract-changes §2). Issues a fresh
+        opaque token and invalidates the old one, without touching the account.
+        The plaintext token rides in Subscription.token exactly once, in this
+        response; only its hash is stored.
+      operationId: rotateSubscriptionToken
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Rotated (response carries the new plaintext token once), content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/subscriptions/{id}/cancel:
+    post:
+      tags: [subscriptions]
+      summary: Cancel a subscription (status=canceled)
+      description: >
+        Additive Wave-2 extension (TZ-contract-changes §2). Sets
+        status=canceled; the subscription token stops resolving.
+      operationId: cancelSubscription
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Canceled, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
 components:
   schemas:
