@@ -1,0 +1,85 @@
+{
+  "_comment": "Dev-only fixtures for local runs (SUBSCRIPTION_FIXTURES). Placeholder domains (.test) and TEST-NET IPs only — never production data. In production the control-plane is authoritative and this file is unused.",
+  "users": [
+    {
+      "id": "u-dev-1",
+      "status": "active",
+      "reality_short_id": "ab12cd34",
+      "uuid": "11111111-1111-1111-1111-111111111111",
+      "device_limit": 3,
+      "quota_bytes": 0,
+      "used_bytes": 1073741824,
+      "created_at": "2026-07-01T00:00:00Z",
+      "updated_at": "2026-07-01T00:00:00Z"
+    }
+  ],
+  "subscriptions": [
+    {
+      "id": "sub-dev-1",
+      "user_id": "u-dev-1",
+      "plan": "unlimited",
+      "status": "active",
+      "token": "dev-token-abc123",
+      "traffic_limit_bytes": 0,
+      "speed_limit_mbps": 0,
+      "device_limit": 3,
+      "starts_at": "2026-07-01T00:00:00Z",
+      "expires_at": "2026-12-31T00:00:00Z",
+      "created_at": "2026-07-01T00:00:00Z",
+      "updated_at": "2026-07-01T00:00:00Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node-eu-1",
+      "role": "combined",
+      "status": "active",
+      "provider": "example-cloud",
+      "cloud": "eu-bucket",
+      "region": "eu-central",
+      "entry_ip": "198.51.100.10",
+      "ephemeral_entry_ip": true,
+      "capacity_users": 150,
+      "created_at": "2026-07-01T00:00:00Z",
+      "transports": [
+        {
+          "tag": "eu1-reality", "type": "vless-reality", "version": "v1", "port": 443, "enabled": true, "priority": 0,
+          "vless_reality": { "server_names": ["www.example-cdn.test"], "dest": "www.example-cdn.test:443", "public_key": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE", "short_ids": ["ab12cd34"], "flow": "xtls-rprx-vision", "fingerprint": "chrome" }
+        },
+        {
+          "tag": "eu1-hy2", "type": "hysteria2", "version": "v1", "port": 8443, "enabled": true, "priority": 1,
+          "hysteria2": { "obfs": "salamander", "obfs_password": "devobfs", "password": "devpw", "sni": "www.example-cdn.test", "up_mbps": 50, "down_mbps": 200 }
+        },
+        {
+          "tag": "eu1-awg", "type": "amneziawg", "version": "v1", "port": 51820, "enabled": true, "priority": 2,
+          "amneziawg": { "public_key": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE", "mtu": 1420, "jc": 4, "jmin": 40, "jmax": 70, "s1": 50, "s2": 60, "h1": 1, "h2": 2, "h3": 3, "h4": 4 }
+        }
+      ]
+    },
+    {
+      "id": "node-eu-2",
+      "role": "combined",
+      "status": "active",
+      "provider": "example-cloud",
+      "cloud": "eu-bucket",
+      "region": "eu-central",
+      "entry_ip": "198.51.100.20",
+      "ephemeral_entry_ip": true,
+      "capacity_users": 150,
+      "created_at": "2026-07-01T00:00:00Z",
+      "transports": [
+        {
+          "tag": "eu2-reality", "type": "vless-reality", "version": "v1", "port": 443, "enabled": true, "priority": 0,
+          "vless_reality": { "server_names": ["cdn2.example.test"], "dest": "cdn2.example.test:443", "public_key": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE", "short_ids": ["ab12cd34"], "flow": "xtls-rprx-vision", "fingerprint": "chrome" }
+        },
+        {
+          "tag": "eu2-ss", "type": "shadowsocks-2022", "version": "v1", "port": 9000, "enabled": true, "priority": 1,
+          "shadowsocks_2022": { "method": "2022-blake3-aes-256-gcm", "psk": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=" }
+        }
+      ]
+    }
+  ],
+  "tokens": [
+    { "token": "dev-token-abc123", "user_id": "u-dev-1", "subscription_id": "sub-dev-1" }
+  ]
+}
