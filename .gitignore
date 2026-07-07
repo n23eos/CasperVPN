@@ -1,0 +1,24 @@
+# Build output
+/bin/
+*.exe
+*.out
+
+# Go
+vendor/
+go.work.sum
+
+# Env / secrets (never commit — see security.md)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local tooling
+.idea/
+.vscode/
+.DS_Store
+
+# Data / local infra
+*.xlsx
+pgdata/

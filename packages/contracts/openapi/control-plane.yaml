@@ -1,0 +1,194 @@
+openapi: 3.1.0
+info:
+  title: CasperVPN Control Plane API
+  version: 0.1.0
+  description: >
+    Authoritative internal API for the node registry, users, subscriptions and
+    per-user REALITY id / secret issuance. FROZEN INTERFACE — signatures only, no
+    implementation. Owned by the control-plane team. Schemas $ref the frozen
+    JSON Schema in ../schema/contracts.schema.json.
+servers:
+  - url: http://control-plane:8081
+    description: dev (docker-compose)
+tags:
+  - name: nodes
+  - name: users
+  - name: subscriptions
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      operationId: health
+      responses:
+        "200": { description: OK }
+
+  /v1/nodes:
+    get:
+      tags: [nodes]
+      summary: List nodes
+      operationId: listNodes
+      parameters:
+        - { in: query, name: status, schema: { $ref: "../schema/contracts.schema.json#/$defs/NodeStatus" } }
+        - { in: query, name: role, schema: { $ref: "../schema/contracts.schema.json#/$defs/NodeRole" } }
+        - { in: query, name: region, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { in: query, name: cursor, schema: { type: string } }
+      responses:
+        "200":
+          description: Page of nodes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "../schema/contracts.schema.json#/$defs/Node" } }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [nodes]
+      summary: Register a node
+      operationId: createNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" }
+      responses:
+        "201":
+          description: Created
+          content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/nodes/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      tags: [nodes]
+      summary: Get a node
+      operationId: getNode
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [nodes]
+      summary: Update a node (partial)
+      operationId: updateNode
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [nodes]
+      summary: Retire a node
+      operationId: deleteNode
+      responses:
+        "204": { description: Retired }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/users:
+    post:
+      tags: [users]
+      summary: Create a user (issues personal reality_short_id + uuid)
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                telegram_id: { type: integer }
+                email: { type: string }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/User" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/users/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      tags: [users]
+      summary: Get a user
+      operationId: getUser
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/User" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [users]
+      summary: Update a user (status, limits)
+      operationId: updateUser
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/User" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/User" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/users/{id}/rotate-secrets:
+    post:
+      tags: [users]
+      summary: Rotate a user's personal reality_short_id/uuid/key (blocks isolation)
+      operationId: rotateUserSecrets
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Rotated, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/User" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/subscriptions:
+    post:
+      tags: [subscriptions]
+      summary: Create a subscription for a user
+      operationId: createSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, plan]
+              properties:
+                user_id: { type: string }
+                plan: { $ref: "../schema/contracts.schema.json#/$defs/SubscriptionPlan" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/subscriptions/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      tags: [subscriptions]
+      summary: Get a subscription
+      operationId: getSubscription
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        detail: { type: string }
+  responses:
+    BadRequest: { description: Bad request, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unauthorized: { description: Unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    NotFound: { description: Not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Conflict: { description: Conflict, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unprocessable: { description: Unprocessable entity, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  securitySchemes:
+    internalToken:
+      type: http
+      scheme: bearer
+      description: Internal service-to-service bearer token.
+security:
+  - internalToken: []

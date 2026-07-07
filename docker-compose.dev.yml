@@ -1,0 +1,92 @@
+# Local dev stack: Postgres + all CasperVPN services.
+# Dev credentials only — never reuse in prod (see rules/security.md).
+# Bring up:  make up      Tear down:  make down
+name: caspervpn-dev
+
+x-service-defaults: &service-defaults
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-caspervpn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_only_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-caspervpn}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-caspervpn}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  control-plane:
+    <<: *service-defaults
+    build:
+      context: .
+      args: { SERVICE: control-plane }
+    environment:
+      PORT: 8081
+      DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+    ports: ["8081:8081"]
+
+  subscription:
+    <<: *service-defaults
+    build:
+      context: .
+      args: { SERVICE: subscription }
+    environment:
+      PORT: 8082
+      DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+    ports: ["8082:8082"]
+
+  delivery:
+    <<: *service-defaults
+    build:
+      context: .
+      args: { SERVICE: delivery }
+    environment:
+      PORT: 8083
+    ports: ["8083:8083"]
+
+  billing:
+    <<: *service-defaults
+    build:
+      context: .
+      args: { SERVICE: billing }
+    environment:
+      PORT: 8084
+      DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+    ports: ["8084:8084"]
+
+  telemetry:
+    <<: *service-defaults
+    build:
+      context: .
+      args: { SERVICE: telemetry }
+    environment:
+      PORT: 8085
+      DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+    ports: ["8085:8085"]
+
+  orchestrator:
+    <<: *service-defaults
+    build:
+      context: .
+      args: { SERVICE: orchestrator }
+    environment:
+      PORT: 8086
+      DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+    ports: ["8086:8086"]
+
+volumes:
+  pgdata:
