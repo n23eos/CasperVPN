@@ -22,3 +22,11 @@ go.work.sum
 # Data / local infra
 *.xlsx
 pgdata/
+
+# stray service binaries built into module dirs
+/delivery
+/control-plane
+/subscription
+/billing
+/telemetry
+/orchestrator

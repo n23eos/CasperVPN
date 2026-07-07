@@ -1,0 +1,54 @@
+# ТЗ — Рантайм-Postgres (один сетевой проход)
+
+**Агент:** persistence. **Зона:** `services/{control-plane,subscription,billing,telemetry}/`
+(store-адаптеры + main-wiring в своих модулях) + `go.work.sum`/`go.sum`. Не трогать
+`packages/contracts`. Ветка: `agent/persistence`. **Требует сети** (`go get`).
+
+## Контекст
+
+Postgres-код у всех уже написан и протестирован (fake-драйвер / живой PG в
+control-plane), но **дефолт рантайма — in-memory**, потому что Волна 1 шла оффлайн
+(нет `go.sum`, нельзя слинковать драйвер). Данные не переживают рестарт. См.
+[`MASTER-REPORT.md`](../MASTER-REPORT.md) §4.B и хэндоффы telemetry/billing/subscription.
+
+Это **инфраструктурный проход**, не переписывание логики: интерфейсы
+(`Repository`/`Store`/`TokenIndex`) уже есть, меняется только дефолтная реализация +
+линковка драйвера.
+
+## Задачи (по каждому сервису одинаковый паттерн)
+
+1. Добавить драйвер: `go get github.com/jackc/pgx/v5/stdlib` (единый на монорепо).
+   Зафиксировать `go.sum` в каждом затронутом модуле.
+2. Blank-import драйвера в `main`.
+3. `sql.Open("pgx", DATABASE_URL)` + `db.PingContext` (readiness).
+4. Применить схему/миграции:
+   - telemetry: `store/schema.sql` (+ TimescaleDB hypertable/retention — сейчас
+     коммент, применить políтику).
+   - billing: реализовать `store.Repository` на Postgres + **транзакция**
+     settle→activate (сейчас `store.Memory`).
+   - subscription: Postgres-бэкенд `controlplane.TokenIndex` (token→user,sub),
+     переживающий рестарт. Схема + миграции. Согласовать с billing (кто наполняет
+     через `/internal/tokens`).
+   - control-plane: durable-очередь пересбора (pg-based + `LISTEN/NOTIFY` или
+     таблица-очередь) вместо in-memory (single-instance теряется при рестарте);
+     раннер down-миграций тоже применить.
+5. Заменить `NewMemory*` → `NewPostgres*` за флагом/наличием `DATABASE_URL`
+   (оставить in-memory как явный dev-fallback).
+6. **Миграции — не на старте приложения** (race при двух инстансах, Production
+   Checklist): отдельный шаг/джоба миграции; на старте — только `Ping` + версия-check.
+
+## Критерии приёмки
+
+- Каждый сервис при заданном `DATABASE_URL` использует Postgres; данные переживают
+  рестарт (тест: записать → рестарт процесса → прочитать).
+- billing: транзакция settle→activate атомарна (тест: падение между шагами не
+  оставляет полусостояния).
+- `make build`/`vet`/`test` зелёные; интеграционные тесты гоняются на реальном PG
+  (docker-compose `postgres` уже есть) или testcontainers.
+- control-plane rebuild-queue переживает рестарт; нет unbounded-goroutine на бурсте.
+- `go.sum` зафиксированы; сборка воспроизводима.
+
+## Вне объёма
+
+Redis для dedup/rate-limit при горизонтальном масштабе (→ `TZ-hardening`). Реальный
+прод-Postgres-инстанс и бэкапы (оператор). Калибровка retention-порогов (по трафику).
