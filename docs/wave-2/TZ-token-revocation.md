@@ -1,5 +1,14 @@
 # ТЗ — Отзыв subscription-токена (сшить revoke + инвалидация кэша)
 
+> **Статус 2026-07-07: реализовано, кроме §4.** CP: порт `SubscriptionRevoker`
+> + HTTP-адаптер `subnotify` (env `SUBSCRIPTION_INTERNAL_URL`/`_TOKEN`, no-op
+> если не задан), хуки в users/subscriptions usecase, эндпоинты
+> `PATCH /v1/subscriptions/{id}`, `rotate-token`, `cancel`. Subscription:
+> `/internal/revoke` принимает `token|user_id|subscription_id`, индекс хранит
+> SHA-256-хеши, кэш сбрасывается. §4 (durable-индекс в Postgres) — за
+> `TZ-persistence.md`. ⚠️ Тесты написаны, но прогнать `make test` в среде
+> реализации было нельзя (нет Go) — прогнать перед мержем.
+
 **Приоритет:** HIGH (аудит B2). **Зона:** `services/control-plane`,
 `services/subscription`. Часть слоя интеграции (`TZ-integration.md`).
 

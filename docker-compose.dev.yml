@@ -41,6 +41,9 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
       # Dev-only service tokens (token:role). NEVER reuse in prod — see rules/security.md.
       CONTROL_PLANE_TOKENS: ${CONTROL_PLANE_TOKENS:-dev-admin-token:admin,dev-orchestrator-token:orchestrator,dev-telemetry-token:telemetry,dev-subscription-token:subscription,dev-billing-token:billing}
+      # Token revocation propagation into the subscription service (dev-only token).
+      SUBSCRIPTION_INTERNAL_URL: http://subscription:8082
+      SUBSCRIPTION_INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:-dev-internal-token}
     ports: ["8081:8081"]
 
   subscription:
@@ -51,6 +54,9 @@ services:
     environment:
       PORT: 8082
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+      # Enables /internal/* (revoke, tokens, invalidate); must match control-plane's
+      # SUBSCRIPTION_INTERNAL_TOKEN. Dev-only value.
+      INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:-dev-internal-token}
     ports: ["8082:8082"]
 
   delivery:

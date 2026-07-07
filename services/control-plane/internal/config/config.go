@@ -19,6 +19,17 @@ type Config struct {
 	Tokens         map[string]authz.Role
 	RebuildWorkers int
 	RebuildBuffer  int
+
+	// SubscriptionInternalURL is the base URL of the subscription service's
+	// /internal/* API (env SUBSCRIPTION_INTERNAL_URL). Empty => revocation
+	// propagation is a no-op (dev). See TZ-token-revocation.
+	SubscriptionInternalURL string
+	// SubscriptionInternalToken guards those calls (env SUBSCRIPTION_INTERNAL_TOKEN;
+	// must match the subscription service's INTERNAL_TOKEN).
+	SubscriptionInternalToken string
+	// SubscriptionTimeoutSeconds bounds each outgoing notify call
+	// (env SUBSCRIPTION_TIMEOUT_SECONDS, default 5).
+	SubscriptionTimeoutSeconds int
 }
 
 // Load reads configuration from the environment and validates it.
@@ -29,9 +40,16 @@ func Load() (Config, error) {
 		Env:            getenv("ENV", "dev"),
 		RebuildWorkers: getenvInt("REBUILD_WORKERS", 4),
 		RebuildBuffer:  getenvInt("REBUILD_BUFFER", 1024),
+
+		SubscriptionInternalURL:    os.Getenv("SUBSCRIPTION_INTERNAL_URL"),
+		SubscriptionInternalToken:  os.Getenv("SUBSCRIPTION_INTERNAL_TOKEN"),
+		SubscriptionTimeoutSeconds: getenvInt("SUBSCRIPTION_TIMEOUT_SECONDS", 5),
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: DATABASE_URL is required")
+	}
+	if c.SubscriptionInternalURL != "" && c.SubscriptionInternalToken == "" {
+		return Config{}, fmt.Errorf("config: SUBSCRIPTION_INTERNAL_TOKEN is required when SUBSCRIPTION_INTERNAL_URL is set")
 	}
 
 	tokens, err := parseTokens(os.Getenv("CONTROL_PLANE_TOKENS"))

@@ -16,8 +16,10 @@ import (
 	"github.com/caspervpn/control-plane/internal/adapters/httpapi"
 	"github.com/caspervpn/control-plane/internal/adapters/postgres"
 	"github.com/caspervpn/control-plane/internal/adapters/rebuild"
+	"github.com/caspervpn/control-plane/internal/adapters/subnotify"
 	"github.com/caspervpn/control-plane/internal/authz"
 	"github.com/caspervpn/control-plane/internal/config"
+	"github.com/caspervpn/control-plane/internal/domain"
 	"github.com/caspervpn/control-plane/internal/migrate"
 	"github.com/caspervpn/control-plane/internal/seed"
 	"github.com/caspervpn/control-plane/internal/usecase"
@@ -57,9 +59,18 @@ func main() {
 	queue := rebuild.New(setStore, bundleSvc, cfg.RebuildBuffer, cfg.RebuildWorkers, logger)
 	queue.Start(ctx)
 
+	// Revocation propagation into the subscription service (TZ-token-revocation).
+	// No-op unless SUBSCRIPTION_INTERNAL_URL is configured, so dev doesn't break.
+	var revoker domain.SubscriptionRevoker = subnotify.Noop{}
+	if cfg.SubscriptionInternalURL != "" {
+		revoker = subnotify.New(cfg.SubscriptionInternalURL, cfg.SubscriptionInternalToken,
+			time.Duration(cfg.SubscriptionTimeoutSeconds)*time.Second)
+		logger.Printf("subscription revocation notifier enabled: %s", cfg.SubscriptionInternalURL)
+	}
+
 	nodeSvc := usecase.NewNodeService(nodeStore, rotStore, queue)
-	userSvc := usecase.NewUserService(userStore, rotStore, queue)
-	subSvc := usecase.NewSubscriptionService(subStore, userStore)
+	userSvc := usecase.NewUserService(userStore, rotStore, queue).WithRevoker(revoker)
+	subSvc := usecase.NewSubscriptionService(subStore, userStore).WithRevoker(revoker)
 	signalSvc := usecase.NewSignalService(nodeStore, signalStore, nodeSvc)
 
 	if os.Getenv("SEED") == "true" {
