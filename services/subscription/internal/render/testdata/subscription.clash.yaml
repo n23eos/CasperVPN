@@ -1,0 +1,52 @@
+proxies:
+  - name: "reality-1"
+    type: vless
+    server: "198.51.100.10"
+    port: 443
+    uuid: "00000000-0000-0000-0000-000000000001"
+    flow: "xtls-rprx-vision"
+    tls: true
+    servername: "example-cdn.test"
+    client-fingerprint: "chrome"
+    reality-opts:
+      public-key: "PBK"
+      short-id: "ab12"
+  - name: "hy2-1"
+    type: hysteria2
+    server: "198.51.100.10"
+    port: 8443
+    password: "pw"
+    sni: "example-cdn.test"
+    obfs: "salamander"
+    obfs-password: "obf"
+    skip-cert-verify: false
+  - name: "ss-1"
+    type: ss
+    server: "198.51.100.10"
+    port: 9000
+    cipher: "2022-blake3-aes-256-gcm"
+    password: "cHNr"
+  - name: "awg-1"
+    type: wireguard
+    server: "198.51.100.10"
+    port: 51820
+    public-key: "WGK"
+    mtu: 1420
+    amnezia-wg-option:
+      jc: 4
+      jmin: 40
+      jmax: 70
+      s1: 50
+      s2: 60
+      h1: 1
+      h2: 2
+      h3: 3
+      h4: 4
+proxy-groups: [{"name":"PROXY","proxies":["AUTO","reality-1","hy2-1","ss-1","awg-1"],"type":"select"},{"interval":180,"name":"AUTO","proxies":["reality-1","hy2-1","ss-1","awg-1"],"type":"url-test","url":"https://www.gstatic.com/generate_204"}]
+rule-providers: {"geoip-ru":{"behavior":"ipcidr","format":"mrs","interval":86400,"path":"./ruleset/geoip-ru.mrs","type":"http","url":"https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/ru.mrs"},"geosite-ru":{"behavior":"domain","format":"mrs","interval":86400,"path":"./ruleset/geosite-ru.mrs","type":"http","url":"https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ru.mrs"}}
+dns: {"enable":true,"nameserver":["https://1.1.1.1/dns-query"],"nameserver-policy":{"geosite:category-ru":["https://77.88.8.8/dns-query"]},"prefer-h3":true}
+rules:
+  - GEOIP,private,DIRECT,no-resolve
+  - RULE-SET,geosite-ru,DIRECT
+  - RULE-SET,geoip-ru,DIRECT
+  - MATCH,PROXY

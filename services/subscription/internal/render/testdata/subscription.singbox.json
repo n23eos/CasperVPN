@@ -1,0 +1,156 @@
+{
+  "dns": {
+    "servers": [
+      {
+        "tag": "proxy-dns",
+        "address": "https://1.1.1.1/dns-query",
+        "detour": "proxy"
+      },
+      {
+        "tag": "direct-dns",
+        "address": "https://77.88.8.8/dns-query",
+        "detour": "direct"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": [
+          "geosite-ru"
+        ],
+        "server": "direct-dns"
+      }
+    ],
+    "final": "proxy-dns",
+    "strategy": "prefer_ipv4"
+  },
+  "log": {
+    "level": "warn"
+  },
+  "outbounds": [
+    {
+      "flow": "xtls-rprx-vision",
+      "server": "198.51.100.10",
+      "server_port": 443,
+      "tag": "reality-1",
+      "tls": {
+        "enabled": true,
+        "reality": {
+          "enabled": true,
+          "public_key": "PBK",
+          "short_id": "ab12"
+        },
+        "server_name": "example-cdn.test",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "type": "vless",
+      "uuid": "00000000-0000-0000-0000-000000000001"
+    },
+    {
+      "obfs": {
+        "password": "obf",
+        "type": "salamander"
+      },
+      "password": "pw",
+      "server": "198.51.100.10",
+      "server_port": 8443,
+      "tag": "hy2-1",
+      "tls": {
+        "enabled": true,
+        "insecure": false,
+        "server_name": "example-cdn.test"
+      },
+      "type": "hysteria2"
+    },
+    {
+      "method": "2022-blake3-aes-256-gcm",
+      "password": "cHNr",
+      "server": "198.51.100.10",
+      "server_port": 9000,
+      "tag": "ss-1",
+      "type": "shadowsocks"
+    },
+    {
+      "h1": 1,
+      "h2": 2,
+      "h3": 3,
+      "h4": 4,
+      "jc": 4,
+      "jmax": 70,
+      "jmin": 40,
+      "mtu": 1420,
+      "peer_public_key": "WGK",
+      "s1": 50,
+      "s2": 60,
+      "server": "198.51.100.10",
+      "server_port": 51820,
+      "tag": "awg-1",
+      "type": "wireguard"
+    },
+    {
+      "interval": "3m",
+      "outbounds": [
+        "reality-1",
+        "hy2-1",
+        "ss-1",
+        "awg-1"
+      ],
+      "tag": "auto",
+      "type": "urltest",
+      "url": "https://www.gstatic.com/generate_204"
+    },
+    {
+      "default": "auto",
+      "outbounds": [
+        "auto",
+        "reality-1",
+        "hy2-1",
+        "ss-1",
+        "awg-1"
+      ],
+      "tag": "proxy",
+      "type": "selector"
+    },
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "proxy",
+    "rule_set": [
+      {
+        "download_detour": "proxy",
+        "format": "binary",
+        "tag": "geosite-ru",
+        "type": "remote",
+        "update_interval": "24h",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ru.srs"
+      },
+      {
+        "download_detour": "proxy",
+        "format": "binary",
+        "tag": "geoip-ru",
+        "type": "remote",
+        "update_interval": "24h",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs"
+      }
+    ],
+    "rules": [
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "outbound": "direct",
+        "rule_set": [
+          "geosite-ru",
+          "geoip-ru"
+        ]
+      }
+    ]
+  }
+}

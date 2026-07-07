@@ -1,0 +1,57 @@
+# CI for the subscription service (services/subscription). Owned by the
+# subscription team. Builds/tests the module, runs a real `sing-box check` on the
+# rendered config, and a short token fuzz.
+name: subscription
+
+on:
+  push:
+    paths:
+      - "services/subscription/**"
+      - "packages/contracts/**"
+      - ".github/workflows/subscription.yml"
+  pull_request:
+    paths:
+      - "services/subscription/**"
+      - "packages/contracts/**"
+      - ".github/workflows/subscription.yml"
+
+env:
+  SINGBOX_VERSION: "1.11.11"
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/subscription
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test ./...
+      - name: fuzz tokens (short)
+        run: go test ./internal/httpapi -run=none -fuzz=FuzzSubToken -fuzztime=30s
+
+  singbox-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: install sing-box ${{ env.SINGBOX_VERSION }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+          curl -fsSL "$url" -o sing-box.tar.gz
+          tar -xzf sing-box.tar.gz
+          sudo install "sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" /usr/local/bin/sing-box
+          sing-box version
+      - name: sing-box check on rendered config
+        run: services/subscription/scripts/singbox-check.sh
