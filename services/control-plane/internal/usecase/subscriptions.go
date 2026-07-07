@@ -68,11 +68,18 @@ func (s *SubscriptionService) Create(ctx context.Context, userID string, plan co
 	if err := s.subs.Create(ctx, sub, secret.HashToken(token), secret.Prefix(token, tokenPrefixLen)); err != nil {
 		return domain.SubscriptionWithToken{}, err
 	}
-	// Link the subscription onto the user.
-	if u, err := s.users.Get(ctx, userID); err == nil {
-		u.SubscriptionID = &sub.ID
-		u.UpdatedAt = now
-		_ = s.users.Update(ctx, u)
+	// Link the subscription onto the user. This link MUST hold: billing's renewal
+	// path reuses an existing user.SubscriptionID to avoid creating a duplicate
+	// (orphan) subscription on retry. Swallowing a failure here would leave the sub
+	// created but unlinked, so a later renewal would create a second one.
+	u, err := s.users.Get(ctx, userID)
+	if err != nil {
+		return domain.SubscriptionWithToken{}, fmt.Errorf("link subscription to user: %w", err)
+	}
+	u.SubscriptionID = &sub.ID
+	u.UpdatedAt = now
+	if err := s.users.Update(ctx, u); err != nil {
+		return domain.SubscriptionWithToken{}, fmt.Errorf("link subscription to user: %w", err)
 	}
 	return domain.SubscriptionWithToken{Subscription: sub, PlainToken: token}, nil
 }

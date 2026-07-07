@@ -7,6 +7,15 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// writeUser emits a user response with the server-side PrivateKey stripped. No
+// API consumer (admin, billing, subscription) needs the user's transport key
+// material — its canonical home is the users table only. Centralizing the strip
+// here closes every user-returning path, not just the subscription-set bundle.
+func writeUser(w http.ResponseWriter, status int, u contracts.User) {
+	u.PrivateKey = ""
+	writeJSON(w, status, u)
+}
+
 func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -18,7 +27,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, u)
+	writeUser(w, http.StatusCreated, u)
 }
 
 func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +36,7 @@ func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+	writeUser(w, http.StatusOK, u)
 }
 
 func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +50,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+	writeUser(w, http.StatusOK, u)
 }
 
 func (h *Handler) rotateUserSecrets(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +59,7 @@ func (h *Handler) rotateUserSecrets(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+	writeUser(w, http.StatusOK, u)
 }
 
 // getSubscriptionSet is the additive endpoint that hands Agent C the structured
@@ -61,10 +70,14 @@ func (h *Handler) getSubscriptionSet(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
+	// Never expose the user's server-side PrivateKey over the wire, even if an
+	// older cached set was persisted before the bundle builder started stripping it.
+	respUser := set.Bundle.User
+	respUser.PrivateKey = ""
 	writeJSON(w, http.StatusOK, subscriptionSetResponse{
 		Revision:    set.Revision,
 		GeneratedAt: set.Bundle.GeneratedAt,
-		User:        set.Bundle.User,
+		User:        respUser,
 		Nodes:       set.Bundle.Nodes,
 	})
 }
