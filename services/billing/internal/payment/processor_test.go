@@ -122,6 +122,45 @@ func TestProcess_ExactReplayIsNoop(t *testing.T) {
 	}
 }
 
+// C1: an event from a different gateway must not settle this invoice.
+func TestProcess_RejectsProviderMismatch(t *testing.T) {
+	proc, repo, fake := newHarness(t)
+	seedInvoice(t, repo) // invoice provider = "mock"
+
+	ev := settledEvent("d1")
+	ev.Provider = "btcpay" // foreign gateway
+
+	err := proc.Process(context.Background(), ev)
+	if !errors.Is(err, ErrProviderMismatch) {
+		t.Fatalf("err = %v, want ErrProviderMismatch", err)
+	}
+	if fake.CreateCalls != 0 {
+		t.Fatalf("foreign provider must not activate; create calls = %d", fake.CreateCalls)
+	}
+	inv, _ := repo.GetInvoice(context.Background(), "inv-1")
+	if inv.Status != model.StatusPending {
+		t.Fatalf("invoice status = %q, want still pending", inv.Status)
+	}
+}
+
+// C1: an event in a different currency (e.g. 0.5 XMR) must not settle a BTC invoice.
+func TestProcess_RejectsCurrencyMismatch(t *testing.T) {
+	proc, repo, fake := newHarness(t)
+	seedInvoice(t, repo) // invoice currency = "BTC"
+
+	ev := settledEvent("d1")
+	ev.Currency = "XMR"
+	ev.Amount = "0.5" // plenty of XMR, but wrong asset for a BTC invoice
+
+	err := proc.Process(context.Background(), ev)
+	if !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+	}
+	if fake.CreateCalls != 0 {
+		t.Fatalf("cross-currency event must not activate; create calls = %d", fake.CreateCalls)
+	}
+}
+
 func TestProcess_RejectsUnderpayment(t *testing.T) {
 	proc, repo, fake := newHarness(t)
 	seedInvoice(t, repo)

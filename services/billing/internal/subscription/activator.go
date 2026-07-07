@@ -8,6 +8,8 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"sync"
 	"time"
 
 	"github.com/caspervpn/billing/internal/controlplane"
@@ -17,12 +19,24 @@ import (
 	"github.com/caspervpn/contracts"
 )
 
+// lockStripes is the fixed number of per-user mutex stripes. Serialization only
+// needs same-user settlements to hash to the same lock; a fixed pool avoids the
+// unbounded per-id map that would otherwise leak one mutex per paying user in a
+// long-running process. Rare cross-user collisions only add brief contention.
+const lockStripes = 256
+
 // Activator applies plan durations to subscriptions.
 type Activator struct {
 	cp      controlplane.Client
 	catalog *plan.Catalog
 	store   store.Repository
 	now     func() time.Time
+
+	// stripes serialize Activate per anon_user_id (hashed to a fixed stripe). Two
+	// concurrent settlements for one user would otherwise both read a nil
+	// SubscriptionID and each create a subscription (double create / double period).
+	// The lock makes get-user → create-or-reuse → set-period atomic per user.
+	stripes [lockStripes]sync.Mutex
 }
 
 // NewActivator wires the activator. now is injectable for deterministic tests.
@@ -31,6 +45,13 @@ func NewActivator(cp controlplane.Client, catalog *plan.Catalog, repo store.Repo
 		now = time.Now
 	}
 	return &Activator{cp: cp, catalog: catalog, store: repo, now: now}
+}
+
+// lockFor returns the mutex stripe serializing this user's activations.
+func (a *Activator) lockFor(anonUserID string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(anonUserID))
+	return &a.stripes[h.Sum32()%lockStripes]
 }
 
 // Activate creates or renews the subscription for an anonymous account and returns
@@ -43,6 +64,12 @@ func (a *Activator) Activate(ctx context.Context, anonUserID string, planID cont
 	if !ok {
 		return contracts.Subscription{}, fmt.Errorf("subscription: unknown plan %q", planID)
 	}
+
+	// Serialize activation per user so concurrent settlements can't double-create.
+	l := a.lockFor(anonUserID)
+	l.Lock()
+	defer l.Unlock()
+
 	user, err := a.cp.GetUser(ctx, anonUserID)
 	if err != nil {
 		return contracts.Subscription{}, fmt.Errorf("subscription: get user: %w", err)

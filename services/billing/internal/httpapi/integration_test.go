@@ -26,6 +26,7 @@ type harness struct {
 	server *httptest.Server
 	gw     *mock.Gateway
 	fake   *controlplane.Fake
+	api    *httpapi.API
 }
 
 func newHarness(t *testing.T) *harness {
@@ -53,7 +54,7 @@ func newHarness(t *testing.T) *harness {
 	reg.Register(gw)
 
 	api := httpapi.New(reg, proc, repo, catalog)
-	return &harness{server: httptest.NewServer(api.Routes()), gw: gw, fake: fake}
+	return &harness{server: httptest.NewServer(api.Routes()), gw: gw, fake: fake, api: api}
 }
 
 func (h *harness) close() { h.server.Close() }
@@ -144,6 +145,35 @@ func TestEndToEnd_DoubleWebhookSingleTerm(t *testing.T) {
 	}
 	if h.fake.SetCalls != 1 {
 		t.Fatalf("set-period calls = %d, want 1 (no double term)", h.fake.SetCalls)
+	}
+}
+
+// C6: invoice creation is rate-limited. With a frozen-time bucket of capacity 1
+// and no refill, the second POST /v1/invoices returns 429.
+func TestCreateInvoice_RateLimited(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	h.api.SetInvoiceLimiterForTest(1, 0, func() time.Time { return now })
+
+	post := func() int {
+		body, _ := json.Marshal(map[string]string{
+			"anon_user_id": "acct-1", "plan": "basic", "currency": "BTC",
+		})
+		resp, err := http.Post(h.server.URL+"/v1/invoices", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := post(); code != http.StatusCreated {
+		t.Fatalf("first create status = %d, want 201", code)
+	}
+	if code := post(); code != http.StatusTooManyRequests {
+		t.Fatalf("second create status = %d, want 429", code)
 	}
 }
 
