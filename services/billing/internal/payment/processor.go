@@ -19,6 +19,14 @@ var ErrStaleEvent = errors.New("payment: event outside replay window")
 // ErrUnderpaid rejects a settlement whose paid amount is below the invoice amount.
 var ErrUnderpaid = errors.New("payment: underpaid invoice")
 
+// ErrProviderMismatch rejects an event whose provider differs from the invoice's.
+// Without this, an event from gateway A could settle an invoice owned by gateway B.
+var ErrProviderMismatch = errors.New("payment: event provider does not match invoice")
+
+// ErrCurrencyMismatch rejects an event whose currency differs from the invoice's,
+// so e.g. an XMR event can never "cover" a BTC invoice.
+var ErrCurrencyMismatch = errors.New("payment: event currency does not match invoice")
+
 // Processor applies normalized payment events to invoices and drives activation.
 // It is the single choke point where idempotency and anti-fraud are enforced, so
 // every source (webhook or poll) funnels through Process.
@@ -78,6 +86,17 @@ func (p *Processor) settle(ctx context.Context, ev model.Event) error {
 	inv, err := p.store.GetInvoice(ctx, ev.InvoiceID)
 	if err != nil {
 		return fmt.Errorf("payment: get invoice %q: %w", ev.InvoiceID, err)
+	}
+
+	// Anti-fraud: the settling event must belong to the same gateway and currency
+	// as the invoice. Otherwise a cheap payment on one rail could close an
+	// unrelated, more expensive invoice on another. Currency is only checked when
+	// the event carries one (some webhook gateways settle on their own accounting).
+	if ev.Provider != inv.Provider {
+		return ErrProviderMismatch
+	}
+	if ev.Currency != "" && ev.Currency != inv.Currency {
+		return ErrCurrencyMismatch
 	}
 
 	// Anti-fraud: reject underpayment. Only enforced when the event reports an

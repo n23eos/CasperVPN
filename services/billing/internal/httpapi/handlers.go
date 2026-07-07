@@ -18,15 +18,22 @@ import (
 
 // API bundles the billing HTTP handlers.
 type API struct {
-	registry  *payment.Registry
-	processor *payment.Processor
-	store     store.Repository
-	catalog   *plan.Catalog
+	registry       *payment.Registry
+	processor      *payment.Processor
+	store          store.Repository
+	catalog        *plan.Catalog
+	invoiceLimiter *stripedLimiter
 }
 
 // New builds the API.
 func New(registry *payment.Registry, processor *payment.Processor, repo store.Repository, catalog *plan.Catalog) *API {
-	return &API{registry: registry, processor: processor, store: repo, catalog: catalog}
+	return &API{
+		registry:       registry,
+		processor:      processor,
+		store:          repo,
+		catalog:        catalog,
+		invoiceLimiter: newStripedLimiter(defaultInvoiceBurst, defaultInvoiceRefillRate, nil),
+	}
 }
 
 // Routes returns the configured mux.
@@ -72,6 +79,12 @@ func (a *API) createInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AnonUserID == "" {
 		writeErr(w, http.StatusBadRequest, "anon_user_id required")
+		return
+	}
+	// Rate-limit invoice creation per account so one abuser can't flood the crypto
+	// gateways (without throttling everyone via a single global bucket).
+	if !a.invoiceLimiter.allow(req.AnonUserID) {
+		writeErr(w, http.StatusTooManyRequests, "rate limited")
 		return
 	}
 	planID := contracts.SubscriptionPlan(req.Plan)
@@ -148,7 +161,8 @@ func (a *API) webhook(w http.ResponseWriter, r *http.Request) {
 	if err := a.processor.Process(r.Context(), ev); err != nil {
 		// Terminal, non-retryable outcomes are acknowledged so the gateway stops
 		// redelivering; transient failures return 5xx to trigger provider retry.
-		if errors.Is(err, payment.ErrUnderpaid) || errors.Is(err, payment.ErrStaleEvent) {
+		if errors.Is(err, payment.ErrUnderpaid) || errors.Is(err, payment.ErrStaleEvent) ||
+			errors.Is(err, payment.ErrProviderMismatch) || errors.Is(err, payment.ErrCurrencyMismatch) {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 			return
 		}
