@@ -32,6 +32,11 @@ const (
 // e.g. "RU", "RU-MOW", "IR-07". No finer granularity is accepted.
 var regionRe = regexp.MustCompile(`^[A-Z]{2}(-[A-Z0-9]{1,4})?$`)
 
+// versionRe captures the leading major(.minor) of a version string, ignoring an
+// optional "v" prefix and any patch/build/prerelease suffix.
+// e.g. "v1.4.2-beta+build.abc" → major "1", minor "4".
+var versionRe = regexp.MustCompile(`^[vV]?(\d+)(?:\.(\d+))?`)
+
 // ctrlChars strips control/formatting runes that could smuggle data or break logs.
 var ctrlChars = regexp.MustCompile(`[[:cntrl:]]`)
 
@@ -55,8 +60,28 @@ func Sanitize(in contracts.FieldSignal, now time.Time, maxAge time.Duration) (co
 	if s.ASN < 0 || s.ASN > maxASN {
 		s.ASN = 0
 	}
+	// k-anonymity of the quasi-identifier tuple (region + ASN + ISP + client
+	// version + platform + minute). Left raw, that combo is near-unique in a small
+	// region and can re-link to one user (nation-state deanon). Two coarsenings blunt
+	// it here, at ingest, where each signal is seen in isolation:
+	//
+	//  1. ISP is dropped whenever an ASN is present: the ASN already localizes the
+	//     network, so the ISP name only adds fingerprint entropy (and diverging
+	//     spellings/casing multiply apparent distinct values). Source-diversity
+	//     counting is unaffected — it buckets by ASN first, using ISP only when the
+	//     ASN is absent (see aggregate/source.go).
+	//  2. ClientVersion is generalized to major.minor, discarding the highly
+	//     distinguishing patch/build/prerelease tail.
+	//
+	// A true k-anon FLOOR (suppressing a tuple until ≥k independent sources share it)
+	// requires a population view and so is enforced downstream, at aggregation: the
+	// rollup keys only by (region, transport) and reports shares over DISTINCT
+	// sources, never per-tuple rows — so a lone rare fingerprint is never emitted.
 	s.ISP = clip(ctrlChars.ReplaceAllString(s.ISP, ""), maxISPLen)
-	s.ClientVersion = clip(ctrlChars.ReplaceAllString(s.ClientVersion, ""), maxClientVersionLen)
+	if s.ASN > 0 {
+		s.ISP = ""
+	}
+	s.ClientVersion = coarsenVersion(clip(ctrlChars.ReplaceAllString(s.ClientVersion, ""), maxClientVersionLen))
 
 	// Clamp metrics into sane ranges (out-of-range = drop/clamp, a poison guard).
 	if s.RTTms < 0 || s.RTTms > maxRTTms {
@@ -91,6 +116,20 @@ func Sanitize(in contracts.FieldSignal, now time.Time, maxAge time.Duration) (co
 		return contracts.FieldSignal{}, false, err.Error()
 	}
 	return s, true, ""
+}
+
+// coarsenVersion generalizes a client version to "major" or "major.minor",
+// dropping the patch/build/prerelease tail (a strong quasi-identifier). Unparseable
+// input yields "" — an absent version is safer than a distinguishing one.
+func coarsenVersion(v string) string {
+	m := versionRe.FindStringSubmatch(strings.TrimSpace(v))
+	if m == nil {
+		return ""
+	}
+	if m[2] == "" {
+		return m[1] // only a major component present
+	}
+	return m[1] + "." + m[2]
 }
 
 func clip(s string, max int) string {
