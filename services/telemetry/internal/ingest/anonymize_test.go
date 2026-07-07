@@ -95,6 +95,63 @@ func TestSanitize_ClampsAndCoarsens(t *testing.T) {
 	}
 }
 
+func TestSanitize_CoarsensClientVersion(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	cases := map[string]string{
+		"1.4.2-beta+build.abc": "1.4",
+		"1.4.2":                "1.4",
+		"1.4":                  "1.4",
+		"v2.10.7":              "2.10",
+		"3":                    "3",
+		"garbage":              "",
+		"":                     "",
+	}
+	for in, want := range cases {
+		s := baseSignal(now)
+		s.ClientVersion = in
+		out, ok, reason := Sanitize(s, now, 72*time.Hour)
+		if !ok {
+			t.Fatalf("input %q rejected: %s", in, reason)
+		}
+		if out.ClientVersion != want {
+			t.Fatalf("version %q: got %q, want %q", in, out.ClientVersion, want)
+		}
+	}
+}
+
+func TestSanitize_DropsISPWhenASNPresent(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	s := baseSignal(now)
+	s.ASN = 12345
+	s.ISP = "Rostelecom"
+
+	out, ok, reason := Sanitize(s, now, 72*time.Hour)
+	if !ok {
+		t.Fatalf("should pass: %s", reason)
+	}
+	if out.ISP != "" {
+		t.Fatalf("ISP should be dropped when ASN present: %q", out.ISP)
+	}
+	if out.ASN != 12345 {
+		t.Fatalf("ASN should survive: %d", out.ASN)
+	}
+}
+
+func TestSanitize_KeepsISPWhenNoASN(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	s := baseSignal(now)
+	s.ASN = 0
+	s.ISP = "Rostelecom"
+
+	out, ok, reason := Sanitize(s, now, 72*time.Hour)
+	if !ok {
+		t.Fatalf("should pass: %s", reason)
+	}
+	if out.ISP != "Rostelecom" {
+		t.Fatalf("ISP should survive when ASN absent: %q", out.ISP)
+	}
+}
+
 func TestSanitize_RejectsMissingIDs(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	s := baseSignal(now)
