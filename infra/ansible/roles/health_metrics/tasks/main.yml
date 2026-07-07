@@ -1,0 +1,40 @@
+---
+- name: Persist node_id when provided via inventory
+  when: node_id | length > 0
+  ansible.builtin.copy:
+    dest: /etc/caspervpn/node_id
+    content: "{{ node_id }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install health-report script
+  ansible.builtin.template:
+    src: health-report.sh.j2
+    dest: "{{ health_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install health-report systemd service
+  ansible.builtin.template:
+    src: health-report.service.j2
+    dest: /etc/systemd/system/casper-health-report.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Install health-report systemd timer
+  ansible.builtin.template:
+    src: health-report.timer.j2
+    dest: /etc/systemd/system/casper-health-report.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Enable health-report timer
+  ansible.builtin.systemd:
+    name: casper-health-report.timer
+    enabled: true

@@ -1,0 +1,9 @@
+---
+# Re-key REALITY on a node (new keypair + short-id) and re-render its config.
+# Pairs with scripts/node_rotate.sh, which stands up a fresh ephemeral entry,
+# runs this, drains the old IP, and PATCHes the Node in the control-plane.
+- name: Rotate CasperVPN node (rekey REALITY)
+  hosts: "{{ target | default('entry') }}"
+  become: true
+  roles:
+    - role: rotation

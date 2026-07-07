@@ -1,0 +1,59 @@
+---
+# Build /etc/sing-box/config.json from the enabled transports, then validate it
+# with `sing-box check`. Enforces the [АНТИ-БЛОК] invariants at config-build time.
+
+# --- Invariant 1: at least one transport, and REALITY is properly configured ---
+- name: Assert at least one transport is enabled
+  ansible.builtin.assert:
+    that:
+      - transports.vless_reality.enabled or transports.amneziawg.enabled or transports.hysteria2.enabled or transports.shadowsocks_2022.enabled
+    fail_msg: "No transport enabled — a node must never be a monoculture of zero."
+
+- name: Assert REALITY mimicry target is supplied (no hardcode, must be provided)
+  when: transports.vless_reality.enabled
+  ansible.builtin.assert:
+    that:
+      - transports.vless_reality.server_names | length > 0
+      - transports.vless_reality.handshake_server | length > 0
+      - transports.vless_reality.private_key | length > 0
+    fail_msg: >-
+      vless-reality is enabled but server_names/handshake_server/private_key are
+      empty. Mimicry target and keys MUST be provided from config/vault
+      (see docs/mimicry-domains.md) — they are never hardcoded.
+
+# --- Invariant 2: hysteria2 (UDP/443-only) REQUIRES a TCP fallback transport ---
+- name: Assert hysteria2 has a TCP fallback (vless-reality) when enabled
+  when: transports.hysteria2.enabled
+  ansible.builtin.assert:
+    that:
+      - transports.vless_reality.enabled
+    fail_msg: >-
+      hysteria2 is UDP-only; if UDP/443 is cut clients lose it. Enable
+      vless-reality (TCP/443) as the mandatory fallback before enabling hysteria2.
+
+# --- hysteria2 needs a TLS cert (QUIC). Self-signed, CN = mimicry SNI. ---
+- name: Generate hysteria2 self-signed cert (QUIC TLS)
+  when: transports.hysteria2.enabled
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -nodes -newkey ec
+      -pkeyopt ec_paramgen_curve:prime256v1
+      -keyout {{ transports.hysteria2.tls_key_path }}
+      -out {{ transports.hysteria2.tls_cert_path }}
+      -subj "/CN={{ transports.hysteria2.tls_sni | default('localhost', true) }}"
+      -days 3650
+    creates: "{{ transports.hysteria2.tls_cert_path }}"
+
+- name: Render sing-box config.json
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ singbox_config_dir }}/config.json"
+    owner: "{{ singbox_user | default('sing-box') }}"
+    group: "{{ singbox_group | default('sing-box') }}"
+    mode: "0640"
+    validate: "{{ singbox_bin }} check -c %s"
+  notify: restart sing-box
+
+- name: Verify sing-box config (explicit check)
+  ansible.builtin.command: "{{ singbox_bin }} check -c {{ singbox_config_dir }}/config.json"
+  changed_when: false

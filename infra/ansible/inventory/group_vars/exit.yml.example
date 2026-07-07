@@ -1,0 +1,13 @@
+---
+# EXIT group (EXAMPLE). The exit exposes NO public transport — it accepts
+# ingress ONLY from its paired entry (allowed_entry_ip), so an attack on the
+# entry never reaches the exit.
+node_role: "exit"
+
+# allowed_entry_ip is injected per-host by scripts/node_up.sh (Terraform output)
+# or read from /etc/caspervpn/allowed_entry_ip. Set here only for manual runs.
+# allowed_entry_ip: "203.0.113.10"
+
+# Ports the exit accepts FROM the entry only.
+exit_ports_tcp: [8388]
+exit_ports_udp: []

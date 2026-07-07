@@ -1,0 +1,90 @@
+---
+# Install the sing-box binary + systemd unit. Idempotent: re-downloads only when
+# the installed version differs. No compilation on the node (keeps node-up fast).
+
+- name: Resolve sing-box release arch
+  ansible.builtin.set_fact:
+    singbox_arch: "{{ singbox_arch_map[ansible_architecture] | default('amd64') }}"
+
+- name: Create sing-box group
+  ansible.builtin.group:
+    name: "{{ singbox_group }}"
+    system: true
+
+- name: Create sing-box system user
+  ansible.builtin.user:
+    name: "{{ singbox_user }}"
+    group: "{{ singbox_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ singbox_state_dir }}"
+    create_home: false
+
+- name: Ensure config/state dirs exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ singbox_user }}"
+    group: "{{ singbox_group }}"
+    mode: "0750"
+  loop:
+    - "{{ singbox_config_dir }}"
+    - "{{ singbox_state_dir }}"
+
+- name: Check installed sing-box version
+  ansible.builtin.command: "{{ singbox_bin }} version"
+  register: singbox_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install sing-box binary from release tarball
+  when: singbox_version not in (singbox_installed.stdout | default(''))
+  block:
+    - name: Create download temp dir
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: singbox
+      register: singbox_tmp
+
+    - name: Download sing-box tarball
+      ansible.builtin.get_url:
+        url: "{{ singbox_download_base }}/v{{ singbox_version }}/sing-box-{{ singbox_version }}-linux-{{ singbox_arch }}.tar.gz"
+        dest: "{{ singbox_tmp.path }}/sing-box.tar.gz"
+        mode: "0644"
+
+    - name: Unpack sing-box
+      ansible.builtin.unarchive:
+        src: "{{ singbox_tmp.path }}/sing-box.tar.gz"
+        dest: "{{ singbox_tmp.path }}"
+        remote_src: true
+
+    - name: Install sing-box binary
+      ansible.builtin.copy:
+        src: "{{ singbox_tmp.path }}/sing-box-{{ singbox_version }}-linux-{{ singbox_arch }}/sing-box"
+        dest: "{{ singbox_bin }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      notify: restart sing-box
+
+    - name: Remove download temp dir
+      ansible.builtin.file:
+        path: "{{ singbox_tmp.path }}"
+        state: absent
+
+- name: Install sing-box systemd unit
+  ansible.builtin.template:
+    src: singbox.service.j2
+    dest: /etc/systemd/system/sing-box.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart sing-box
+
+- name: Enable sing-box (autostart), do not start until config is written
+  ansible.builtin.systemd:
+    name: sing-box
+    enabled: true

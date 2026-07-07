@@ -1,0 +1,34 @@
+---
+# Drain a node: stop serving new traffic and shut sing-box down cleanly. The
+# actual VM teardown is done by Terraform in scripts/node_down.sh; this is the
+# graceful software-side drain that runs first.
+- name: Drain and stop a CasperVPN node
+  hosts: "{{ target }}"
+  become: true
+  tasks:
+    - name: Stop sing-box
+      ansible.builtin.systemd:
+        name: sing-box
+        state: stopped
+      failed_when: false
+
+    - name: Disable sing-box autostart
+      ansible.builtin.systemd:
+        name: sing-box
+        enabled: false
+      failed_when: false
+
+    - name: Stop health reporting
+      ansible.builtin.systemd:
+        name: casper-health-report.timer
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Mark node drained
+      ansible.builtin.copy:
+        dest: /etc/caspervpn/drained
+        content: "drained\n"
+        owner: root
+        group: root
+        mode: "0644"

@@ -13,7 +13,10 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help
+.PHONY: all build test lint vet fmt tidy up down clean help \
+	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
+
+INFRA := infra
 
 all: build
 
@@ -74,3 +77,41 @@ clean:
 ## help: list targets
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //'
+
+# ---------------------------------------------------------------------------
+# infra/ — fleet lifecycle (Terraform + Ansible). See docs/infra.md.
+# ---------------------------------------------------------------------------
+
+## node-up: provision an entry+exit pair  (REGION=.. CLOUD=..)
+node-up:
+	@REGION=$(REGION) CLOUD=$(CLOUD) SSH_PUBKEY="$(SSH_PUBKEY)" $(INFRA)/scripts/node_up.sh
+
+## node-rotate: rotate a node — fresh ephemeral IP + REALITY rekey  (NODE=..)
+node-rotate:
+	@NODE=$(NODE) SSH_PUBKEY="$(SSH_PUBKEY)" $(INFRA)/scripts/node_rotate.sh
+
+## node-down: drain + retire + destroy a node  (NODE=..)
+node-down:
+	@NODE=$(NODE) $(INFRA)/scripts/node_down.sh
+
+## infra-fmt: terraform fmt check across all modules/envs
+infra-fmt:
+	@terraform -chdir=$(INFRA)/terraform fmt -check -recursive
+
+## infra-validate: terraform validate every module + the example env
+infra-validate:
+	@set -e; for d in $(INFRA)/terraform/modules/compute/* $(INFRA)/terraform/modules/entry-node $(INFRA)/terraform/modules/exit-node $(INFRA)/terraform/envs/example; do \
+		echo ">> validate $$d"; terraform -chdir=$$d init -backend=false -input=false >/dev/null; terraform -chdir=$$d validate; \
+	done
+
+## infra-syntax: ansible playbooks --syntax-check
+infra-syntax:
+	@cd $(INFRA)/ansible && for p in playbooks/*.yml; do echo ">> syntax $$p"; ansible-playbook --syntax-check -i inventory/hosts.example.ini $$p; done
+
+## infra-molecule: molecule scenario (docker) — bring up node, assert REALITY
+infra-molecule:
+	@cd $(INFRA)/ansible && molecule test
+
+## infra-nocode: fail on hardcoded mimicry domain / IPv4 literals in templates
+infra-nocode:
+	@$(INFRA)/ci/no-hardcode.sh

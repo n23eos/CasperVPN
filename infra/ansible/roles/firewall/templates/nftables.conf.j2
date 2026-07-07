@@ -1,0 +1,51 @@
+#!/usr/sbin/nft -f
+# CasperVPN node firewall. Default-drop input. Entry exposes public mimicry
+# transports; exit accepts transport ingress ONLY from its paired entry IP
+# ({{ allowed_entry_ip | default('unset') }}), so compromising an entry never
+# reaches the exit. allowed_entry_ip is injected, never hardcoded.
+flush ruleset
+
+table inet caspervpn {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    ct state established,related accept
+    ct state invalid drop
+    iif "lo" accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+
+    tcp dport {{ ssh_port }} accept
+{% if node_role == 'exit' %}
+
+    # exit: transport ingress ONLY from the paired entry
+{% if exit_ports_tcp | length > 0 %}
+    ip saddr {{ allowed_entry_ip }} tcp dport { {{ exit_ports_tcp | join(', ') }} } accept
+{% endif %}
+{% if exit_ports_udp | length > 0 %}
+    ip saddr {{ allowed_entry_ip }} udp dport { {{ exit_ports_udp | join(', ') }} } accept
+{% endif %}
+{% else %}
+
+    # entry: public mimicry transports
+{% if open_tcp_ports | length > 0 %}
+    tcp dport { {{ open_tcp_ports | join(', ') }} } accept
+{% endif %}
+{% if open_udp_ports | length > 0 %}
+    udp dport { {{ open_udp_ports | join(', ') }} } accept
+{% endif %}
+{% endif %}
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+    ct state established,related accept
+{% if node_role == 'exit' %}
+    ip saddr {{ allowed_entry_ip }} accept
+{% endif %}
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}

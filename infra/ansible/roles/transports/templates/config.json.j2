@@ -1,0 +1,41 @@
+{# sing-box node config. Inbounds are assembled from the ENABLED transports so a
+   node offers several families at once (diversity, not monoculture). Mimicry
+   data is injected via variables — never literal. #}
+{%- set ns = namespace(inbounds=[]) -%}
+{%- if transports.vless_reality.enabled -%}
+{%- set part %}{% include 'inbound_vless_reality.json.j2' %}{% endset -%}
+{%- set ns.inbounds = ns.inbounds + [part] -%}
+{%- endif -%}
+{%- if transports.amneziawg.enabled -%}
+{%- set part %}{% include 'inbound_amneziawg.json.j2' %}{% endset -%}
+{%- set ns.inbounds = ns.inbounds + [part] -%}
+{%- endif -%}
+{%- if transports.hysteria2.enabled -%}
+{%- set part %}{% include 'inbound_hysteria2.json.j2' %}{% endset -%}
+{%- set ns.inbounds = ns.inbounds + [part] -%}
+{%- endif -%}
+{%- if transports.shadowsocks_2022.enabled -%}
+{%- set part %}{% include 'inbound_shadowsocks2022.json.j2' %}{% endset -%}
+{%- set ns.inbounds = ns.inbounds + [part] -%}
+{%- endif -%}
+{
+  "log": { "level": "warn", "timestamp": true },
+  "inbounds": [
+    {{ ns.inbounds | join(",\n    ") }}
+  ],
+  "outbounds": [
+{% if exit_endpoint %}    {
+      "type": "{{ exit_endpoint.type | default('shadowsocks') }}",
+      "tag": "to-exit",
+      "server": "{{ exit_endpoint.server }}",
+      "server_port": {{ exit_endpoint.server_port }},
+      "method": "{{ exit_endpoint.method | default('2022-blake3-aes-256-gcm') }}",
+      "password": "{{ exit_endpoint.password }}"
+    },
+{% endif %}    { "type": "direct", "tag": "direct" },
+    { "type": "block", "tag": "block" }
+  ],
+  "route": {
+    "final": "{{ 'to-exit' if exit_endpoint else 'direct' }}"
+  }
+}

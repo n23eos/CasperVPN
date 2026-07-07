@@ -1,0 +1,12 @@
+---
+# Bring a node from bare cloud-init to serving traffic: sing-box + transports
+# (config validated) + firewall + health reporting. Idempotent — re-running
+# converges. Target group overridable: -e target=entry|exit|nodes|<host>.
+- name: Provision CasperVPN node
+  hosts: "{{ target | default('nodes') }}"
+  become: true
+  roles:
+    - role: singbox
+    - role: transports
+    - role: firewall
+    - role: health_metrics

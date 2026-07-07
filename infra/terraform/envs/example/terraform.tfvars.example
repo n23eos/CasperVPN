@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in. NEVER commit real values or the SSH key.
+# Secrets (cloud tokens) are NOT here — they come from provider env vars:
+#   export HCLOUD_TOKEN=...
+#   export VULTR_API_KEY=...
+
+node_name  = "casper-demo"
+ssh_pubkey = "ssh-ed25519 AAAA... ops@caspervpn"
+
+entry_region = "hel1"
+entry_size   = "cx22"
+
+exit_region = "waw"
+exit_size   = "vc2-1c-1gb"

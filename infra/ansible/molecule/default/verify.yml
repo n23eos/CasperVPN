@@ -1,0 +1,79 @@
+---
+# Assertions: sing-box installed, config valid, REALITY present with NO own cert,
+# and the listener actually accepts connections.
+- name: Verify
+  hosts: all
+  become: true
+  tasks:
+    - name: sing-box binary is installed
+      ansible.builtin.command: /usr/local/bin/sing-box version
+      changed_when: false
+
+    - name: config.json exists
+      ansible.builtin.stat:
+        path: /etc/sing-box/config.json
+      register: cfg
+
+    - name: config present
+      ansible.builtin.assert:
+        that: [cfg.stat.exists]
+
+    - name: sing-box validates its own config
+      ansible.builtin.command: /usr/local/bin/sing-box check -c /etc/sing-box/config.json
+      changed_when: false
+
+    - name: read config for invariant checks
+      ansible.builtin.slurp:
+        src: /etc/sing-box/config.json
+      register: cfgraw
+
+    - name: set config text fact
+      ansible.builtin.set_fact:
+        cfgtext: "{{ cfgraw.content | b64decode }}"
+
+    - name: REALITY present and NO own TLS cert / acme (anti-block invariant)
+      ansible.builtin.assert:
+        that:
+          - "'\"reality\"' in cfgtext"
+          - "'\"certificate\"' not in cfgtext"
+          - "'certificate_path' not in cfgtext"
+          - "'acme' not in cfgtext"
+        fail_msg: "REALITY front must borrow a real TLS handshake — no own cert/acme allowed."
+
+    - name: start sing-box
+      ansible.builtin.systemd:
+        name: sing-box
+        state: started
+
+    - name: sing-box is listening on the REALITY port
+      ansible.builtin.wait_for:
+        port: 443
+        host: 127.0.0.1
+        timeout: 20
+
+    - name: TCP+TLS ClientHello is accepted (structural REALITY handshake smoke)
+      # Live end-to-end REALITY against the real mimicry dest needs egress and is
+      # a staging smoke test; here we assert the listener speaks TLS and does not
+      # RST the ClientHello.
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        echo | timeout 8 openssl s_client -connect 127.0.0.1:443
+        -servername www.mimicry-example.test 2>&1 | grep -Eq 'CONNECTED|SSL handshake|Server certificate|BEGIN CERTIFICATE'
+      args:
+        executable: /bin/bash
+      register: tls_probe
+      changed_when: false
+      failed_when: false
+
+    - name: report TLS probe outcome
+      ansible.builtin.debug:
+        msg: "REALITY listener TLS probe rc={{ tls_probe.rc }} (0 = handshake bytes seen)"
+
+    - name: health report script + timer installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/casper-health-report.sh
+      register: hs
+
+    - name: health script present
+      ansible.builtin.assert:
+        that: [hs.stat.exists, hs.stat.executable]

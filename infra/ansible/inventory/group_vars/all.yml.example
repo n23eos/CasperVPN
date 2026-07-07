@@ -1,0 +1,43 @@
+---
+# Fleet-wide defaults (EXAMPLE). Copy to all.yml and fill from your secret
+# manager / control-plane. NOTHING here is a real mimicry domain or node IP —
+# the mimicry target is chosen per deploy from docs/mimicry-domains.md and the
+# actual secrets come from vault/env, not from committed files.
+
+# sing-box core
+singbox_version: "1.11.4"
+
+# telemetry + control-plane endpoints (your infra; not mimicry)
+telemetry_ingest_url: "http://telemetry:8085"
+control_plane_url: "http://control-plane:8081"
+
+# health reporter
+health_region: "RU-MOW"       # coarse geo tag for FieldSignal
+node_agent_version: "infra-0.1.0"
+
+# ssh
+ssh_port: 22
+
+# transports: see roles/transports/defaults/main.yml for the full schema.
+# Override only what you need. Mimicry values MUST be provided (empty by default).
+transports:
+  vless_reality:
+    enabled: true
+    port: 443
+    server_names: []          # e.g. ["www.some-major-cdn.example"] — pick per docs/mimicry-domains.md
+    handshake_server: ""      # real upstream host:port stolen for the TLS handshake
+    handshake_port: 443
+    private_key: ""           # server REALITY x25519 private key (SECRET — from vault)
+    short_ids: []             # pool of allowed short-ids; per-user id appended by control-plane
+  hysteria2:
+    enabled: false
+    port: 8443
+  amneziawg:
+    enabled: false
+    port: 51820
+  shadowsocks_2022:
+    enabled: false
+    port: 8388
+
+# per-user REALITY users (uuid + optional personal short_id), filled by control-plane
+reality_users: []             # e.g. [{uuid: "....", short_id: "ab12"}]

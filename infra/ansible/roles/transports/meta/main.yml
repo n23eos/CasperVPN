@@ -1,0 +1,4 @@
+---
+# transports needs the sing-box binary + systemd unit + restart handler.
+dependencies:
+  - role: singbox

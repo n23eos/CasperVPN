@@ -1,0 +1,15 @@
+---
+# Host-level nftables baseline (not a cloud firewall API — keeps role modules
+# provider-agnostic and makes the exit allow-list identical on every cloud).
+ssh_port: 22
+node_role: "entry"          # entry | exit
+
+# entry: public mimicry transports
+open_tcp_ports: [22, 443]
+open_udp_ports: []
+
+# exit: ingress ONLY from the paired entry (allowed_entry_ip). If left empty the
+# role reads /etc/caspervpn/allowed_entry_ip written by cloud-init.
+allowed_entry_ip: ""
+exit_ports_tcp: [8388]
+exit_ports_udp: []

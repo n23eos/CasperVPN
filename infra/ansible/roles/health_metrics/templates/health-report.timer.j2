@@ -1,0 +1,10 @@
+[Unit]
+Description=Run CasperVPN health report every {{ health_interval }}
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec={{ health_interval }}
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

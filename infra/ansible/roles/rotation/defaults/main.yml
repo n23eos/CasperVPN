@@ -1,0 +1,6 @@
+---
+# Re-key the node's REALITY server keypair (and rotate the short-id pool). The
+# node-level rotation is what makes regeneration cheaper than detection: a fresh
+# key + fresh IP (new ephemeral entry) costs less than the censor finding it.
+singbox_bin: "/usr/local/bin/sing-box"
+reality_pub_artifact: "/etc/caspervpn/reality.pub"

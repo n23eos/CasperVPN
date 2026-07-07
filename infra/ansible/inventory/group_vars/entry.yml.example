@@ -1,0 +1,9 @@
+---
+# ENTRY group (EXAMPLE). The entry runs the public mimicry transports.
+node_role: "entry"
+
+# Public listeners the firewall opens (derived from enabled transports).
+# vless-reality on TCP/443 is the TCP fallback that MUST exist whenever
+# hysteria2 (UDP-only) is enabled.
+open_tcp_ports: [22, 443]
+open_udp_ports: [8443, 51820]

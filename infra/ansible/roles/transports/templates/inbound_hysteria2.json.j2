@@ -1,0 +1,26 @@
+{# Hysteria2 over QUIC/HTTP-3 for mobile/lossy nets. UDP-only — the mandatory
+   TCP fallback is vless-reality (enforced in tasks/main.yml). masquerade makes
+   unauthenticated probes see a real website. QUIC needs its own TLS cert (this
+   is expected for hysteria2 and is separate from the REALITY no-cert rule). #}
+{
+      "type": "hysteria2",
+      "tag": "{{ transports.hysteria2.tag }}",
+      "listen": "::",
+      "listen_port": {{ transports.hysteria2.port }},
+      "users": [
+        { "password": "{{ transports.hysteria2.password }}" }
+      ],
+      "obfs": {
+        "type": "{{ transports.hysteria2.obfs_type }}",
+        "password": "{{ transports.hysteria2.obfs_password }}"
+      },
+{% if transports.hysteria2.masquerade_url %}
+      "masquerade": "{{ transports.hysteria2.masquerade_url }}",
+{% endif %}
+      "tls": {
+        "enabled": true,
+        "alpn": ["h3"],
+        "certificate_path": "{{ transports.hysteria2.tls_cert_path }}",
+        "key_path": "{{ transports.hysteria2.tls_key_path }}"
+      }
+}

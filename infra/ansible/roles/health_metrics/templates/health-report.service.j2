@@ -1,0 +1,8 @@
+[Unit]
+Description=CasperVPN node health report (FieldSignal -> telemetry ingest)
+After=network-online.target sing-box.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ health_script_path }}

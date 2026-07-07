@@ -1,0 +1,10 @@
+---
+# Emits anonymous FieldSignal batches to the telemetry ingest (contracts:
+# FieldSignal, telemetry OpenAPI POST /v1/signals). No PII — node/transport only.
+telemetry_ingest_url: "http://telemetry:8085"
+health_region: "RU-MOW"          # coarse geo tag (FieldSignal.region)
+node_agent_version: "infra-0.1.0"
+health_interval: "60s"
+health_script_path: "/usr/local/bin/casper-health-report.sh"
+# node_id is normally set per-host in inventory; falls back to /etc/caspervpn/node_id
+node_id: ""
