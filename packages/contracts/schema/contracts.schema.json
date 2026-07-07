@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://caspervpn.dev/schema/contracts.schema.json",
+  "title": "CasperVPN Contracts",
+  "description": "Canonical JSON Schema for the frozen cross-service types. Mirrors packages/contracts/*.go. Wire values are stable; changing an enum value or removing a field is a breaking change. See docs/contracts.md.",
+  "$defs": {
+    "NodeStatus": {
+      "type": "string",
+      "enum": ["provisioning", "active", "degraded", "blocked", "draining", "retired"]
+    },
+    "NodeRole": {
+      "type": "string",
+      "enum": ["entry", "exit", "combined"]
+    },
+    "TransportType": {
+      "type": "string",
+      "enum": ["vless-reality", "amneziawg", "hysteria2", "shadowsocks-2022"]
+    },
+    "TransportVersion": {
+      "type": "string",
+      "enum": ["v1"]
+    },
+    "UserStatus": {
+      "type": "string",
+      "enum": ["active", "suspended", "expired", "banned"]
+    },
+    "SubscriptionStatus": {
+      "type": "string",
+      "enum": ["trialing", "active", "past_due", "canceled", "expired"]
+    },
+    "SubscriptionPlan": {
+      "type": "string",
+      "enum": ["basic", "unlimited"]
+    },
+    "SignalType": {
+      "type": "string",
+      "enum": ["ok", "reset", "timeout", "dpi_block", "probe", "throttle", "dns_poison", "handshake_fail"]
+    },
+    "HealthStatus": {
+      "type": "string",
+      "enum": ["healthy", "degraded", "blocked", "unreachable"]
+    },
+    "DeliveryChannel": {
+      "type": "string",
+      "enum": ["https", "doh", "telegram", "github_raw", "dns_txt"]
+    },
+    "Platform": {
+      "type": "string",
+      "enum": ["android", "ios", "windows", "macos", "linux"]
+    },
+
+    "VlessRealityParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server_names", "dest", "public_key", "short_ids", "flow"],
+      "properties": {
+        "server_names": { "type": "array", "items": { "type": "string" }, "description": "Mimicry SNI(s). Config-supplied, never hardcoded." },
+        "dest": { "type": "string", "description": "Real upstream host:port stolen for the handshake." },
+        "public_key": { "type": "string", "description": "Server REALITY x25519 public key." },
+        "short_ids": { "type": "array", "items": { "type": "string" }, "description": "Pool of allowed short-ids; each user is assigned one (per-user isolation)." },
+        "flow": { "type": "string", "description": "e.g. xtls-rprx-vision" },
+        "fingerprint": { "type": "string", "description": "uTLS client fingerprint, e.g. chrome" },
+        "spider_x": { "type": "string" }
+      }
+    },
+    "AmneziaWGParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["public_key", "jc", "jmin", "jmax", "s1", "s2", "h1", "h2", "h3", "h4"],
+      "properties": {
+        "public_key": { "type": "string" },
+        "mtu": { "type": "integer" },
+        "jc": { "type": "integer", "description": "junk packet count" },
+        "jmin": { "type": "integer" },
+        "jmax": { "type": "integer" },
+        "s1": { "type": "integer" },
+        "s2": { "type": "integer" },
+        "h1": { "type": "integer" },
+        "h2": { "type": "integer" },
+        "h3": { "type": "integer" },
+        "h4": { "type": "integer" }
+      }
+    },
+    "Hysteria2Params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["password", "sni"],
+      "properties": {
+        "obfs": { "type": "string" },
+        "obfs_password": { "type": "string" },
+        "password": { "type": "string" },
+        "sni": { "type": "string", "description": "Mimicry SNI (config)." },
+        "up_mbps": { "type": "integer" },
+        "down_mbps": { "type": "integer" },
+        "insecure": { "type": "boolean" }
+      }
+    },
+    "Shadowsocks2022Params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "psk"],
+      "properties": {
+        "method": { "type": "string", "description": "e.g. 2022-blake3-aes-256-gcm" },
+        "psk": { "type": "string", "description": "Server pre-shared key (base64)." }
+      }
+    },
+
+    "Transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "type", "version", "port", "enabled", "priority"],
+      "properties": {
+        "tag": { "type": "string" },
+        "type": { "$ref": "#/$defs/TransportType" },
+        "version": { "$ref": "#/$defs/TransportVersion" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "enabled": { "type": "boolean" },
+        "priority": { "type": "integer", "description": "Lower = tried earlier in the fallback cascade." },
+        "vless_reality": { "$ref": "#/$defs/VlessRealityParams" },
+        "amneziawg": { "$ref": "#/$defs/AmneziaWGParams" },
+        "hysteria2": { "$ref": "#/$defs/Hysteria2Params" },
+        "shadowsocks_2022": { "$ref": "#/$defs/Shadowsocks2022Params" }
+      },
+      "description": "Tagged union: exactly one variant object is present, matching type.",
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "vless-reality" } } }, "then": { "required": ["vless_reality"] } },
+        { "if": { "properties": { "type": { "const": "amneziawg" } } }, "then": { "required": ["amneziawg"] } },
+        { "if": { "properties": { "type": { "const": "hysteria2" } } }, "then": { "required": ["hysteria2"] } },
+        { "if": { "properties": { "type": { "const": "shadowsocks-2022" } } }, "then": { "required": ["shadowsocks_2022"] } }
+      ]
+    },
+
+    "Node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "status", "provider", "cloud", "region", "ephemeral_entry_ip", "transports", "created_at"],
+      "properties": {
+        "id": { "type": "string" },
+        "role": { "$ref": "#/$defs/NodeRole" },
+        "status": { "$ref": "#/$defs/NodeStatus" },
+        "entry_node_id": { "type": "string", "description": "Set only on exit nodes; pairs to the entry (entry != exit)." },
+        "provider": { "type": "string" },
+        "cloud": { "type": "string" },
+        "region": { "type": "string" },
+        "entry_ip": { "type": "string" },
+        "ephemeral_entry_ip": { "type": "boolean", "description": "Entry IP is disposable and rotated aggressively." },
+        "transports": { "type": "array", "items": { "$ref": "#/$defs/Transport" } },
+        "capacity_users": { "type": "integer" },
+        "rotate_after": { "type": "string", "format": "date-time", "description": "Instant past which the node should be rotated out." },
+        "created_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "allOf": [
+        { "if": { "properties": { "role": { "const": "exit" } } }, "then": { "required": ["entry_node_id"] } }
+      ]
+    },
+
+    "User": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "reality_short_id", "uuid", "device_limit", "quota_bytes", "used_bytes", "created_at", "updated_at"],
+      "properties": {
+        "id": { "type": "string" },
+        "telegram_id": { "type": "integer" },
+        "email": { "type": "string" },
+        "status": { "$ref": "#/$defs/UserStatus" },
+        "reality_short_id": { "type": "string", "description": "User's own REALITY short-id (per-user isolation)." },
+        "uuid": { "type": "string", "description": "User's own VLESS UUID." },
+        "private_key": { "type": "string", "description": "Server-side secret; omitted from client-facing payloads." },
+        "subscription_id": { "type": "string" },
+        "device_limit": { "type": "integer", "minimum": 0 },
+        "quota_bytes": { "type": "integer", "minimum": 0, "description": "0 = unlimited." },
+        "used_bytes": { "type": "integer", "minimum": 0 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "Subscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "user_id", "plan", "status", "token", "traffic_limit_bytes", "speed_limit_mbps", "device_limit", "starts_at", "created_at", "updated_at"],
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "plan": { "$ref": "#/$defs/SubscriptionPlan" },
+        "status": { "$ref": "#/$defs/SubscriptionStatus" },
+        "token": { "type": "string", "description": "Opaque secret in the subscription URL; rotatable." },
+        "traffic_limit_bytes": { "type": "integer", "minimum": 0, "description": "0 = unlimited." },
+        "speed_limit_mbps": { "type": "integer", "minimum": 0 },
+        "device_limit": { "type": "integer", "minimum": 0 },
+        "starts_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "FieldSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Anonymous client observation. MUST carry no user identity; geography is coarse.",
+      "required": ["signal_id", "node_id", "transport_type", "transport_version", "region", "signal_type", "success", "observed_at"],
+      "properties": {
+        "signal_id": { "type": "string", "description": "Client-generated non-identifying dedup key." },
+        "node_id": { "type": "string" },
+        "transport_type": { "$ref": "#/$defs/TransportType" },
+        "transport_version": { "$ref": "#/$defs/TransportVersion" },
+        "region": { "type": "string", "description": "Coarse geo, e.g. RU-MOW." },
+        "asn": { "type": "integer" },
+        "isp": { "type": "string" },
+        "signal_type": { "$ref": "#/$defs/SignalType" },
+        "success": { "type": "boolean" },
+        "rtt_ms": { "type": "integer" },
+        "loss_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "client_version": { "type": "string" },
+        "platform": { "$ref": "#/$defs/Platform" },
+        "observed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "HealthEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Orchestrator's authoritative node verdict from active probing.",
+      "required": ["node_id", "status", "probe_source", "observed_at"],
+      "properties": {
+        "node_id": { "type": "string" },
+        "status": { "$ref": "#/$defs/HealthStatus" },
+        "probe_source": { "type": "string", "description": "Where the probe ran, e.g. ru-probe-1." },
+        "blocked_from_regions": { "type": "array", "items": { "type": "string" } },
+        "latency_ms": { "type": "integer" },
+        "detail": { "type": "string" },
+        "observed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "SubscriptionBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Canonical input to the three subscription renderings (base64 URI list, sing-box JSON, Clash-Meta YAML).",
+      "required": ["user", "nodes", "generated_at"],
+      "properties": {
+        "user": { "$ref": "#/$defs/User" },
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/Node" } },
+        "generated_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

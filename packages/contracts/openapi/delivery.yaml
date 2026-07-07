@@ -1,0 +1,79 @@
+openapi: 3.1.0
+info:
+  title: CasperVPN Delivery API
+  version: 0.1.0
+  description: >
+    Multi-channel subscription delivery — routes the same subscription payload
+    over redundant channels (HTTPS, DoH, Telegram, GitHub raw, DNS TXT) so a
+    blocked primary domain does not cut off config delivery. FROZEN INTERFACE —
+    signatures only. Owned by the delivery team.
+servers:
+  - url: http://delivery:8083
+    description: dev (docker-compose)
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      operationId: health
+      responses:
+        "200": { description: OK }
+
+  /v1/channels:
+    get:
+      summary: List configured delivery channels and their health
+      operationId: listChannels
+      responses:
+        "200":
+          description: Channels
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+    post:
+      summary: Register a delivery channel
+      operationId: createChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Channel" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Channel" } } } }
+        "409": { description: Channel already exists }
+
+  /d/{channel}/{token}:
+    get:
+      summary: Fetch a subscription via a specific delivery channel
+      description: Mirrors the subscription payload; encoding may vary by channel (e.g. DNS TXT chunks).
+      operationId: fetchViaChannel
+      parameters:
+        - { in: path, name: channel, required: true, schema: { $ref: "../schema/contracts.schema.json#/$defs/DeliveryChannel" } }
+        - { in: path, name: token, required: true, schema: { type: string } }
+        - { in: query, name: format, schema: { type: string, enum: [base64, singbox, clash], default: base64 } }
+      responses:
+        "200":
+          description: Subscription payload delivered over the channel
+          content:
+            text/plain: { schema: { type: string } }
+            application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/SubscriptionBundle" } }
+            application/yaml: { schema: { type: string } }
+        "401": { description: Unknown or revoked token }
+        "404": { description: Channel or subscription not found }
+        "503": { description: Channel temporarily unavailable }
+components:
+  schemas:
+    Channel:
+      type: object
+      required: [kind, enabled]
+      properties:
+        id: { type: string }
+        kind: { $ref: "../schema/contracts.schema.json#/$defs/DeliveryChannel" }
+        enabled: { type: boolean }
+        endpoint: { type: string, description: Channel-specific address (bot handle, repo raw base, DoH URL, ...). Config-supplied, never hardcoded. }
+        priority: { type: integer, description: Lower = preferred }
+        healthy: { type: boolean, readOnly: true }

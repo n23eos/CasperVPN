@@ -1,0 +1,36 @@
+# golangci-lint config for the CasperVPN monorepo.
+# Conservative, skeleton-friendly set; tighten per service as logic lands.
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+    - gofmt
+    - goimports
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/caspervpn
+  revive:
+    rules:
+      - name: exported
+        arguments: ["checkPrivateReceivers"]
+
+issues:
+  exclude-rules:
+    # Stub main files intentionally minimal during the scaffolding wave.
+    - path: cmd/.*/main\.go
+      linters:
+        - revive
+  max-issues-per-linter: 0
+  max-same-issues: 0

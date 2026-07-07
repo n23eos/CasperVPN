@@ -1,0 +1,68 @@
+openapi: 3.1.0
+info:
+  title: CasperVPN Subscription API
+  version: 0.1.0
+  description: >
+    Public per-user subscription delivery. One node set rendered three ways
+    (base64 URI list, sing-box JSON, Clash-Meta YAML), compatible with Happ and
+    sing-box. FROZEN INTERFACE — signatures only. Owned by the subscription team.
+servers:
+  - url: http://subscription:8082
+    description: dev (docker-compose)
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      operationId: health
+      responses:
+        "200": { description: OK }
+
+  /sub/{token}:
+    get:
+      summary: Fetch a user's subscription in the requested representation
+      description: >
+        Format is chosen by the `format` query param, else by the Accept header,
+        else defaults to base64. Happ/sing-box import the base64 form directly.
+      operationId: getSubscription
+      parameters:
+        - { in: path, name: token, required: true, schema: { type: string }, description: Opaque subscription token }
+        - in: query
+          name: format
+          required: false
+          schema: { type: string, enum: [base64, singbox, clash], default: base64 }
+        - { in: header, name: User-Agent, required: false, schema: { type: string }, description: Used to auto-pick a format for known clients }
+      responses:
+        "200":
+          description: Subscription payload in the negotiated format
+          headers:
+            Subscription-Userinfo:
+              schema: { type: string }
+              description: "upload=; download=; total=; expire= (traffic/quota hints for clients)"
+            Profile-Update-Interval:
+              schema: { type: integer }
+              description: Suggested refresh interval in hours
+          content:
+            text/plain:
+              schema: { type: string, description: Base64-encoded newline URI list (format=base64) }
+            application/json:
+              schema: { $ref: "../schema/contracts.schema.json#/$defs/SubscriptionBundle" }
+            application/yaml:
+              schema: { type: string, description: Clash-Meta proxies YAML (format=clash) }
+        "401": { description: Unknown or revoked token }
+        "404": { description: No active subscription for token }
+        "410": { description: Subscription expired }
+
+  /sub/{token}/nodes:
+    get:
+      summary: Fetch the raw node set behind a subscription (structured)
+      operationId: getSubscriptionNodes
+      parameters:
+        - { in: path, name: token, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The canonical bundle used to render all formats
+          content:
+            application/json:
+              schema: { $ref: "../schema/contracts.schema.json#/$defs/SubscriptionBundle" }
+        "401": { description: Unknown or revoked token }
+        "404": { description: No active subscription for token }
