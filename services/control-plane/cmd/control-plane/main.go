@@ -1,39 +1,99 @@
-// Command control-plane is a scaffolding stub for the control-plane subsystem
-// (node registry, per-user REALITY id issuance, config assembly). It serves only
-// /healthz today. Real behavior is built against the frozen contracts package by
-// the control-plane team. See CLAUDE.md and docs/contracts.md.
+// Command control-plane is the CasperVPN control plane: the node registry,
+// per-user secret issuance, subscription-set assembly, and the block→rebuild
+// feedback loop. It serves the frozen control-plane OpenAPI plus additive
+// internal endpoints. See docs/control-plane.md.
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/control-plane/internal/adapters/httpapi"
+	"github.com/caspervpn/control-plane/internal/adapters/postgres"
+	"github.com/caspervpn/control-plane/internal/adapters/rebuild"
+	"github.com/caspervpn/control-plane/internal/authz"
+	"github.com/caspervpn/control-plane/internal/config"
+	"github.com/caspervpn/control-plane/internal/migrate"
+	"github.com/caspervpn/control-plane/internal/seed"
+	"github.com/caspervpn/control-plane/internal/usecase"
 )
 
-const serviceName = "control-plane"
-
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthz)
+	logger := log.New(os.Stdout, "control-plane ", log.LstdFlags|log.Lmsgprefix)
 
-	addr := ":" + port()
-	log.Printf("%s stub listening on %s (contracts %s)", serviceName, addr, contracts.TransportVersionV1)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("%s: %v", serviceName, err)
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Fatalf("config: %v", err)
 	}
-}
 
-func healthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"ok","service":"` + serviceName + `"}`))
-}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-func port() string {
-	if p := os.Getenv("PORT"); p != "" {
-		return p
+	pool, err := postgres.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Fatalf("db: %v", err)
 	}
-	return "8080"
+	defer pool.Close()
+
+	if err := migrate.Up(ctx, pool); err != nil {
+		logger.Fatalf("migrate: %v", err)
+	}
+
+	// Repositories.
+	nodeStore := postgres.NewNodeStore(pool)
+	userStore := postgres.NewUserStore(pool)
+	subStore := postgres.NewSubscriptionStore(pool)
+	rotStore := postgres.NewRotationStore(pool)
+	setStore := postgres.NewSetStore(pool)
+	signalStore := postgres.NewSignalStore(pool)
+
+	// Usecases + async rebuild queue (the "issue a fresh config" loop).
+	bundleSvc := usecase.NewBundleService(userStore, nodeStore, setStore)
+	queue := rebuild.New(setStore, bundleSvc, cfg.RebuildBuffer, cfg.RebuildWorkers, logger)
+	queue.Start(ctx)
+
+	nodeSvc := usecase.NewNodeService(nodeStore, rotStore, queue)
+	userSvc := usecase.NewUserService(userStore, rotStore, queue)
+	subSvc := usecase.NewSubscriptionService(subStore, userStore)
+	signalSvc := usecase.NewSignalService(nodeStore, signalStore, nodeSvc)
+
+	if os.Getenv("SEED") == "true" {
+		if err := seed.Run(ctx, seed.Services{Nodes: nodeSvc, Users: userSvc, Subs: subSvc, Bundles: bundleSvc}); err != nil {
+			logger.Printf("seed: %v", err)
+		} else {
+			logger.Printf("seed: dev data loaded")
+		}
+	}
+
+	tokens := authz.NewTokenStore(cfg.Tokens)
+	if cfg.Env == "dev" {
+		logger.Printf("WARNING: dev env; ensure CONTROL_PLANE_TOKENS is set for non-local use")
+	}
+	handler := httpapi.New(nodeSvc, userSvc, subSvc, bundleSvc, signalSvc, tokens)
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           handler.Router(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		logger.Printf("listening on %s (env=%s)", srv.Addr, cfg.Env)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatalf("serve: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Printf("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Printf("graceful shutdown failed: %v", err)
+	}
 }
