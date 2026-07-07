@@ -179,6 +179,63 @@ Shadowsocks-2022 (AEAD-2022), лёгкий запасной транспорт. 
 
 ---
 
+### SubscriptionPatch (Wave-2, аддитивно)
+
+Тело `PATCH /v1/subscriptions/{id}` — **истинный partial**: непереданные поля не
+трогаются. Разблокирует активацию/продление из billing.
+
+| Поле (JSON) | Тип | Обяз. | Описание |
+|-------------|-----|:----:|----------|
+| `status` | `SubscriptionStatus` | — | перевод состояния (settle → `active`, грейс вышел → `expired`) |
+| `expires_at` | date-time | — | сдвиг оплаченного срока (продление) |
+
+Смежные аддитивные операции (control-plane OpenAPI):
+`POST /v1/subscriptions/{id}/rotate-token` (новый `token` в ответе ровно один раз,
+старый отзывается) и `POST /v1/subscriptions/{id}/cancel` (`status=canceled`).
+
+---
+
+## Recommendations (петля telemetry → orchestrator, Wave-2, аддитивно)
+
+Каноническая форма выдачи `GET /v1/recommendations` telemetry. Оркестратор
+потребляет её для ротации нод и приоритизации транспортов. Существующие
+`FieldSignal`/`HealthEvent` не тронуты.
+
+Enum'ы: `RecommendationAction` = `mark_node_blocked` \| `prioritize_transport`;
+`RecommendationConfidence` = `authoritative` (проба оркестратора) \|
+`corroborated` (независимые полевые источники сходятся).
+
+### NodeBlock
+
+| Поле (JSON) | Тип | Обяз. | Описание |
+|-------------|-----|:----:|----------|
+| `action` | `RecommendationAction` | ✔ | всегда `mark_node_blocked` |
+| `node_id` | string | ✔ | нода |
+| `regions` | []string | ✔ | регионы, где нода выглядит заблокированной |
+| `confidence` | `RecommendationConfidence` | ✔ | authoritative выше corroborated |
+| `reason` | string | — | человекочитаемое объяснение |
+
+### RegionPriority
+
+| Поле (JSON) | Тип | Обяз. | Описание |
+|-------------|-----|:----:|----------|
+| `action` | `RecommendationAction` | ✔ | всегда `prioritize_transport` |
+| `region` | string | ✔ | регион |
+| `recommended_transport` | `TransportType` \| `""` | — | пусто = все транспорты региона деградировали |
+| `ranked` | `[]TransportRank` | — | полный рейтинг (`transport`, `score` 0..1, `dead`, `sources`) |
+| `reason` | string | — | |
+
+### Recommendations (конверт)
+
+| Поле (JSON) | Тип | Обяз. | Описание |
+|-------------|-----|:----:|----------|
+| `generated_at` | date-time | ✔ | момент оценки |
+| `window_seconds` | int | ✔ | окно оценки |
+| `node_blocks` | `[]NodeBlock` \| null | — | |
+| `region_priorities` | `[]RegionPriority` \| null | — | |
+
+---
+
 ## FieldSignal
 
 Одно **анонимное** наблюдение клиента — топливо петли «где что заблокировали».
@@ -256,3 +313,12 @@ sing-box outbounds отдаются как объекты (`type: vless|hysteria
 3. Go и JSON Schema обязаны совпадать; расхождение — баг контракта.
 4. Секреты (`private_key`, серверные PSK/пароли) **никогда** не попадают в
    клиентские/публичные payload’ы, только в серверные пути.
+
+---
+
+## Журнал изменений после заморозки
+
+| Дата | Изменение | Характер |
+|------|-----------|----------|
+| 2026-07-07 | `SubscriptionPatch` + `PATCH /v1/subscriptions/{id}`, `POST …/rotate-token`, `POST …/cancel` (control-plane OpenAPI) | аддитивно (TZ-contract-changes §1–2) |
+| 2026-07-07 | `RecommendationAction`, `RecommendationConfidence`, `NodeBlock`, `TransportRank`, `RegionPriority`, `Recommendations` + `GET /v1/recommendations` (telemetry OpenAPI) | аддитивно (TZ-contract-changes §3); форма зеркалит фактический wire telemetry — сервису telemetry мигрировать локальные типы на контрактные при следующей правке |
