@@ -36,7 +36,11 @@ services:
       args: { SERVICE: control-plane }
     environment:
       PORT: 8081
+      ENV: dev
+      SEED: "true"
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+      # Dev-only service tokens (token:role). NEVER reuse in prod — see rules/security.md.
+      CONTROL_PLANE_TOKENS: ${CONTROL_PLANE_TOKENS:-dev-admin-token:admin,dev-orchestrator-token:orchestrator,dev-telemetry-token:telemetry,dev-subscription-token:subscription,dev-billing-token:billing}
     ports: ["8081:8081"]
 
   subscription:
