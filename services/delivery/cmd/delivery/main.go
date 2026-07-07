@@ -1,39 +1,41 @@
-// Command delivery is a scaffolding stub for the delivery subsystem
-// (multi-channel subscription delivery: HTTPS, DoH, Telegram, GitHub raw, DNS
-// TXT — routing around a blocked primary domain). It serves only /healthz
-// today. See CLAUDE.md and docs/contracts.md.
+// Command delivery is the multi-channel subscription delivery service: it hands
+// the SAME signed artifact (subscription payload, or an encrypted directory
+// pointer) over several channels of different nature — messenger (Telegram/Max),
+// DNS (DoH + TXT), git-raw mirrors, and a steganographic carrier — so a blocked
+// primary domain never cuts off config delivery. Every artifact is Ed25519-signed
+// and the client MUST verify it. See services/delivery/docs/delivery.md.
 package main
 
 import (
+	"encoding/base64"
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/delivery/internal/app"
+	"github.com/caspervpn/delivery/internal/config"
 )
 
 const serviceName = "delivery"
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthz)
+	cfg := config.Load()
+	a, err := app.Build(cfg)
+	if err != nil {
+		log.Fatalf("%s: build: %v", serviceName, err)
+	}
 
-	addr := ":" + port()
-	log.Printf("%s stub listening on %s (contracts %s)", serviceName, addr, contracts.TransportVersionV1)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if a.EphemeralKeys {
+		log.Printf("%s: WARNING ephemeral signing/seal keys generated (dev only). "+
+			"Set DELIVERY_SIGN_SEED and DELIVERY_SEAL_KEY in production.", serviceName)
+	}
+	log.Printf("%s: signing key id=%q public=%s", serviceName,
+		a.Signer.KeyID(), base64.StdEncoding.EncodeToString(a.Signer.PublicKey()))
+	log.Printf("%s: channels registered: %v", serviceName, a.Registry.Kinds())
+
+	addr := ":" + cfg.Port
+	log.Printf("%s listening on %s (contracts %s)", serviceName, addr, contracts.TransportVersionV1)
+	if err := http.ListenAndServe(addr, a.Handler); err != nil {
 		log.Fatalf("%s: %v", serviceName, err)
 	}
-}
-
-func healthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"ok","service":"` + serviceName + `"}`))
-}
-
-func port() string {
-	if p := os.Getenv("PORT"); p != "" {
-		return p
-	}
-	return "8080"
 }
