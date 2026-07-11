@@ -75,7 +75,7 @@ gofmt чист, fuzz 1.9M прогонов без падений, end-to-end с�
 cmd/subscription/main.go        wiring + graceful shutdown
 cmd/gencheck/                   генератор конфига для sing-box check
 internal/config/                env + RoutingPolicy (routing.ru.json)
-internal/controlplane/          порт Provider/TokenIndex + HTTP + memory
+internal/controlplane/          порт Provider/TokenIndex + HTTP + memory + postgres TokenIndex
 internal/resolve/               token → bundle (валидация 401/404/410)
 internal/personalize/           фильтры + инвариант диверсити
 internal/render/                негоциация + обёртка рендереров + routing + happ

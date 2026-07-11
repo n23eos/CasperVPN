@@ -1,13 +1,13 @@
 # ТЗ — Отзыв subscription-токена (сшить revoke + инвалидация кэша)
 
-> **Статус 2026-07-07: реализовано, кроме §4.** CP: порт `SubscriptionRevoker`
+> **Статус 2026-07-11: реализовано.** CP: порт `SubscriptionRevoker`
 > + HTTP-адаптер `subnotify` (env `SUBSCRIPTION_INTERNAL_URL`/`_TOKEN`, no-op
 > если не задан), хуки в users/subscriptions usecase, эндпоинты
 > `PATCH /v1/subscriptions/{id}`, `rotate-token`, `cancel`. Subscription:
 > `/internal/revoke` принимает `token|user_id|subscription_id`, индекс хранит
-> SHA-256-хеши, кэш сбрасывается. §4 (durable-индекс в Postgres) — за
-> `TZ-persistence.md`. ⚠️ Тесты написаны, но прогнать `make test` в среде
-> реализации было нельзя (нет Go) — прогнать перед мержем.
+> SHA-256-хеши, кэш сбрасывается. §4 закрыт: subscription `TokenIndex` имеет
+> Postgres backend по `DATABASE_URL`. Локально зелёные `make build`, `make vet`,
+> `make test`.
 
 **Приоритет:** HIGH (аудит B2). **Зона:** `services/control-plane`,
 `services/subscription`. Часть слоя интеграции (`TZ-integration.md`).
@@ -23,8 +23,9 @@
   токенов subscription. Бан ловится только в `resolve.go` при промахе кэша;
   **закэшированный ответ отдаётся до истечения TTL** (кэш при бане не
   инвалидируется).
-- Индекс токенов в subscription — всегда in-memory (`memStore`, даже в prod),
-  plaintext-ключами, теряется при рестарте (см. также `TZ-persistence.md`).
+- Исторически индекс токенов в subscription был in-memory (`memStore`) и терялся
+  при рестарте. Сейчас есть Postgres backend по `DATABASE_URL`, хранящий только
+  SHA-256-хеши токенов (см. также `TZ-persistence.md`).
 
 **Последствие:** утёкшую/скомпрометированную ссылку нельзя быстро отозвать;
 забаненный юзер продолжает получать конфиг до TTL.
@@ -58,8 +59,8 @@ subscription и инвалидирует его кэш.
 
 ### 4. Персистентность индекса
 
-Индекс токенов → durable (Postgres), по хешу. Иначе отзыв не переживает рестарт.
-Координируется с `TZ-persistence.md`.
+✅ Закрыто: индекс токенов → durable (Postgres), по хешу. Схема применяется
+отдельной миграцией, не на старте приложения. Координируется с `TZ-persistence.md`.
 
 ## Критерии приёмки
 

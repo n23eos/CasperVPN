@@ -74,7 +74,8 @@ func (s *fakeStmt) Exec(args []driver.Value) (driver.Result, error) {
 	return driver.RowsAffected(s.db.affected), nil
 }
 
-func (s *fakeStmt) Query(_ []driver.Value) (driver.Rows, error) {
+func (s *fakeStmt) Query(args []driver.Value) (driver.Rows, error) {
+	s.db.execLog = append(s.db.execLog, fakeExec{query: s.query, args: args})
 	return &fakeRows{cols: []string{"user_id", "subscription_id"}, data: s.db.rows}, nil
 }
 
@@ -117,9 +118,18 @@ func TestPostgresLookupHashesAndScans(t *testing.T) {
 	if uid != "user-1" || sid != "sub-1" {
 		t.Fatalf("scan wrong: %q %q", uid, sid)
 	}
-	// The query must have received the HASH, never the plaintext token.
-	if len(fdb.execLog) != 0 {
-		t.Fatalf("lookup should not Exec")
+	if len(fdb.execLog) != 1 {
+		t.Fatalf("query count = %d, want 1", len(fdb.execLog))
+	}
+	args := fdb.execLog[0].args
+	if len(args) != 1 {
+		t.Fatalf("arg count = %d, want 1", len(args))
+	}
+	if got := args[0].(string); got != HashToken("plaintext-token") {
+		t.Fatalf("lookup must query by token hash, got %q", got)
+	}
+	if got := args[0].(string); strings.Contains(got, "plaintext-token") {
+		t.Fatalf("plaintext token leaked into lookup args: %q", got)
 	}
 }
 
