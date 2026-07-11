@@ -30,6 +30,11 @@ type Config struct {
 	// read/fetch. Operator-supplied via env; never hardcoded.
 	AdminToken string
 
+	// ArtifactMaxAge enables client-side anti-rollback in the resolver: a
+	// verified-but-stale artifact older than this is rejected and the resolver
+	// fails over to a fresher channel. Zero (default) disables the check.
+	ArtifactMaxAge time.Duration
+
 	// Signing. SignSeedB64 is a base64 32-byte Ed25519 seed; empty => generate an
 	// ephemeral key at boot (dev only) and log its public key.
 	SignKeyID   string
@@ -67,9 +72,10 @@ type BotTunables struct {
 // Load reads configuration from the environment, applying defaults.
 func Load() Config {
 	return Config{
-		Port:        getStr("PORT", defaultPort),
-		AdminToken:  getStr("DELIVERY_ADMIN_TOKEN", ""),
-		SignKeyID:   getStr("DELIVERY_SIGN_KEY_ID", "delivery-ephemeral"),
+		Port:           getStr("PORT", defaultPort),
+		AdminToken:     getStr("DELIVERY_ADMIN_TOKEN", ""),
+		ArtifactMaxAge: getDur("DELIVERY_ARTIFACT_MAX_AGE", 0),
+		SignKeyID:      getStr("DELIVERY_SIGN_KEY_ID", "delivery-ephemeral"),
 		SignSeedB64: getStr("DELIVERY_SIGN_SEED", ""),
 		VerifyKeys:  parseKeyMap(getStr("DELIVERY_VERIFY_KEYS", "")),
 		SealKeyB64:  getStr("DELIVERY_SEAL_KEY", ""),

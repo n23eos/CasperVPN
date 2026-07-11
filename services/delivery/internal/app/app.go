@@ -52,7 +52,7 @@ func Build(cfg config.Config) (*App, error) {
 
 	app := &App{
 		Registry:      reg,
-		Resolver:      channel.NewResolver(reg, verifier),
+		Resolver:      channel.NewResolver(reg, verifier, channel.WithMaxAge(cfg.ArtifactMaxAge)),
 		Publisher:     channel.NewPublisher(reg),
 		Signer:        signer,
 		Verifier:      verifier,
