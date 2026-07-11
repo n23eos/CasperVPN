@@ -35,10 +35,12 @@ gofmt чист, fuzz 1.9M прогонов без падений, end-to-end с�
    реализовал → сквозной прогон против живого CP не гонялся. Проверено только через
    in-memory адаптер. **Отследить:** когда `casper-control` поднимет endpoint’ы — прогнать
    integration против него.
-2. **Постоянное хранилище TokenIndex.** Сейчас in-memory (`controlplane.Memory`). В проде
-   token→(user,sub) должен пережить рестарт → нужен Postgres-бэкенд, реализующий
-   `controlplane.TokenIndex`. Схема/миграции — TODO (координация с billing, кто наполняет
-   индекс через `/internal/tokens`).
+2. **Постоянное хранилище TokenIndex.** ✅ Реализован Postgres-бэкенд
+   (`internal/controlplane/postgres.go`, `schema.sql`), выбирается по `DATABASE_URL`;
+   пусто → in-memory (`controlplane.Memory`). Хранит только хеши токенов. Схему/миграции
+   применять **вне старта** (миграционный шаг). Наполнение индекса — billing/CP через
+   `/internal/tokens`. Тесты — на fake `database/sql`-драйвере (офлайн). Прод против
+   живого Postgres — за оператором.
 3. **AmneziaWG в `sing-box check`.** Mainline sing-box его не парсит → CI-check гоняется на
    mainline-наборе (reality+hy2+ss). Полный AmneziaWG-конфиг проверен только структурно
    (Go-тест). **Отследить:** если CI перейдёт на AmneziaWG-совместимый core — включить
