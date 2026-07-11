@@ -57,7 +57,7 @@ func Build(cfg config.Config) (*App, error) {
 		Signer:        signer,
 		Verifier:      verifier,
 		Sealer:        sealer,
-		Handler:       httpapi.New(reg).Routes(),
+		Handler:       httpapi.New(reg, cfg.AdminToken).Routes(),
 		EphemeralKeys: ephemeralSign || ephemeralSeal,
 	}
 	return app, nil
