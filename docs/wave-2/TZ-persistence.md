@@ -8,15 +8,15 @@
 
 > **Статус 2026-07-11:** billing/control-plane уже имеют pgx/Postgres path;
 > telemetry теперь линкует `pgx/v5/stdlib` и выбирает `PostgresStore` по
-> `DATABASE_URL`. Остаются subscription `TokenIndex`, durable rebuild-queue
-> control-plane, migration job и операторский Postgres.
+> `DATABASE_URL`; subscription `TokenIndex` теперь имеет durable Postgres backend.
+> Остаются durable rebuild-queue control-plane, migration job и операторский Postgres.
 
 Исходное состояние Волны 1: Postgres-код был написан и протестирован
 (fake-драйвер / живой PG в control-plane), но часть сервисов дефолтила в
 in-memory, потому что Волна 1 шла оффлайн. После проходов 2026-07-11 telemetry
-уже имеет runtime Postgres path; subscription и durable rebuild-queue всё ещё
-требуют отдельной реализации. См. [`MASTER-REPORT.md`](../MASTER-REPORT.md) §4.B
-и хэндоффы telemetry/billing/subscription.
+уже имеет runtime Postgres path; subscription `TokenIndex` тоже закрыт отдельным
+Postgres backend. Durable rebuild-queue всё ещё требует отдельной реализации. См.
+[`MASTER-REPORT.md`](../MASTER-REPORT.md) §4.B и хэндоффы telemetry/billing/subscription.
 
 Это **инфраструктурный проход**, не переписывание логики: интерфейсы
 (`Repository`/`Store`/`TokenIndex`) уже есть, меняется только дефолтная реализация +
@@ -33,9 +33,9 @@ in-memory, потому что Волна 1 шла оффлайн. После п
      осталось применить `store/schema.sql`/TimescaleDB policy отдельной миграцией.
    - billing: реализовать `store.Repository` на Postgres + **транзакция**
      settle→activate (сейчас `store.Memory`).
-   - subscription: Postgres-бэкенд `controlplane.TokenIndex` (token→user,sub),
-     переживающий рестарт. Схема + миграции. Согласовать с billing (кто наполняет
-     через `/internal/tokens`).
+   - subscription: ✅ Postgres-бэкенд `controlplane.TokenIndex` закрыт
+     (`DATABASE_URL` → durable index, пусто → in-memory; хранит только хеши).
+     Схему `internal/controlplane/schema.sql` применять отдельной миграцией.
    - control-plane: durable-очередь пересбора (pg-based + `LISTEN/NOTIFY` или
      таблица-очередь) вместо in-memory (single-instance теряется при рестарте);
      раннер down-миграций тоже применить.

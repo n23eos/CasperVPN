@@ -10,7 +10,8 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 
 > **Обновление 2026-07-11:** `TZ-orchestrator` реализован в
 > `services/orchestrator/`; delivery получил auth/readiness и anti-rollback
-> freshness check; telemetry подключает Postgres runtime по `DATABASE_URL`.
+> freshness check; telemetry подключает Postgres runtime по `DATABASE_URL`;
+> subscription получил durable Postgres `TokenIndex`.
 > Локально зелёные `make build`, `make vet`, `make test`.
 
 ---
@@ -97,11 +98,11 @@ prod-hardening остаются следующими блоками. Ни одн
 
 ### B. Postgres везде написан, но не подключён рантаймом
 
-`billing`, `control-plane` и `telemetry` уже имеют pgx/Postgres runtime path
-(telemetry выбирает `PostgresStore` при заданном `DATABASE_URL`; миграции
-применяются out-of-band). Остаются: `subscription` TokenIndex и durable rebuild
-queue в `control-plane`; плюс операторский Postgres/миграционные джобы. Без этого
-часть данных всё ещё не переживает рестарт или не масштабируется горизонтально.
+`billing`, `control-plane`, `telemetry` и subscription `TokenIndex` уже имеют
+pgx/Postgres runtime path (по `DATABASE_URL`; миграции применяются out-of-band).
+Остаются: durable rebuild queue в `control-plane`, миграционные джобы и операторский
+Postgres. Без этого часть очередей всё ещё не переживает рестарт или не
+масштабируется горизонтально.
 
 ### C. Прод-хардненинг отложен всеми (Production Checklist из `CLAUDE.md`)
 
