@@ -173,7 +173,5 @@ replace ставит замену раньше draining; retire после grace
 падение telemetry. `httpx`/адаптеры — httptest на 200/401/500/malformed/timeout/
 идемпотентный retry. `provision` — временные скрипты (env/args/exit/timeout).
 
-> **Примечание по окружению:** Go-тулчейн недоступен в текущем dev-контейнере
-> (офлайн, нулевые внешние зависимости монорепо). Код прошёл ручную сверку с
-> замороженными контрактами; `make build/vet/test -race` и gofmt — на стороне
-> оператора/CI (ожидается зелёным).
+> **Статус проверки 2026-07-11:** локально пройдены `make build`, `make vet`,
+> `make test` (race, как задано в Makefile) на `go1.20.3 darwin/arm64`.
