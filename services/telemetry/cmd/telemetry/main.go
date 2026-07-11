@@ -10,11 +10,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
 	"syscall"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
 	"github.com/caspervpn/telemetry/internal/api"
 	"github.com/caspervpn/telemetry/internal/config"
@@ -35,11 +39,9 @@ func main() {
 	cfg := config.Load()
 	now := time.Now
 
-	// Default store is in-memory (dependency-free, always available). Postgres is
-	// wired by blank-importing a driver and swapping this line — see docs/telemetry.md.
-	st := store.NewMemoryStore(memoryHardCap)
-	if cfg.DatabaseURL != "" {
-		log.Printf("%s: DATABASE_URL set but no SQL driver is linked; using in-memory store (see docs/telemetry.md)", serviceName)
+	st, err := newStore(cfg)
+	if err != nil {
+		log.Fatalf("%s: %v", serviceName, err)
 	}
 
 	coll := metrics.NewCollector()
@@ -79,6 +81,30 @@ func main() {
 		log.Printf("%s: graceful shutdown failed: %v", serviceName, err)
 	}
 	_ = st.Close()
+}
+
+// newStore selects the persistence backend: Postgres when DATABASE_URL is set
+// (durable — survives restart), otherwise the in-memory store (dev default,
+// state lost on restart). Schema and migrations are applied OUT OF BAND, never
+// on startup, to avoid races between instances (Production Checklist); startup
+// only opens the pool and pings for readiness. See docs/telemetry.md.
+func newStore(cfg config.Config) (store.Store, error) {
+	if cfg.DatabaseURL == "" {
+		log.Printf("%s: DATABASE_URL unset; using in-memory store (state lost on restart)", serviceName)
+		return store.NewMemoryStore(memoryHardCap), nil
+	}
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("postgres unreachable (readiness ping): %w", err)
+	}
+	log.Printf("%s: using Postgres store (DATABASE_URL set)", serviceName)
+	return store.NewPostgresStore(db), nil
 }
 
 // retentionLoop prunes points older than the retention horizon on a timer.

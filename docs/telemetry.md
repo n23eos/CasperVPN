@@ -160,12 +160,13 @@ dead/degraded с человекочитаемым `reason`.
 (по умолч. 72ч / 10м).
 
 ### Включить Postgres в проде
-Пакет специально **не тянет** SQL-драйвер (монорепо без внешних зависимостей).
-Чтобы включить:
-1. `go get github.com/jackc/pgx/v5/stdlib` (или `lib/pq`).
-2. В `cmd/telemetry/main.go` blank-импортом подключить драйвер, `sql.Open`,
-   применить `store/schema.sql`, заменить `store.NewMemoryStore(...)` на
-   `store.NewPostgresStore(db)`.
+Драйвер `github.com/jackc/pgx/v5/stdlib` **слинкован** (blank-import в
+`cmd/telemetry/main.go`), рантайм-выбор бэкенда — по `DATABASE_URL`:
+1. Задать `DATABASE_URL` (DSN Postgres) — сервис откроет пул, сделает readiness
+   `PingContext` и переключится на `store.NewPostgresStore`. Пусто → in-memory.
+2. **Схему/миграции применять вне старта приложения** (не в `main`, чтобы не было
+   гонки миграций между инстансами — Production Checklist): прогнать
+   `store/schema.sql` отдельным шагом/джобой. Старт делает только `Ping`.
 3. `DATABASE_URL` уже приходит из env (`docker-compose.dev.yml`).
 
 ## Конфигурация (env)
@@ -174,7 +175,7 @@ dead/degraded с человекочитаемым `reason`.
 |------------|---------|------------|
 | `PORT` | `8085` | порт HTTP |
 | `TELEMETRY_INTERNAL_TOKEN` | — | bearer для internal-эндпоинтов (пусто = dev, без auth) |
-| `DATABASE_URL` | — | DSN Postgres (нужен слинкованный драйвер) |
+| `DATABASE_URL` | — | DSN Postgres; задан → durable-store, пусто → in-memory |
 | `TELEMETRY_WINDOW` | `15m` | окно агрегации/вердиктов |
 | `TELEMETRY_RETENTION` | `72h` | горизонт хранения |
 | `TELEMETRY_PRUNE_EVERY` | `10m` | период ретеншн-цикла |
