@@ -8,15 +8,20 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 подсистемами не сшиты, какие пробелы блокируют следующую волну и что переносится в
 руки оператора. Детальные отчёты каждой подсистемы — по ссылкам в таблице ниже.
 
+> **Обновление 2026-07-11:** `TZ-orchestrator` реализован в
+> `services/orchestrator/`; delivery получил auth/readiness и anti-rollback
+> freshness check. Локально зелёные `make build`, `make vet`, `make test`.
+
 ---
 
 ## 1. Итог одной строкой
 
 Заложен компилящийся монорепо с **замороженными контрактами**, и **6 подсистем
-доведены до функциональных скелетов с тестами**. Но система **ещё не собрана в
-единый организм**: сервисы построены как острова, связующий слой (оркестратор +
-интеграции между сервисами + рантайм-Postgres + прод-хардненинг) — не сделан.
-Оркестратор (keystone Волны 2) остался заглушкой. Ни одна подсистема не
+доведены до функциональных скелетов с тестами**. После обновления Волны 2
+orchestrator уже закрывает контур антихрупкости на моках и через реальные
+HTTP/infra-адаптеры, но система **ещё не собрана в продовый единый организм**:
+межсервисные e2e, рантайм-Postgres, operator secrets/cloud apply и полный
+prod-hardening остаются следующими блоками. Ни одна подсистема пока не
 «прод-готова», но у каждой чистые швы (интерфейсы) под доводку.
 
 ---
@@ -31,7 +36,7 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 | **billing** | main-дерево (uncommitted) | MVP-скелет+логика | unit+integration | ❌ | [NOTES](../services/billing/NOTES.md), [docs](./billing.md) |
 | **telemetry** | `feat/telemetry-feedback-loop` (**закоммичен**) | функц. завершён | 79–93%, `-race` чист | ❌ (Postgres не в рантайме) | [HANDOFF](../services/telemetry/HANDOFF.md), [docs](./telemetry.md) |
 | **infra/node** | main-дерево (uncommitted) | завершён (без apply) | локальные гейты + CI | ❌ (без живого apply) | [status](./infra-status.md), [docs](./infra.md) |
-| **orchestrator** | — | **ЗАГЛУШКА (не построен)** | — | ❌ | — |
+| **orchestrator** | main | функц. завершён (dry-run safe default) | unit+httptest+mock e2e, `make test` | ❌ (без живого apply/проб РФ) | [docs](./orchestrator.md), [plan](../services/orchestrator/.plan.md) |
 
 Легенда «Prod-готов»: ни одна не закрыла Production Checklist из `CLAUDE.md`
 (rate-limit / alerting / durable-стейт / observability). Это осознанно отложено.
@@ -116,9 +121,11 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 - **delivery** — не подключены: `SubProvider` (клиент к subscription), приёмный
   цикл бота (long-poll/webhook), шедулер пересборки `Directory` + `Broadcast` при
   ротации/блоке, потребление телеметрии (авто-снятие заблокированных каналов).
-- **orchestrator** — **не построен вообще.** Он keystone: потребляет рекомендации
-  telemetry, дёргает `infra/scripts/node_{up,rotate,down}.sh`, синхронизирует
-  `Node`/REALITY-ключи с control-plane, детектит блоки и автозаменяет ноды.
+- **orchestrator** — построен как keystone Волны 2: потребляет рекомендации
+  telemetry, подтверждает подозрения собственными пробами, планирует через
+  anti-poisoning policy, дёргает `infra/scripts/node_{up,rotate,down}.sh` и
+  синхронизирует `Node` с control-plane. Осталось операторское: живые облачные
+  креды/apply, vantage-пробы из РФ, калибровка порогов на реальном трафике.
 
 ### E. Реальный крипто-материал ключей
 
@@ -164,12 +171,12 @@ Postgres прод, юрлицо/юрисдикция. → всё в [OPERATOR-CH
 под замену без переделки архитектуры.
 
 **Волна 2 (см. ТЗ в [`docs/wave-2/`](./wave-2/)):**
-1. `TZ-orchestrator.md` — построить keystone (telemetry-рекомендации → infra-скрипты → CP).
+1. `TZ-orchestrator.md` — ✅ реализовано: telemetry-рекомендации → пробы/policy → infra-скрипты → CP.
 2. `TZ-contract-changes.md` — координированные аддитивные правки замороженного контракта (A).
 3. `TZ-integration.md` — сшить сервисы (D).
 4. `TZ-persistence.md` — рантайм-Postgres одним сетевым проходом (B).
 5. `TZ-hardening.md` — Production Checklist по всем сервисам (C).
 
-Порядок: сначала `TZ-contract-changes` (разблокирует billing и оркестратор),
-параллельно `TZ-orchestrator`; затем `TZ-integration` + `TZ-persistence`; в конце
-`TZ-hardening` перед прод-выкаткой. Действия оператора — [OPERATOR-CHECKLIST](./OPERATOR-CHECKLIST.md).
+Порядок после закрытия orchestrator: `TZ-integration` + `TZ-persistence`; затем
+оставшийся `TZ-hardening` перед прод-выкаткой. Действия оператора —
+[OPERATOR-CHECKLIST](./OPERATOR-CHECKLIST.md).

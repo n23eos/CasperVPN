@@ -3,6 +3,11 @@
 Дата: 2026-07-07. Ветка: `feat/delivery-multichannel`. Автор части: delivery.
 Границы соблюдены — правки только в `services/delivery/`. Контракты не менялись.
 
+> **Обновление 2026-07-11:** закрыты два самодостаточных hardening-пункта:
+> `POST /v1/channels` защищён bearer-токеном и fail-closed при пустом токене,
+> добавлен `/readyz`; resolver получил опциональный anti-rollback max-age по
+> `Artifact.IssuedAt` с failover на свежий канал.
+
 ## Стадия: НЕ «всё готово»
 
 Завершена **чётко очерченная стадия**: медиа-независимое ядро (артефакт + подпись +
@@ -24,7 +29,8 @@
 - `internal/channel` — интерфейс, registry (динамич.), resolver (failover), publisher.
 - Каналы: `telegram` (+Max-адаптер, rate-limit/антиспам), `dns` (DoH+TXT),
   `gitraw` (ротация зеркал), `steg` (стего в analytics-JSON).
-- `internal/httpapi` — `/healthz`, `GET/POST /v1/channels`, `GET /d/{channel}/{token}`.
+- `internal/httpapi` — `/healthz`, `/readyz`, `GET/POST /v1/channels`,
+  `GET /d/{channel}/{token}`; mutating admin surface требует bearer-токен.
 - `internal/config`, `internal/app`, `internal/memkv`, `cmd/delivery`.
 - `internal/bridge` — Snowflake-модель как интерфейс-заглушка.
 - `docs/delivery.md` — threat-model по каждому каналу.
@@ -51,8 +57,9 @@
 **Ключи / крипта-операции:**
 - Ключи подписи/шифра — только из env. **Нет процедуры ротации**, нет раздачи pubkey
   клиентам, нет endpoint’а публикации pubkey. Ephemeral-fallback — только dev.
-- Anti-rollback: `Directory.Revision`/`Artifact.IssuedAt` есть, но потребитель
-  **не проверяет** max-age/откат версии. Добавить проверку свежести на клиенте.
+- Anti-rollback по времени закрыт опциональным `Artifact.IssuedAt` max-age в
+  resolver. Проверка монотонности `Directory.Revision` между процессными
+  рестартами остаётся будущей задачей, потому что требует persistent client state.
 
 **Петля обратной связи (телеметрия):**
 - Не потребляет `FieldSignal`/`HealthEvent` → нет автоснятия заблокированных
@@ -63,8 +70,8 @@
 - `POST /v1/channels` — только валидация дескриптора, живые каналы не конструирует.
 - Нет HTTPS-канала (`KindHTTPS` объявлен, не разведён) — базовый HTTPS как ещё один
   транспорт не строил (фокус задачи — 4 альт-канала).
-- Нет auth на админ-эндпойнтах (`POST /v1/channels` открыт), нет rate-limit на
-  HTTP-путях (`/d/`), нет метрик/алертинга/health-check интеграции с LB.
+- Нет rate-limit на HTTP-путях (`/d/`), нет метрик/алертинга/health-check
+  интеграции с LB. Админский `POST /v1/channels` теперь закрыт bearer-токеном.
 - Стего: один статичный шаблон cover, без ротации; низкая ёмкость, хрупкость
   (описано в docs). Не «продакшн-хардненно».
 - Нет персистентности/БД в delivery.
@@ -92,4 +99,5 @@ curl -s localhost:18083/v1/channels
 
 Prod-переменные: `DELIVERY_SIGN_SEED` (b64 32B ed25519 seed),
 `DELIVERY_SEAL_KEY` (b64 32B), `DELIVERY_VERIFY_KEYS` (`id:pub,...`),
-`DELIVERY_TELEGRAM_BASE/TOKEN`, `DELIVERY_MAX_BASE/TOKEN`.
+`DELIVERY_TELEGRAM_BASE/TOKEN`, `DELIVERY_MAX_BASE/TOKEN`,
+`DELIVERY_ADMIN_TOKEN`, `DELIVERY_ARTIFACT_MAX_AGE`.
