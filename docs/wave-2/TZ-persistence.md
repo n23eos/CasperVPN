@@ -6,10 +6,17 @@
 
 ## Контекст
 
-Postgres-код у всех уже написан и протестирован (fake-драйвер / живой PG в
-control-plane), но **дефолт рантайма — in-memory**, потому что Волна 1 шла оффлайн
-(нет `go.sum`, нельзя слинковать драйвер). Данные не переживают рестарт. См.
-[`MASTER-REPORT.md`](../MASTER-REPORT.md) §4.B и хэндоффы telemetry/billing/subscription.
+> **Статус 2026-07-11:** billing/control-plane уже имеют pgx/Postgres path;
+> telemetry теперь линкует `pgx/v5/stdlib` и выбирает `PostgresStore` по
+> `DATABASE_URL`. Остаются subscription `TokenIndex`, durable rebuild-queue
+> control-plane, migration job и операторский Postgres.
+
+Исходное состояние Волны 1: Postgres-код был написан и протестирован
+(fake-драйвер / живой PG в control-plane), но часть сервисов дефолтила в
+in-memory, потому что Волна 1 шла оффлайн. После проходов 2026-07-11 telemetry
+уже имеет runtime Postgres path; subscription и durable rebuild-queue всё ещё
+требуют отдельной реализации. См. [`MASTER-REPORT.md`](../MASTER-REPORT.md) §4.B
+и хэндоффы telemetry/billing/subscription.
 
 Это **инфраструктурный проход**, не переписывание логики: интерфейсы
 (`Repository`/`Store`/`TokenIndex`) уже есть, меняется только дефолтная реализация +
@@ -22,8 +29,8 @@ control-plane), но **дефолт рантайма — in-memory**, потом
 2. Blank-import драйвера в `main`.
 3. `sql.Open("pgx", DATABASE_URL)` + `db.PingContext` (readiness).
 4. Применить схему/миграции:
-   - telemetry: `store/schema.sql` (+ TimescaleDB hypertable/retention — сейчас
-     коммент, применить políтику).
+   - telemetry: ✅ runtime wiring закрыт (`DATABASE_URL` → `PostgresStore`);
+     осталось применить `store/schema.sql`/TimescaleDB policy отдельной миграцией.
    - billing: реализовать `store.Repository` на Postgres + **транзакция**
      settle→activate (сейчас `store.Memory`).
    - subscription: Postgres-бэкенд `controlplane.TokenIndex` (token→user,sub),

@@ -10,7 +10,8 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 
 > **Обновление 2026-07-11:** `TZ-orchestrator` реализован в
 > `services/orchestrator/`; delivery получил auth/readiness и anti-rollback
-> freshness check. Локально зелёные `make build`, `make vet`, `make test`.
+> freshness check; telemetry подключает Postgres runtime по `DATABASE_URL`.
+> Локально зелёные `make build`, `make vet`, `make test`.
 
 ---
 
@@ -34,7 +35,7 @@ prod-hardening остаются следующими блоками. Ни одн
 | **subscription** | `agent/subscription` (worktree, uncommitted) | функц. завершён | golden+fuzz 1.9M+smoke | ❌ | [STATUS](../services/subscription/STATUS.md), [docs](./subscription.md) |
 | **delivery** | main-дерево (uncommitted) | ядро+4 канала | unit+e2e, покрытие ≥80% | ❌ | [STATUS](../services/delivery/docs/STATUS.md), [docs](../services/delivery/docs/delivery.md) |
 | **billing** | main-дерево (uncommitted) | MVP-скелет+логика | unit+integration | ❌ | [NOTES](../services/billing/NOTES.md), [docs](./billing.md) |
-| **telemetry** | `feat/telemetry-feedback-loop` (**закоммичен**) | функц. завершён | 79–93%, `-race` чист | ❌ (Postgres не в рантайме) | [HANDOFF](../services/telemetry/HANDOFF.md), [docs](./telemetry.md) |
+| **telemetry** | main | функц. завершён | 79–93%, `-race` чист | ❌ (нужны миграции/операторский Postgres/Redis для scale) | [HANDOFF](../services/telemetry/HANDOFF.md), [docs](./telemetry.md) |
 | **infra/node** | main-дерево (uncommitted) | завершён (без apply) | локальные гейты + CI | ❌ (без живого apply) | [status](./infra-status.md), [docs](./infra.md) |
 | **orchestrator** | main | функц. завершён (dry-run safe default) | unit+httptest+mock e2e, `make test` | ❌ (без живого apply/проб РФ) | [docs](./orchestrator.md), [plan](../services/orchestrator/.plan.md) |
 
@@ -86,21 +87,21 @@ prod-hardening остаются следующими блоками. Ни одн
    написан под этот endpoint, CP его не отдаёт.
 2. **Отзыв подписки / ротация sub-token / cancel** — control-plane отдаёт только
    create/get. Утёкшую ссылку сейчас не отозвать наружу.
-3. **Контракт рекомендаций telemetry** (`Recommendation`, `NodeBlock`,
-   `RegionPriority`) определён локально в telemetry. Когда оркестратор начнёт
-   потреблять — форму согласовать и, вероятно, вынести в `packages/contracts`.
+3. **Контракт рекомендаций telemetry** уже вынесен в `packages/contracts`
+   (`RecommendationAction`, `NodeBlock`, `RegionPriority`, `Recommendations`) и
+   потребляется orchestrator. Остался технический хвост: telemetry internals пока
+   держат локальные mirror-типы в `internal/aggregate`.
 
 → Всё это меняется **по протоколу заморозки** (`docs/contracts.md`): аддитивно,
 синхронно Go + JSON Schema + OpenAPI, через ревью, с bump версии где нужно.
 
 ### B. Postgres везде написан, но не подключён рантаймом
 
-`telemetry`, `billing`, `subscription` (TokenIndex), частично `control-plane`
-(durable-очередь) дефолтят в in-memory. Причина у всех одна: **оффлайн-окружение,
-нет `go.sum`, нельзя слинковать драйвер**. Данные не переживают рестарт. Лечится
-**одним сетевым проходом**: `go get` драйвера (pgx) → blank-import → `sql.Open` →
-применить `schema.sql`/миграции → заменить `NewMemory*` на `NewPostgres*`.
-`DATABASE_URL` уже прокинут в env/compose.
+`billing`, `control-plane` и `telemetry` уже имеют pgx/Postgres runtime path
+(telemetry выбирает `PostgresStore` при заданном `DATABASE_URL`; миграции
+применяются out-of-band). Остаются: `subscription` TokenIndex и durable rebuild
+queue в `control-plane`; плюс операторский Postgres/миграционные джобы. Без этого
+часть данных всё ещё не переживает рестарт или не масштабируется горизонтально.
 
 ### C. Прод-хардненинг отложен всеми (Production Checklist из `CLAUDE.md`)
 
