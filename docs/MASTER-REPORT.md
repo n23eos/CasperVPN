@@ -11,7 +11,8 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 > **Обновление 2026-07-11:** `TZ-orchestrator` реализован в
 > `services/orchestrator/`; delivery получил auth/readiness и anti-rollback
 > freshness check; telemetry подключает Postgres runtime по `DATABASE_URL`;
-> subscription получил durable Postgres `TokenIndex`.
+> subscription получил durable Postgres `TokenIndex`; control-plane получил durable
+> Postgres rebuild queue (`REBUILD_DURABLE=true`).
 > Локально зелёные `make build`, `make vet`, `make test`.
 
 ---
@@ -100,17 +101,18 @@ prod-hardening остаются следующими блоками. Ни одн
 
 `billing`, `control-plane`, `telemetry` и subscription `TokenIndex` уже имеют
 pgx/Postgres runtime path (по `DATABASE_URL`; миграции применяются out-of-band).
-Остаются: durable rebuild queue в `control-plane`, миграционные джобы и операторский
-Postgres. Без этого часть очередей всё ещё не переживает рестарт или не
-масштабируется горизонтально.
+Control-plane rebuild queue тоже закрыта durable pg-очередью (`rebuild_jobs`,
+`FOR UPDATE SKIP LOCKED`), но пока opt-in через `REBUILD_DURABLE=true`. Остаются
+миграционные джобы, операторский Postgres и решение сделать durable path дефолтом
+после обкатки.
 
 ### C. Прод-хардненинг отложен всеми (Production Checklist из `CLAUDE.md`)
 
 Универсально нет: **rate-limiting** (публичные `/sub/{token}`, `/v1/invoices`,
 вебхуки, `/d/`), **метрики/алертинг** (кроме telemetry `/metrics`),
 **readiness/health-детали** (везде только liveness), **durable-очереди/общий стейт**
-(control-plane rebuild-queue и telemetry dedup/rate-limit — in-memory, single-instance
-→ ломаются при горизонтальном масштабе; нужен Redis/pg LISTEN-NOTIFY),
+(control-plane rebuild-queue уже имеет opt-in Postgres path; telemetry
+dedup/rate-limit остаются in-memory single-instance и требуют Redis/общий state),
 **structured logs / отгрузка логов**.
 
 ### D. Межсервисная интеграция — главный несделанный слой

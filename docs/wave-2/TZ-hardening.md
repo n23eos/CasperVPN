@@ -35,9 +35,10 @@
   расхождение billing↔CP статуса, рост stale `subscription_sets`, падение инстанса.
 
 ### Architecture / State
-- **Общий стейт (Redis)** для того, что сейчас in-memory single-instance и ломает
-  горизонтальный масштаб: telemetry dedup/rate-limit, control-plane rebuild-queue
-  (или pg LISTEN/NOTIFY), subscription/delivery кеши по необходимости.
+- **Общий стейт (Redis/Postgres)** для того, что сейчас in-memory single-instance и
+  ломает горизонтальный масштаб: telemetry dedup/rate-limit, subscription/delivery
+  кеши по необходимости. Control-plane rebuild-queue уже имеет durable Postgres
+  path (`REBUILD_DURABLE=true`), но default ещё in-memory до обкатки.
 - **Auth на админ-эндпоинтах**: `POST /v1/channels` (delivery) уже закрыт
   bearer-токеном; остаются ротация service-токенов и системный mTLS/bearer-подход
   для остальных админских поверхностей.
