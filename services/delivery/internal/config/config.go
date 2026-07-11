@@ -25,6 +25,11 @@ const (
 type Config struct {
 	Port string
 
+	// AdminToken guards the mutating admin surface (POST /v1/channels). Empty
+	// disables that path entirely (fail-closed) — a bare service exposes only
+	// read/fetch. Operator-supplied via env; never hardcoded.
+	AdminToken string
+
 	// Signing. SignSeedB64 is a base64 32-byte Ed25519 seed; empty => generate an
 	// ephemeral key at boot (dev only) and log its public key.
 	SignKeyID   string
@@ -63,6 +68,7 @@ type BotTunables struct {
 func Load() Config {
 	return Config{
 		Port:        getStr("PORT", defaultPort),
+		AdminToken:  getStr("DELIVERY_ADMIN_TOKEN", ""),
 		SignKeyID:   getStr("DELIVERY_SIGN_KEY_ID", "delivery-ephemeral"),
 		SignSeedB64: getStr("DELIVERY_SIGN_SEED", ""),
 		VerifyKeys:  parseKeyMap(getStr("DELIVERY_VERIFY_KEYS", "")),

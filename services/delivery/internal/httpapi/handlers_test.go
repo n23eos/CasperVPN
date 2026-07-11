@@ -32,11 +32,13 @@ func (c *memChannel) Fetch(_ context.Context, k string) ([]byte, error) {
 }
 func (c *memChannel) Healthy(context.Context) bool { return true }
 
+const testAdminToken = "test-admin-token"
+
 func newTestAPI() (*API, *memChannel) {
 	reg := channel.NewRegistry()
 	ch := &memChannel{kind: channel.KindTelegram, m: map[string][]byte{}}
 	reg.Add(ch, 0)
-	return New(reg), ch
+	return New(reg, testAdminToken), ch
 }
 
 func TestHealthz(t *testing.T) {
@@ -102,30 +104,86 @@ func TestFetchMissingTokenIs404(t *testing.T) {
 	}
 }
 
+// adminPost builds an authenticated POST /v1/channels request.
+func adminPost(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/v1/channels", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	return req
+}
+
 func TestCreateChannelValidates(t *testing.T) {
 	api, _ := newTestAPI()
 
 	// Unknown kind -> 400.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels", strings.NewReader(`{"kind":"pigeon","enabled":true}`))
-	api.Routes().ServeHTTP(rec, req)
+	api.Routes().ServeHTTP(rec, adminPost(`{"kind":"pigeon","enabled":true}`))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown kind should be 400, got %d", rec.Code)
 	}
 
 	// Existing kind -> 409.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/channels", strings.NewReader(`{"kind":"telegram","enabled":true}`))
-	api.Routes().ServeHTTP(rec, req)
+	api.Routes().ServeHTTP(rec, adminPost(`{"kind":"telegram","enabled":true}`))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("existing kind should be 409, got %d", rec.Code)
 	}
 
 	// New known kind -> 201.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/channels", strings.NewReader(`{"kind":"doh","enabled":true,"endpoint":"https://r.example/dns-query"}`))
-	api.Routes().ServeHTTP(rec, req)
+	api.Routes().ServeHTTP(rec, adminPost(`{"kind":"doh","enabled":true,"endpoint":"https://r.example/dns-query"}`))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("new known kind should be 201, got %d", rec.Code)
+	}
+}
+
+func TestCreateChannelRejectsUnauthenticated(t *testing.T) {
+	api, _ := newTestAPI()
+
+	// No Authorization header -> 401, and no wrong/absent token slips through.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/channels", strings.NewReader(`{"kind":"doh","enabled":true}`))
+	api.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token should be 401, got %d", rec.Code)
+	}
+
+	// Wrong token -> 401.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/channels", strings.NewReader(`{"kind":"doh","enabled":true}`))
+	req.Header.Set("Authorization", "Bearer nope")
+	api.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token should be 401, got %d", rec.Code)
+	}
+}
+
+func TestCreateChannelDisabledWithoutToken(t *testing.T) {
+	reg := channel.NewRegistry()
+	reg.Add(&memChannel{kind: channel.KindTelegram, m: map[string][]byte{}}, 0)
+	api := New(reg, "") // fail-closed: admin surface disabled
+
+	rec := httptest.NewRecorder()
+	req := adminPost(`{"kind":"doh","enabled":true}`) // even a bearer header must not open it
+	api.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("admin surface with no token should be 403, got %d", rec.Code)
+	}
+}
+
+func TestReadyz(t *testing.T) {
+	// Healthy channel present -> 200.
+	api, _ := newTestAPI()
+	rec := httptest.NewRecorder()
+	api.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readyz with a healthy channel = %d, want 200", rec.Code)
+	}
+
+	// No channels -> 503.
+	empty := New(channel.NewRegistry(), testAdminToken)
+	rec = httptest.NewRecorder()
+	empty.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz with no channels = %d, want 503", rec.Code)
 	}
 }

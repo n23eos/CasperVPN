@@ -2,9 +2,14 @@
 // packages/contracts/openapi/delivery.yaml (frozen): liveness, channel listing,
 // and per-channel fetch. Handlers move already-signed blobs; they never mint or
 // verify signatures (that is the client's job) — delivery only transports.
+//
+// Operational additions beyond the frozen client-facing OpenAPI (kept out of
+// packages/contracts on purpose): a /readyz readiness probe, and bearer auth on
+// the mutating POST /v1/channels admin surface (fail-closed when no token set).
 package httpapi
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,15 +22,23 @@ import (
 // API holds the dependencies the handlers need.
 type API struct {
 	reg *channel.Registry
+	// adminToken guards the mutating admin surface (POST /v1/channels). Empty
+	// means the admin write path is DISABLED (fail-closed): no unauthenticated
+	// caller can register channel intent. Set DELIVERY_ADMIN_TOKEN to enable it.
+	adminToken string
 }
 
-// New builds the API over a channel registry.
-func New(reg *channel.Registry) *API { return &API{reg: reg} }
+// New builds the API over a channel registry. adminToken guards the admin write
+// surface; empty disables it (fail-closed).
+func New(reg *channel.Registry, adminToken string) *API {
+	return &API{reg: reg, adminToken: adminToken}
+}
 
 // Routes registers every handler on a mux and returns it.
 func (a *API) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", a.health)
+	mux.HandleFunc("/healthz", a.health) // liveness: process is up
+	mux.HandleFunc("/readyz", a.ready)   // readiness: at least one channel healthy
 	mux.HandleFunc("/v1/channels", a.channels)
 	mux.HandleFunc("/d/", a.fetchViaChannel) // /d/{channel}/{token}
 	return mux
@@ -33,6 +46,46 @@ func (a *API) Routes() *http.ServeMux {
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "delivery"})
+}
+
+// ready reports readiness: the service can actually deliver only if at least one
+// registered channel is healthy. Load balancers should drain an instance that
+// returns 503 here while still treating it as live (/healthz).
+func (a *API) ready(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	health := a.reg.Health(r.Context())
+	healthy := 0
+	for _, ok := range health {
+		if ok {
+			healthy++
+		}
+	}
+	if healthy == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"status": "unready", "reason": "no healthy channel", "channels": len(health)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "ready", "healthy_channels": healthy, "channels": len(health)})
+}
+
+// authorizedAdmin reports whether the request carries the admin bearer token.
+// Fail-closed: with no configured token, no request is ever authorized.
+func (a *API) authorizedAdmin(r *http.Request) bool {
+	if a.adminToken == "" {
+		return false
+	}
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, prefix) {
+		return false
+	}
+	got := strings.TrimPrefix(h, prefix)
+	return subtle.ConstantTimeCompare([]byte(got), []byte(a.adminToken)) == 1
 }
 
 // channelDTO mirrors the openapi Channel schema.
@@ -78,6 +131,16 @@ func (a *API) listChannels(w http.ResponseWriter, r *http.Request) {
 // this records operator intent and returns the normalized descriptor. It rejects
 // an unknown kind so callers get immediate feedback.
 func (a *API) createChannel(w http.ResponseWriter, r *http.Request) {
+	if !a.authorizedAdmin(r) {
+		if a.adminToken == "" {
+			// Fail-closed: the admin surface is off unless an operator token is set.
+			writeError(w, http.StatusForbidden, "channel admin API disabled (set DELIVERY_ADMIN_TOKEN)")
+			return
+		}
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	var dto channelDTO
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&dto); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid channel body")
