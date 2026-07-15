@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
 
 INFRA := infra
@@ -69,6 +69,10 @@ up:
 ## down: stop local dev stack
 down:
 	docker compose -f docker-compose.dev.yml down
+
+## e2e-first-user: full happy path against a clean isolated stack (see test/e2e/first-user.sh)
+e2e-first-user:
+	@test/e2e/first-user.sh
 
 ## clean: remove build artifacts
 clean:
