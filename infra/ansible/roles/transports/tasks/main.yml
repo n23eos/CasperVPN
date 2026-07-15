@@ -2,6 +2,12 @@
 # Build /etc/sing-box/config.json from the enabled transports, then validate it
 # with `sing-box check`. Enforces the [АНТИ-БЛОК] invariants at config-build time.
 
+# --- REALITY keypair: resolve (explicit | state file | generate) before asserts,
+# so private_key is populated idempotently from the persisted pair. ---
+- name: Resolve REALITY keypair
+  when: transports.vless_reality.enabled
+  ansible.builtin.include_tasks: keygen.yml
+
 # --- Invariant 1: at least one transport, and REALITY is properly configured ---
 - name: Assert at least one transport is enabled
   ansible.builtin.assert:

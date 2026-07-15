@@ -6,6 +6,18 @@
 singbox_config_dir: "/etc/sing-box"
 singbox_bin: "/usr/local/bin/sing-box"
 
+# REALITY keypair lifecycle (see roles/transports/tasks/keygen.yml).
+# The pair (private+public) is persisted TOGETHER in the state file 0600 so a
+# reprovision restores the exact public half — sing-box mints them as a pair and
+# the role does not derive one from the other. Only the public half + short-id
+# pool are published to reality_pub_artifact for control-plane to consume.
+reality_key_state_file: "/etc/caspervpn/reality.key"
+reality_pub_artifact: "/etc/caspervpn/reality.pub"
+# Explicit-secret path: supply BOTH halves (from a secret manager) or NEITHER.
+# A private key without its public is rejected — the role cannot safely derive it.
+reality_explicit_private_key: ""
+reality_explicit_public_key: ""
+
 # per-user VLESS users (uuid + optional personal short_id) — filled by control-plane.
 reality_users: []
 
