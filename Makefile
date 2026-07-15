@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
 
 INFRA := infra
@@ -73,6 +73,14 @@ down:
 ## e2e-first-user: full happy path against a clean isolated stack (see test/e2e/first-user.sh)
 e2e-first-user:
 	@test/e2e/first-user.sh
+
+## e2e-real-node: real REALITY tunnel (opt-in; needs REALITY_DEST + REALITY_SERVER_NAME)
+e2e-real-node:
+	@test/e2e/real-node.sh
+
+## e2e-sync-merge: regression for reality_sync upsert merge (postgres + control-plane only)
+e2e-sync-merge:
+	@test/e2e/reality-sync-merge.sh
 
 ## clean: remove build artifacts
 clean:

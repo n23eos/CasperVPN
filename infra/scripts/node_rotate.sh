@@ -11,9 +11,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/lib.sh"
 # shellcheck source=control_plane.sh
 source "${HERE}/control_plane.sh"
+# shellcheck source=reality_sync.sh
+source "${HERE}/reality_sync.sh"
 
 require_cmd terraform ansible-playbook ansible jq curl
-require_env NODE SSH_PUBKEY
+require_env NODE SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
 ROOT="$(repo_root)"
 TF_DIR="${ROOT}/${TF_ENV_DIR_DEFAULT}"
 ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
@@ -37,44 +39,44 @@ log "new entry IP: ${NEW_ENTRY_IP}"
 INV="$(mktemp)"; trap 'rm -f "${INV}"' EXIT
 printf '[entry]\n%s ansible_host=%s node_id=%s\n' "${NODE}" "${NEW_ENTRY_IP}" "${NODE}" >"${INV}"
 
+# Mimicry must reach the transports role, or the fresh entry hits the empty
+# server_names/handshake_server asserts and fails before it can be re-keyed.
+REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
+EXTRA_VARS="$(jq -n \
+  --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
+  --arg handshake "$REALITY_HANDSHAKE" \
+  '{reality_server_names: $names, reality_handshake_server: $handshake}')"
+
 retry 10 ansible -i "${INV}" entry -m ping >/dev/null
-ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"     -e target=entry
-ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-rotate.yml" -e target=entry
+ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"     -e target=entry -e "${EXTRA_VARS}"
+ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-rotate.yml" -e target=entry -e "${EXTRA_VARS}"
 
-# 3. Read the rotation artifact (new REALITY public key + short-id).
+# 3. Read the rotation artifact (new REALITY public key + short-id pool).
 ART="$(ansible -i "${INV}" entry -b -m slurp -a src=/etc/caspervpn/reality.pub \
-        | awk '/"content":/ {gsub(/[",]/,""); print $2}')"
-NEW_PUB="$(printf '%s' "${ART}" | base64 -d | awk -F= '/^public_key/{print $2}')"
-NEW_SID="$(printf '%s' "${ART}" | base64 -d | awk -F= '/^short_id/{print $2}')"
-log "rekeyed REALITY: pub=${NEW_PUB:0:12}... short_id=${NEW_SID}"
+        | awk '/"content":/ {gsub(/[",]/,""); print $2}' | base64 -d)"
+NEW_PUB="$(printf '%s' "${ART}" | awk -F= '/^public_key/{print $2}')"
+NEW_SIDS="$(printf '%s' "${ART}" | awk -F= '/^short_ids/{print $2}')"
+[ -n "${NEW_PUB}" ] || die "no public_key artifact from ${NODE}"
+log "rekeyed REALITY: pub=${NEW_PUB:0:12}... short_ids=${NEW_SIDS}"
 
-# 4. Update the Node in the control-plane: new advertised entry IP AND propagate
-#    the rotated REALITY material. The frozen contracts.Node has NO node-level
-#    field for the REALITY pubkey/short-id — it lives inside
-#    transports[].vless_reality (public_key + the short_ids pool). So read the
-#    current Node, patch its vless-reality transport in place (bump public_key,
-#    ADD the new short-id to the pool — never replace it, that would collapse
-#    per-user isolation), and PATCH the whole object back (keeps the Node schema's
-#    additionalProperties:false + tagged-union validation happy).
+# 4. Update the Node in the control-plane via the shared upsert helper: new entry
+#    IP + rotated REALITY material. reality_sync_node GETs the current Node and
+#    merges the vless-reality transport in place (bump public_key, UNION the
+#    short-id pool — never collapse per-user isolation), keeping every other
+#    transport and the frozen-schema validation intact.
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
-  CUR_NODE="$(cp_get_node "${NODE}")"
-  PATCHED_NODE="$(printf '%s' "${CUR_NODE}" | jq \
-    --arg ip "${NEW_ENTRY_IP}" --arg pub "${NEW_PUB}" --arg sid "${NEW_SID}" '
-      .entry_ip = $ip
-      | .ephemeral_entry_ip = true
-      | .status = "active"
-      | .transports = ((.transports // []) | map(
-          if .type == "vless-reality" and (.vless_reality // empty) then
-            .vless_reality.public_key = $pub
-            | .vless_reality.short_ids = ((.vless_reality.short_ids // []) + [$sid] | unique)
-          else . end))')"
-  # If no vless-reality transport is registered yet, the contract has nowhere to
-  # carry the pubkey — fail loud rather than silently dropping the rotation.
-  if ! printf '%s' "${PATCHED_NODE}" | jq -e '[.transports[]? | select(.type=="vless-reality")] | length > 0' >/dev/null; then
-    log "WARN: ${NODE} has no vless-reality transport in control-plane — new REALITY pubkey ${NEW_PUB:0:12}... NOT propagated (register transports first)"
-  fi
-  cp_patch_node "${NODE}" "${PATCHED_NODE}"
-  log "control-plane updated for ${NODE}: entry_ip=${NEW_ENTRY_IP}, REALITY pub=${NEW_PUB:0:12}... short_id=${NEW_SID}"
+  # Demote to PROVISIONING while rotating: the re-converged node comes up with
+  # reality_users:[] (no subscriber is authenticated yet), so it must not keep
+  # serving as active. The reconciler re-pushes the user allow-list and flips it
+  # back to active once ready (see docs/FIRST-WORKING-USER.md). Leaving it active
+  # here would advertise a node that authenticates nobody.
+  NODE_ID="${NODE}" NODE_ROLE="entry" NODE_STATUS="provisioning" \
+    PROVIDER="${PROVIDER:-hetzner}" CLOUD="${CLOUD:-hetzner}" REGION="${REGION:-unknown}" \
+    ENTRY_IP="${NEW_ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
+    REALITY_PUBLIC_KEY="${NEW_PUB}" REALITY_SHORT_IDS="${NEW_SIDS}" \
+    REALITY_SERVER_NAMES="${REALITY_SERVER_NAMES}" REALITY_DEST="${REALITY_DEST}" \
+    reality_sync_node
+  log "control-plane updated for ${NODE}: entry_ip=${NEW_ENTRY_IP}, REALITY pub=${NEW_PUB:0:12}... (status=provisioning until user allow-list re-synced)"
 else
   log "CONTROL_PLANE_URL unset — skipping control-plane update"
 fi

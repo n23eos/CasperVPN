@@ -30,3 +30,4 @@ pgdata/
 /billing
 /telemetry
 /orchestrator
+test/e2e/.realnode.*/

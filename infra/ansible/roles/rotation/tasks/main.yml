@@ -1,50 +1,62 @@
 ---
-# Generate a fresh REALITY keypair + short-id, re-render the sing-box config with
-# it, and drop an artifact (public key + short-id) for scripts/node_rotate.sh to
-# push to the control-plane (PATCH /v1/nodes/{id}).
+# Re-key the node's REALITY server keypair (and rotate the short-id pool). Unlike
+# a plain `node-up` (which reuses the persisted pair), rotation mints a NEW pair
+# and writes it back to the state file BEFORE re-rendering — otherwise the next
+# ordinary converge would read the stale pair from the state file and roll the
+# node back, desyncing it from the control-plane.
+#
+# The transports role (via keygen.yml) is the single renderer/publisher: once the
+# new pair is in the state file and the fresh short-id is in the pool, including
+# it re-renders the config and republishes reality.pub. Every task carrying the
+# private key sets no_log.
 
 - name: Generate a new REALITY keypair
   ansible.builtin.command: "{{ singbox_bin }} generate reality-keypair"
   register: reality_keypair
   changed_when: true
+  no_log: true
 
-- name: Parse REALITY private/public key
+- name: Parse the rotated REALITY private/public key
   ansible.builtin.set_fact:
-    new_reality_private_key: "{{ reality_keypair.stdout | regex_search('PrivateKey:\\s*(\\S+)', '\\1') }}"
-    new_reality_public_key: "{{ reality_keypair.stdout | regex_search('PublicKey:\\s*(\\S+)', '\\1') }}"
+    new_reality_private_key: "{{ reality_keypair.stdout | regex_search('PrivateKey:\\s*(\\S+)', '\\1') | first }}"
+    new_reality_public_key: "{{ reality_keypair.stdout | regex_search('PublicKey:\\s*(\\S+)', '\\1') | first }}"
+  no_log: true
+
+- name: Write the rotated pair to the state file (atomic write, 0600)
+  # Atomic (temp file + rename via copy). This is the line that makes rotation
+  # durable: the next ordinary converge reads THIS pair, not the pre-rotation one.
+  ansible.builtin.copy:
+    dest: "{{ reality_key_state_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      private_key={{ new_reality_private_key }}
+      public_key={{ new_reality_public_key }}
+  no_log: true
 
 - name: Generate a fresh short-id
   ansible.builtin.command: "openssl rand -hex 8"
   register: new_short_id_cmd
   changed_when: true
 
-- name: Override transports var with the rotated REALITY material
-  # ADD the fresh short-id to the existing pool — never replace it. The pool
-  # holds per-user short-ids (per-user isolation); a bare [ new ] would wipe them
-  # all and collapse every user onto one short-id (monoculture). The pool is
-  # re-seeded from control-plane on each converge, so it does not grow unbounded.
+- name: Add the fresh short-id to the pool (never replace)
+  # ADD to the existing pool — a bare [ new ] would wipe every per-user short-id
+  # and collapse the node onto one id (monoculture). The pool is re-seeded from
+  # control-plane on each converge, so it does not grow unbounded.
   ansible.builtin.set_fact:
     transports: >-
       {{
         transports | combine({
           'vless_reality': transports.vless_reality | combine({
-            'private_key': new_reality_private_key,
             'short_ids': (transports.vless_reality.short_ids | default([]))
                          + [ new_short_id_cmd.stdout | trim ]
           })
         }, recursive=True)
       }}
 
-- name: Re-render sing-box config with rotated keys (via transports role)
+- name: Re-render sing-box config + republish reality.pub (via transports role)
+  # keygen.yml reads the freshly written state file, injects the new private key,
+  # and writes reality.pub with the new public key + updated short-id pool.
   ansible.builtin.include_role:
     name: transports
-
-- name: Write rotation artifact (public key + short-id) for control-plane push
-  ansible.builtin.copy:
-    dest: "{{ reality_pub_artifact }}"
-    owner: root
-    group: root
-    mode: "0644"
-    content: |
-      public_key={{ new_reality_public_key }}
-      short_id={{ new_short_id_cmd.stdout | trim }}
