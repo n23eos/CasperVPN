@@ -18,6 +18,20 @@
                'server_names': reality_server_names,
                'handshake_server': reality_handshake_server | default(reality_server_names[0]),
              })}, recursive=True) }}
+    # Hysteria2 desired state (enable + SNI + optional durable password) is DATA
+    # from the provisioner. Passing hy2_password here (e.g. read back from the
+    # control-plane on a rotation) makes keygen's explicit branch reuse it, so a
+    # replacement VM serves the SAME password the control-plane already advertises.
+    - name: Merge hysteria2 desired state into the transport matrix
+      when: hy2_sni is defined
+      ansible.builtin.set_fact:
+        transports: >-
+          {{ transports | combine({'hysteria2':
+             transports.hysteria2 | combine({
+               'enabled': true,
+               'tls_sni': hy2_sni,
+               'password': hy2_password | default(''),
+             })}, recursive=True) }}
   roles:
     - role: singbox
     - role: transports
