@@ -6,6 +6,7 @@ package memory
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/domain"
@@ -345,3 +346,53 @@ func NewNoopQueue() *NoopQueue { return &NoopQueue{} }
 
 func (q *NoopQueue) EnqueueNode(id string) { q.mu.Lock(); q.Nodes = append(q.Nodes, id); q.mu.Unlock() }
 func (q *NoopQueue) EnqueueUser(id string) { q.mu.Lock(); q.Users = append(q.Users, id); q.mu.Unlock() }
+
+// AllowList is an in-memory AllowListRepo. It joins Users and Subscriptions the
+// same way the Postgres query does, applying the exact eligibility predicate.
+type AllowList struct {
+	users *Users
+	subs  *Subscriptions
+	now   func() time.Time
+}
+
+// NewAllowList builds an AllowList over the given user + subscription stores.
+func NewAllowList(users *Users, subs *Subscriptions) *AllowList {
+	return &AllowList{users: users, subs: subs, now: time.Now}
+}
+
+func (a *AllowList) EligibleRealityUsers(_ context.Context) ([]contracts.RealityUser, error) {
+	a.users.mu.Lock()
+	usersCopy := make([]contracts.User, 0, len(a.users.users))
+	for _, u := range a.users.users {
+		usersCopy = append(usersCopy, u)
+	}
+	a.users.mu.Unlock()
+
+	now := a.now()
+	var out []contracts.RealityUser
+	for _, u := range usersCopy {
+		if u.Status != contracts.UserStatusActive || u.SubscriptionID == nil {
+			continue
+		}
+		a.subs.mu.Lock()
+		sub, ok := a.subs.subs[*u.SubscriptionID]
+		a.subs.mu.Unlock()
+		if !ok || !servable(sub.Status) {
+			continue
+		}
+		if sub.ExpiresAt != nil && !sub.ExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, contracts.RealityUser{UUID: u.UUID, ShortID: u.RealityShortID})
+	}
+	return out, nil
+}
+
+func servable(s contracts.SubscriptionStatus) bool {
+	switch s {
+	case contracts.SubscriptionStatusActive, contracts.SubscriptionStatusTrialing, contracts.SubscriptionStatusPastDue:
+		return true
+	default:
+		return false
+	}
+}

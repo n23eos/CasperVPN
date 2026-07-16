@@ -34,6 +34,8 @@ func (h *Handler) Router() http.Handler {
 			r.With(requireRole(nodeWriters...)).Patch("/nodes/{id}", h.updateNode)
 			r.With(requireRole(nodeWriters...)).Delete("/nodes/{id}", h.deleteNode)
 			r.With(requireRole(nodeWriters...)).Post("/nodes/{id}/rotate", h.rotateNode)
+			// REALITY allow-list — live admission creds; orchestrator/admin only.
+			r.With(requireRole(authz.RoleOrchestrator, authz.RoleAdmin)).Get("/nodes/{id}/reality-users", h.getNodeRealityUsers)
 		})
 
 		// Users + their personal secrets.

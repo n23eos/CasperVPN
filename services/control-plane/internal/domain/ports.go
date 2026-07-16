@@ -31,6 +31,13 @@ type UserRepo interface {
 	AllActiveIDs(ctx context.Context) ([]string, error)
 }
 
+// AllowListRepo answers the node REALITY allow-list: the (uuid, short_id) of
+// every user whose account is active AND whose subscription is servable and not
+// expired — matching the subscription service's eligibility exactly.
+type AllowListRepo interface {
+	EligibleRealityUsers(ctx context.Context) ([]contracts.RealityUser, error)
+}
+
 // SubscriptionRepo persists subscriptions. NO card/payment data — hashed token only.
 type SubscriptionRepo interface {
 	Create(ctx context.Context, s contracts.Subscription, tokenHash, tokenPrefix string) error
