@@ -47,6 +47,23 @@ hy2_desired_from_cp() {
 # and is re-supplied to a replacement VM from there (never from the control-plane,
 # which does not hold it, and never from the destroyed VM).
 
+# resolve_pair_psk -> echoes the entry<->exit PAIR PSK. It comes from the operator
+# secret manager (PAIR_PSK). node_up does NOT persist it anywhere, so a generated
+# one could never be recovered for a future rotation — production therefore
+# REQUIRES PAIR_PSK. A throwaway is minted ONLY in explicit e2e mode
+# (EXIT_LINK_E2E=true), never silently in production.
+resolve_pair_psk() {
+  if [ -n "${PAIR_PSK:-}" ]; then
+    printf '%s' "$PAIR_PSK"
+    return 0
+  fi
+  if [ "${EXIT_LINK_E2E:-false}" = "true" ]; then
+    openssl rand -base64 32
+    return 0
+  fi
+  die "PAIR_PSK is required (entry<->exit pair secret from the secret manager). node_up does not persist it, so a generated one could never be recovered for a rotation. Mint it once with an operator command, store it in the secret manager, and pass it as PAIR_PSK. For a throwaway e2e set EXIT_LINK_E2E=true."
+}
+
 # require_pair_psk_for_rotation <exit-configured?> — hard-fail if the entry->exit
 # chain is configured but PAIR_PSK is absent, so a rotation cannot silently drop
 # the link (which would send the fresh entry's traffic out its own IP, breaking

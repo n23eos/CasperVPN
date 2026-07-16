@@ -91,6 +91,25 @@ else
   ok "PAIR PSK absent from control-plane payload"
 fi
 
+# --- 9. resolve_pair_psk: production REQUIRES it; e2e mints an ephemeral one ----
+unset PAIR_PSK
+if ( EXIT_LINK_E2E=false resolve_pair_psk ) >/dev/null 2>&1; then
+  bad "production node_up without PAIR_PSK did not hard-fail"
+else
+  ok "production requires PAIR_PSK (no silent generation)"
+fi
+[ -n "$(EXIT_LINK_E2E=true resolve_pair_psk 2>/dev/null)" ] && ok "e2e mode mints an ephemeral PAIR_PSK" || bad "e2e mode should mint a PSK"
+[ "$(PAIR_PSK=mypsk resolve_pair_psk 2>/dev/null)" = "mypsk" ] && ok "PAIR_PSK from the secret manager is used verbatim" || bad "env PAIR_PSK not used"
+
+# --- 10. node_rotate mutates AFTER preflight (destructive replace is last) ------
+rl="$(grep -n 'require_pair_psk_for_rotation' infra/scripts/node_rotate.sh | head -1 | cut -d: -f1)"
+tl="$(grep -n -- '-replace=' infra/scripts/node_rotate.sh | head -1 | cut -d: -f1)"
+if [ -n "$rl" ] && [ -n "$tl" ] && [ "$tl" -gt "$rl" ]; then
+  ok "terraform -replace runs after the secret preflight (line $tl > $rl)"
+else
+  bad "destructive -replace is not after preflight (replace@${tl:-?}, preflight@${rl:-?})"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "PASS: hysteria2 + exit-link lifecycle guards ($pass checks)"
