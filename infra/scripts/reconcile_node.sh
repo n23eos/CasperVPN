@@ -47,13 +47,28 @@ _cp() {
   case "$code" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
-# _cp_demote <id> -> set the node's status to provisioning. PATCH /v1/nodes is a
-# full-body replace, so GET first, flip status, PATCH the whole object back.
+# _cp_demote <id> -> atomically set the node's status to provisioning via the
+# additive POST /demote. A single status-only update (SetStatus, locked) — it
+# never clobbers a concurrent rotation's IP/keys/transports the way a
+# read-modify-write full-body PATCH would.
 _cp_demote() {
-  local id="$1" node
-  node="$(_cp GET "/v1/nodes/${id}")" || return 1
-  node="$(jq -c '.status = "provisioning"' <<<"$node")" || return 1
-  _cp PATCH "/v1/nodes/${id}" "$node" >/dev/null || return 1
+  _cp POST "/v1/nodes/${1}/demote" >/dev/null
+}
+
+# Signal/crash-safe rollback: once the exit is active we set RECON_ROLLBACK_EXIT,
+# and a single cleanup trap (EXIT/INT/TERM) demotes it if we die before the entry
+# is activated. reconcile_pair clears the flag on success or after its own
+# explicit rollback, so the trap only fires on an interruption.
+RECON_ROLLBACK_EXIT=""
+RECON_LOCK=""
+reconcile_cleanup() {
+  if [ -n "$RECON_ROLLBACK_EXIT" ]; then
+    log "reconcile: cleanup — demoting exit ${RECON_ROLLBACK_EXIT} (interrupted after exit activation)"
+    _cp_demote "$RECON_ROLLBACK_EXIT" >/dev/null 2>&1 || log "reconcile: WARN cleanup demote failed for ${RECON_ROLLBACK_EXIT}"
+    RECON_ROLLBACK_EXIT=""
+  fi
+  [ -n "$RECON_LOCK" ] && release_lock "$RECON_LOCK"
+  return 0   # a cleanup trap must never itself report failure
 }
 
 # reconcile_pair <entry-id> <exit-id> -> 0 iff the entry ends active. Any failure
@@ -72,16 +87,22 @@ reconcile_pair() {
   fi
   _cp POST "/v1/nodes/${exit_id}/activate" "$(jq -n '{expected_revision:"", evidence:"exit_data_plane_verified"}')" >/dev/null \
     || { log "reconcile: exit activation refused — leaving provisioning"; return 1; }
+  # Arm the crash/signal rollback: a trap will demote the exit if we die from here
+  # until the entry is active.
+  RECON_ROLLBACK_EXIT="$exit_id"
   log "reconcile: exit ${exit_id} active"
 
-  # 3. From here roll the exit back on any failure.
+  # 3. On any failure after exit activation, roll the exit back (explicit for the
+  #    normal error path; the trap covers signals/crashes).
   local rc=0
   _reconcile_after_exit "$entry" || rc=$?
   if [ "$rc" -ne 0 ]; then
     log "reconcile: failed after exit activation — rolling exit ${exit_id} back to provisioning"
     _cp_demote "$exit_id" || log "reconcile: WARN exit rollback demote failed — exit ${exit_id} may be left active"
+    RECON_ROLLBACK_EXIT=""   # handled; don't double-demote in the trap
     return "$rc"
   fi
+  RECON_ROLLBACK_EXIT=""      # entry active — disarm the rollback
   log "reconcile: pair active (exit-first, entry-last complete)"
 }
 
@@ -114,8 +135,11 @@ _reconcile_after_exit() {
 reconcile_main() {
   require_cmd jq curl
   require_env ENTRY EXIT CONTROL_PLANE_URL CONTROL_PLANE_TOKEN
-  local lock="/tmp/caspervpn-reconcile-${ENTRY}"
-  acquire_lock "$lock" || die "another reconcile for ${ENTRY} is in progress"
+  # ONE cleanup trap owns both the exit rollback and the lock release, so nothing
+  # clobbers it (acquire_lock deliberately installs no trap).
+  trap reconcile_cleanup EXIT INT TERM
+  RECON_LOCK="/tmp/caspervpn-reconcile-${ENTRY}"
+  acquire_lock "$RECON_LOCK" || { RECON_LOCK=""; die "another reconcile for ${ENTRY} is in progress"; }
   reconcile_pair "$ENTRY" "$EXIT"
 }
 

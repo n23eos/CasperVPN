@@ -9,6 +9,7 @@ cd "$(dirname "$0")/../.."
 export RECONCILE_LIB_ONLY=true
 # shellcheck source=/dev/null
 source infra/scripts/reconcile_node.sh
+set +e   # reconcile_node.sh sets -e; the guards drive failures deliberately
 
 pass=0; fail=0
 ok()  { echo "  ok: $1"; pass=$((pass+1)); }
@@ -28,8 +29,8 @@ _cp() {
       if [ "$n" -ge 2 ]; then echo "{\"revision\":\"${RU2_REV}\",\"users\":[]}"; else echo '{"revision":"R1","users":[{"uuid":"u","short_id":"s"}]}'; fi
       return 0 ;;
     "GET /v1/nodes/"*) echo '{"id":"n","role":"entry","status":"active","transports":[]}'; return 0 ;;
-    "PATCH /v1/nodes/"*)
-      local id="${p##*/}"; DEMOTED+=("$id")
+    "POST /v1/nodes/"*"/demote")
+      local id="${p#/v1/nodes/}"; id="${id%/demote}"; DEMOTED+=("$id")
       [ "$FAIL_DEMOTE" = "$id" ] && return 1 || return 0 ;;
     "POST /v1/nodes/"*"/activate")
       local id="${p#/v1/nodes/}"; id="${id%/activate}"
@@ -77,13 +78,19 @@ if reconcile_pair en ex >/dev/null 2>&1; then
   { has ex "${ACTIVATED[@]}" && has en "${ACTIVATED[@]}"; } && ok "clean run activates exit then entry" || bad "clean run missing activations: ${ACTIVATED[*]}"
 else bad "clean run failed"; fi
 
+# --- 4b. signal/crash after exit activation -> cleanup trap rolls exit back ----
+reset; RECON_ROLLBACK_EXIT="ex"; RECON_LOCK=""
+reconcile_cleanup
+{ has ex "${DEMOTED[@]}" && [ -z "$RECON_ROLLBACK_EXIT" ]; } \
+  && ok "cleanup trap demotes the exit on interruption (crash/signal-safe)" || bad "cleanup did not roll exit back (demoted=${DEMOTED[*]}, flag='$RECON_ROLLBACK_EXIT')"
+
 # --- 5. lock contention (portable mkdir path) ---------------------------------
-LP="$(mktemp -u)"; LOCK_FORCE_MKDIR=true
-( LOCK_FORCE_MKDIR=true acquire_lock "$LP" ) # first, in subshell releases on exit
+LP="$(mktemp -u)"
 if LOCK_FORCE_MKDIR=true acquire_lock "$LP"; then
-  # now hold it; a second acquire must fail
+  # holding it; a second acquire must fail, then release makes it acquirable again.
   if LOCK_FORCE_MKDIR=true acquire_lock "$LP" 2>/dev/null; then bad "second lock acquire succeeded (no mutual exclusion)"; else ok "lock is mutually exclusive"; fi
   release_lock "$LP"
+  LOCK_FORCE_MKDIR=true acquire_lock "$LP" 2>/dev/null && { ok "lock reacquirable after release"; release_lock "$LP"; } || bad "lock not reacquirable after release"
 else bad "could not acquire lock"; fi
 
 echo

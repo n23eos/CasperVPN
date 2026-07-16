@@ -163,6 +163,22 @@ func (s *NodeService) Retire(ctx context.Context, id, actor string) error {
 	return nil
 }
 
+// Demote atomically sets a node's status to provisioning (SetStatus is a single
+// locked UPDATE, so it never clobbers a concurrent rotation's IP/keys/transports
+// the way a read-modify-write full-body PATCH would). Used by the reconciler as a
+// hard barrier before it converges a node. Returns the demoted node.
+func (s *NodeService) Demote(ctx context.Context, id, actor string) (contracts.Node, error) {
+	prev, err := s.nodes.SetStatus(ctx, id, contracts.NodeStatusProvisioning)
+	if err != nil {
+		return contracts.Node{}, err
+	}
+	if err := s.recordRotation(ctx, id, &prev, contracts.NodeStatusProvisioning, "demote", "", actor); err != nil {
+		return contracts.Node{}, err
+	}
+	s.queue.EnqueueNode(id)
+	return s.nodes.Get(ctx, id)
+}
+
 // History returns recent rotation records for a node.
 func (s *NodeService) History(ctx context.Context, id string, limit int) ([]domain.RotationRecord, error) {
 	if limit <= 0 || limit > 500 {
