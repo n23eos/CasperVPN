@@ -32,7 +32,7 @@ func (h *Handler) activateNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	n, err := h.nodes.Activate(r.Context(), chi.URLParam(r, "id"), req.ExpectedRevision, actorFromContext(r.Context()))
+	n, err := h.nodes.Activate(r.Context(), chi.URLParam(r, "id"), req.ExpectedRevision, req.Evidence, actorFromContext(r.Context()))
 	if err != nil {
 		writeDomainError(w, err)
 		return

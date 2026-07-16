@@ -48,6 +48,10 @@ func activate(t *testing.T, r http.Handler, id, token, revision string) *httptes
 	return do(t, r, http.MethodPost, "/v1/nodes/"+id+"/activate", token, `{"expected_revision":"`+revision+`"}`)
 }
 
+func activateExit(t *testing.T, r http.Handler, id, token, evidence string) *httptest.ResponseRecorder {
+	return do(t, r, http.MethodPost, "/v1/nodes/"+id+"/activate", token, `{"expected_revision":"","evidence":"`+evidence+`"}`)
+}
+
 func TestActivate_HappyPath(t *testing.T) {
 	r := newTestRouter(t)
 	id, rev := seedActivatable(t, r, vlessTr+","+hy2Tr)
@@ -168,8 +172,16 @@ func TestActivate_ExitThenEntrySequence(t *testing.T) {
 	if rec := activate(t, r, "en-seq", orchTok, al.Revision); rec.Code != http.StatusConflict {
 		t.Fatalf("entry before exit active: got %d, want 409", rec.Code)
 	}
-	// activate exit first (revision irrelevant for an exit).
-	if rec := activate(t, r, "ex-seq", orchTok, ""); rec.Code != http.StatusOK {
+	// exit without evidence must NOT activate.
+	if rec := activate(t, r, "ex-seq", orchTok, ""); rec.Code != http.StatusConflict {
+		t.Fatalf("exit without evidence: got %d, want 409", rec.Code)
+	}
+	// exit with wrong evidence must NOT activate.
+	if rec := activateExit(t, r, "ex-seq", orchTok, "nonsense"); rec.Code != http.StatusConflict {
+		t.Fatalf("exit with bad evidence: got %d, want 409", rec.Code)
+	}
+	// activate exit with valid evidence (revision irrelevant for an exit).
+	if rec := activateExit(t, r, "ex-seq", orchTok, "exit_data_plane_verified"); rec.Code != http.StatusOK {
 		t.Fatalf("activate exit: got %d: %s", rec.Code, rec.Body)
 	}
 	// now the entry activates.
