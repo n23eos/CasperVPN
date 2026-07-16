@@ -17,12 +17,37 @@ type NodeService struct {
 	nodes     domain.NodeRepo
 	rotations domain.RotationRepo
 	queue     domain.RebuildQueue
+	activator domain.NodeActivator
 	now       func() time.Time
 }
 
 // NewNodeService wires a NodeService.
 func NewNodeService(nodes domain.NodeRepo, rotations domain.RotationRepo, queue domain.RebuildQueue) *NodeService {
 	return &NodeService{nodes: nodes, rotations: rotations, queue: queue, now: time.Now}
+}
+
+// WithActivator attaches the guarded provisioning->active activator.
+func (s *NodeService) WithActivator(a domain.NodeActivator) *NodeService {
+	s.activator = a
+	return s
+}
+
+// Activate promotes a provisioning node to active through the guarded, atomic
+// activator (see domain.NodeActivator). Rotation history + rebuild enqueue happen
+// only after the status flip commits.
+func (s *NodeService) Activate(ctx context.Context, id, expectedRevision, actor string) (contracts.Node, error) {
+	if s.activator == nil {
+		return contracts.Node{}, errors.New("usecase: node activator not configured")
+	}
+	n, prev, err := s.activator.Activate(ctx, id, expectedRevision)
+	if err != nil {
+		return contracts.Node{}, err
+	}
+	// Post-commit, best-effort: the node is already active. A failed history write
+	// must not un-activate it, so the error is not propagated.
+	_ = s.recordRotation(ctx, id, &prev, n.Status, "activate", n.EntryIP, actor)
+	s.queue.EnqueueNode(id)
+	return n, nil
 }
 
 // Register adds a node to the registry (called by the orchestrator/infra).
@@ -77,6 +102,12 @@ func (s *NodeService) Update(ctx context.Context, id string, n contracts.Node, a
 	}
 	n.ID = existing.ID
 	n.CreatedAt = existing.CreatedAt
+	// provisioning->active is NOT a plain PATCH: it must go through the guarded
+	// /activate path (allow-list synced, >=2 transports, exit active). Allowing it
+	// here would let a caller bypass every activation gate with one PATCH.
+	if existing.Status == contracts.NodeStatusProvisioning && n.Status == contracts.NodeStatusActive {
+		return contracts.Node{}, fmt.Errorf("%w: provisioning->active requires POST /v1/nodes/{id}/activate", domain.ErrConflict)
+	}
 	if err := n.Validate(); err != nil {
 		return contracts.Node{}, fmt.Errorf("%w: %s", domain.ErrValidation, err)
 	}

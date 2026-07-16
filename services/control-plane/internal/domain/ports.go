@@ -38,6 +38,15 @@ type AllowListRepo interface {
 	EligibleRealityUsers(ctx context.Context) ([]contracts.RealityUser, error)
 }
 
+// NodeActivator atomically promotes a provisioning node to active, gating on
+// structure (>=2 distinct enabled client transport types, paired exit active) and
+// an unchanged allow-list revision. Returns the activated node and its previous
+// status. ErrNotFound if absent; ErrConflict for any failed guard or a concurrent
+// activation.
+type NodeActivator interface {
+	Activate(ctx context.Context, id, expectedRevision string) (contracts.Node, contracts.NodeStatus, error)
+}
+
 // SubscriptionRepo persists subscriptions. NO card/payment data — hashed token only.
 type SubscriptionRepo interface {
 	Create(ctx context.Context, s contracts.Subscription, tokenHash, tokenPrefix string) error

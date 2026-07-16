@@ -36,6 +36,8 @@ func (h *Handler) Router() http.Handler {
 			r.With(requireRole(nodeWriters...)).Post("/nodes/{id}/rotate", h.rotateNode)
 			// REALITY allow-list — live admission creds; orchestrator/admin only.
 			r.With(requireRole(authz.RoleOrchestrator, authz.RoleAdmin)).Get("/nodes/{id}/reality-users", h.getNodeRealityUsers)
+			// Guarded provisioning->active; orchestrator/admin only.
+			r.With(requireRole(authz.RoleOrchestrator, authz.RoleAdmin)).Post("/nodes/{id}/activate", h.activateNode)
 		})
 
 		// Users + their personal secrets.

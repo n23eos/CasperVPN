@@ -396,3 +396,56 @@ func servable(s contracts.SubscriptionStatus) bool {
 		return false
 	}
 }
+
+// NodeActivator is an in-memory NodeActivator combining the node + allow-list
+// stores. It mirrors the Postgres guard set: provisioning, >=2 distinct enabled
+// client transport types, paired exit active, and an unchanged allow-list
+// revision. The nodes mutex serializes concurrent activations.
+type NodeActivator struct {
+	nodes *Nodes
+	allow *AllowList
+}
+
+// NewNodeActivator wires the in-memory activator.
+func NewNodeActivator(nodes *Nodes, allow *AllowList) *NodeActivator {
+	return &NodeActivator{nodes: nodes, allow: allow}
+}
+
+func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision string) (contracts.Node, contracts.NodeStatus, error) {
+	a.nodes.mu.Lock()
+	defer a.nodes.mu.Unlock()
+	n, ok := a.nodes.nodes[id]
+	if !ok {
+		return contracts.Node{}, "", domain.ErrNotFound
+	}
+	prev := n.Status
+	if n.Status != contracts.NodeStatusProvisioning {
+		return contracts.Node{}, prev, domain.ErrConflict
+	}
+	if contracts.DistinctEnabledTransportTypes(n.Transports) < 2 {
+		return contracts.Node{}, prev, domain.ErrConflict
+	}
+	exitActive := false
+	for _, other := range a.nodes.nodes {
+		if other.Role == contracts.NodeRoleExit && other.EntryNodeID != nil && *other.EntryNodeID == id {
+			exitActive = other.Status == contracts.NodeStatusActive
+			break
+		}
+	}
+	if !exitActive {
+		return contracts.Node{}, prev, domain.ErrConflict
+	}
+	users, err := a.allow.EligibleRealityUsers(ctx)
+	if err != nil {
+		return contracts.Node{}, prev, err
+	}
+	if users == nil {
+		users = []contracts.RealityUser{}
+	}
+	if contracts.RealityUsersRevision(users) != expectedRevision {
+		return contracts.Node{}, prev, domain.ErrConflict
+	}
+	n.Status = contracts.NodeStatusActive
+	a.nodes.nodes[id] = n
+	return n, prev, nil
+}
