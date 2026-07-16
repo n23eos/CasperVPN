@@ -91,6 +91,33 @@ paths:
         "204": { description: Retired }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/nodes/{id}/activate:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [nodes]
+      summary: Activate a provisioning node (guarded, reconciler-only)
+      description: >
+        Atomically promote a node provisioning->active. The control-plane locks
+        the node row and, in one transaction, checks: the node is provisioning; it
+        carries at least two DISTINCT enabled client transport types (anti-block);
+        its paired exit is already active; and the current allow-list revision
+        equals expected_revision. Any mismatch or a concurrent activation returns
+        409 (the node stays provisioning). The plain PATCH provisioning->active
+        transition is rejected — this is the only activation path. Restricted to
+        orchestrator/admin. Responses set Cache-Control: no-store.
+      operationId: activateNode
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/NodeActivation" } } }
+      responses:
+        "200":
+          description: Activated
+          headers: { Cache-Control: { schema: { type: string }, description: "no-store" } }
+          content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /v1/nodes/{id}/reality-users:
     parameters:
       - { in: path, name: id, required: true, schema: { type: string } }
