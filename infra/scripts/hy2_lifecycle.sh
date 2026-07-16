@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# hy2_lifecycle.sh — helpers for the hysteria2 credential/TLS lifecycle across
+# node provisioning and rotation. Source, don't execute. Depends on lib.sh (die)
+# and control_plane.sh (cp_get_node) being sourced by the caller.
+
+# write_secure_vars_file <json> -> prints the path of a fresh 0600 temp file
+# holding the JSON. Ansible extra-vars carrying a secret must be passed via
+# `-e @file`, NEVER `-e "<json>"` on the command line, where a password is visible
+# in the process list and CI diagnostics. The caller traps removal of the file.
+write_secure_vars_file() {
+  local f
+  f="$(mktemp)"
+  chmod 600 "$f"
+  printf '%s' "$1" >"$f"
+  printf '%s' "$f"
+}
+
+# hy2_desired_from_cp <node-id> -> echoes "password<TAB>sni" for the node's
+# hysteria2 transport, or nothing if the node carries no hysteria2. The
+# control-plane is the durable source for the hysteria2 PASSWORD (a client secret
+# it already advertises) across a VM replacement.
+#
+# Fail-closed: cp_get_node itself dies if the control-plane is unreachable — this
+# helper must NEVER be wrapped in `|| echo '{}'`, which would silently rotate
+# without the durable state and desync the fresh server from the control-plane.
+# A hysteria2 transport present but missing password OR sni is a hard error.
+hy2_desired_from_cp() {
+  local id="$1" node pw sni
+  # Check the substitution's exit explicitly: cp_get_node's die runs inside the
+  # $() subshell and would otherwise leave this function running with empty node.
+  node="$(cp_get_node "$id")" || die "hy2: control-plane read failed for ${id} (refusing to rotate blind)"
+  pw="$(printf '%s' "$node" | jq -r 'first(.transports[]? | select(.type=="hysteria2")).hysteria2.password // empty')"
+  sni="$(printf '%s' "$node" | jq -r 'first(.transports[]? | select(.type=="hysteria2")).hysteria2.sni // empty')"
+  if [ -z "$pw" ] && [ -z "$sni" ]; then
+    return 0
+  fi
+  [ -n "$pw" ] && [ -n "$sni" ] || die "hy2: partial hysteria2 state in control-plane for ${id} (need both password and sni)"
+  printf '%s\t%s' "$pw" "$sni"
+}
+
+# hy2_extra_vars <sni> <password> <tls_cert> <tls_key> -> JSON object of the
+# hysteria2 desired state for ansible. TLS cert/key are SERVER secrets (never in
+# the control-plane) and must come from the operator's secret manager on both
+# node-up and rotation, so a replacement VM can present the same trusted cert.
+hy2_extra_vars() {
+  local sni="$1" pw="$2" cert="$3" key="$4"
+  jq -n --arg sni "$sni" --arg pw "$pw" --arg cert "$cert" --arg key "$key" '
+    {hy2_sni: $sni, hy2_password: $pw}
+    + (if $cert != "" then {hy2_tls_cert: $cert} else {} end)
+    + (if $key  != "" then {hy2_tls_key:  $key}  else {} end)'
+}

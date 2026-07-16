@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
 
 INFRA := infra
@@ -85,6 +85,10 @@ e2e-sync-merge:
 ## e2e-hy2-rotation: regression — hysteria2 password survives a VM replacement
 e2e-hy2-rotation:
 	@test/e2e/hy2-rotation-preserve.sh
+
+## e2e-hy2-guards: pure-shell guards (no-secret-on-argv, CP-read fail-closed)
+e2e-hy2-guards:
+	@test/e2e/hy2-lifecycle-guards.sh
 
 ## clean: remove build artifacts
 clean:

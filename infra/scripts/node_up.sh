@@ -14,6 +14,8 @@ source "${HERE}/lib.sh"
 source "${HERE}/control_plane.sh"
 # shellcheck source=reality_sync.sh
 source "${HERE}/reality_sync.sh"
+# shellcheck source=hy2_lifecycle.sh
+source "${HERE}/hy2_lifecycle.sh"
 
 require_cmd terraform ansible-playbook ansible jq curl
 # REALITY mimicry is DATA, never hardcoded — the operator supplies it (see
@@ -59,19 +61,28 @@ EOF
 # passwordless exit_endpoint on port 443 would only produce a broken chain. For
 # now the entry terminates traffic directly (entry==exit egress).
 REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
-# hy2_sni enables + configures hysteria2 in the role (the env alone did not — the
-# role reads transports.hysteria2, populated here). Password is left empty on the
-# first node-up so keygen generates it; a rotation supplies the durable one.
+# hy2_sni enables + configures hysteria2 in the role (entry only; the exit gate is
+# in node-up.yml). Password is empty on the first node-up so keygen generates it;
+# a rotation supplies the durable one. Trusted TLS cert/key come from the operator
+# secret manager (HY2_TLS_CERT/HY2_TLS_KEY) — a private key is never in the CP.
 EXTRA_VARS="$(jq -n \
   --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
   --arg handshake "$REALITY_HANDSHAKE" \
-  --arg hy2sni "${HY2_SNI:-}" \
-  '{reality_server_names: $names, reality_handshake_server: $handshake}
-   + (if $hy2sni != "" then {hy2_sni: $hy2sni, hy2_password: ""} else {} end)')"
+  '{reality_server_names: $names, reality_handshake_server: $handshake}')"
+if [ -n "${HY2_SNI:-}" ]; then
+  EXTRA_VARS="$(jq -s '.[0] * .[1]' \
+    <(printf '%s' "$EXTRA_VARS") \
+    <(hy2_extra_vars "$HY2_SNI" "" "${HY2_TLS_CERT:-}" "${HY2_TLS_KEY:-}"))"
+fi
+
+# Pass extra-vars through a 0600 file (-e @file), never on argv: hy2_tls_key/
+# hy2_password would otherwise be visible in the process list.
+VARS_FILE="$(write_secure_vars_file "$EXTRA_VARS")"
+trap 'rm -f "${INV}" "${VARS_FILE}"' EXIT
 
 log "ansible node-up (wait for cloud-init, then converge)"
 retry 10 ansible -i "${INV}" nodes -m ping >/dev/null
-ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml" -e "${EXTRA_VARS}"
+ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml" -e "@${VARS_FILE}"
 
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   log "registering nodes in control-plane"
