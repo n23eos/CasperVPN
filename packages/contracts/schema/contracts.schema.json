@@ -156,6 +156,27 @@
       ]
     },
 
+    "RealityUser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "short_id"],
+      "properties": {
+        "uuid": { "type": "string", "description": "VLESS UUID the node authenticates." },
+        "short_id": { "type": "string", "description": "Personal REALITY short-id; must be in the node's short-id pool." }
+      }
+    },
+
+    "NodeRealityUsers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "users"],
+      "description": "A node's REALITY allow-list: eligible users plus a revision that changes iff the set changes (SHA-256 digest of the sorted user list). Used to gate provisioning->active against a stale snapshot.",
+      "properties": {
+        "revision": { "type": "string", "description": "SHA-256 hex digest of the eligible user set." },
+        "users": { "type": "array", "items": { "$ref": "#/$defs/RealityUser" } }
+      }
+    },
+
     "User": {
       "type": "object",
       "additionalProperties": false,

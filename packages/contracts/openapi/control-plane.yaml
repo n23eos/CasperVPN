@@ -91,6 +91,30 @@ paths:
         "204": { description: Retired }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/nodes/{id}/reality-users:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      tags: [nodes]
+      summary: REALITY allow-list for a node (eligible users + revision)
+      description: >
+        The exact (uuid, short_id) set a node must admit — every user whose
+        account is active AND whose subscription is servable (status in
+        active/trialing/past_due) AND not past expires_at, matching the
+        subscription service's eligibility. Includes a revision (SHA-256 digest of
+        the set) used to gate provisioning->active against a stale snapshot.
+        Restricted to the orchestrator/admin roles. Responses set
+        Cache-Control: no-store and MUST NOT be logged: the body carries live
+        admission credentials (uuid/short_id). No private key or PII is returned.
+      operationId: getNodeRealityUsers
+      responses:
+        "200":
+          description: OK
+          headers:
+            Cache-Control: { schema: { type: string }, description: "no-store" }
+          content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/NodeRealityUsers" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/users:
     post:
       tags: [users]
