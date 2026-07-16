@@ -22,58 +22,36 @@ ROOT="$(repo_root)"
 TF_DIR="${ROOT}/${TF_ENV_DIR_DEFAULT}"
 ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
 
+# ===========================================================================
+# PREFLIGHT — read all state and validate EVERY secret BEFORE touching infra.
+# terraform -replace destroys the working entry, so a missing secret must fail
+# HERE, while the node is still up. Nothing below mutates infrastructure.
+# ===========================================================================
 OLD_ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip 2>/dev/null || echo '')"
-log "rotating ${NODE}; old entry IP: ${OLD_ENTRY_IP:-none}"
+log "rotating ${NODE}; old entry IP: ${OLD_ENTRY_IP:-none} — preflighting secrets"
 
-# 1. Fresh ephemeral entry — replace the entry VM to get a brand-new IP. The old
-#    instance (and its burned IP) is destroyed by the replace.
-log "terraform -replace entry VM (new ephemeral IP)"
-terraform -chdir="${TF_DIR}" apply -auto-approve -input=false \
-  -var "ssh_pubkey=${SSH_PUBKEY}" \
-  -replace="module.entry_vm.hcloud_server.this"
-
-NEW_ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip)"
-[ -n "${NEW_ENTRY_IP}" ] || die "no new entry_ip after replace"
-[ "${NEW_ENTRY_IP}" != "${OLD_ENTRY_IP}" ] || die "entry IP did not change — rotation failed"
-log "new entry IP: ${NEW_ENTRY_IP}"
-
-# 2. Converge the fresh entry, then re-key REALITY on it.
-INV="$(mktemp)"; trap 'rm -f "${INV}"' EXIT
-printf '[entry]\n%s ansible_host=%s node_id=%s\n' "${NODE}" "${NEW_ENTRY_IP}" "${NODE}" >"${INV}"
-
-# The hysteria2 PASSWORD is a durable client secret that must survive the replace.
-# terraform -replace wipes the on-VM state file; regenerating would desync the
-# fresh server from what the control-plane still advertises. Read it (+ SNI) back
-# from the control-plane — the durable source — and feed it forward. hy2_desired_
-# from_cp HARD-FAILS if the control-plane is unreachable (never rotate blind) or
-# if the hysteria2 state is partial. Empty => this node has no hysteria2.
+# hysteria2: durable password from the control-plane; TLS from the secret manager.
+# hy2_desired_from_cp HARD-FAILS if the CP is unreachable or the state is partial.
 HY2_PASSWORD=""; HY2_SNI_CUR=""
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   HY2_DESIRED="$(hy2_desired_from_cp "${NODE}")"
   if [ -n "$HY2_DESIRED" ]; then
     HY2_PASSWORD="${HY2_DESIRED%%$'\t'*}"
     HY2_SNI_CUR="${HY2_DESIRED##*$'\t'}"
-    # The TLS PRIVATE KEY is a server secret and is never in the control-plane, so
-    # a replacement must re-supply the trusted cert+key from the secret manager.
     [ -n "${HY2_TLS_CERT:-}" ] && [ -n "${HY2_TLS_KEY:-}" ] \
       || die "hysteria2 is configured on ${NODE} but HY2_TLS_CERT/HY2_TLS_KEY (secret manager) are not set — a replacement VM needs the trusted cert+key or it fails the fail-closed TLS assert"
   fi
 fi
 
-# entry->exit chaining: if the node has a paired exit, the entry forwards to it
-# over Shadowsocks-2022. The PAIR PSK is an internal pair secret — never in the
-# control-plane and never on the (destroyed) VM — so a replacement re-reads it
-# from the secret manager. Hard-fail if the chain is configured but PAIR_PSK is
-# absent (otherwise the fresh entry would egress its own IP, breaking entry!=exit).
-# A paired exit is discovered from terraform (its IP is stable across an entry
-# replace). Its presence means the entry->exit chain is configured.
+# entry->exit chain: a paired exit (stable IP from terraform) means chaining is on;
+# the internal PAIR PSK must come from the secret manager (never CP, never the
+# destroyed VM). Hard-fail now if it is missing.
 EXIT_CONFIGURED=false
 EXIT_LINK_IP="$(terraform -chdir="${TF_DIR}" output -raw exit_ip 2>/dev/null || echo '')"
 [ -n "$EXIT_LINK_IP" ] && EXIT_CONFIGURED=true
 require_pair_psk_for_rotation "$EXIT_CONFIGURED"
 
-# Mimicry must reach the transports role, or the fresh entry hits the empty
-# server_names/handshake_server asserts and fails before it can be re-keyed.
+# Build the desired extra-vars and stage the 0600 secret file — still no mutation.
 REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
 EXTRA_VARS="$(jq -n \
   --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
@@ -89,11 +67,25 @@ if [ "$EXIT_CONFIGURED" = true ]; then
     <(printf '%s' "$EXTRA_VARS") \
     <(exit_link_extra_vars "$EXIT_LINK_IP" "${EXIT_LINK_PORT:-8388}" "$PAIR_PSK"))"
 fi
-
-# Secret vars via a 0600 file (-e @file), never on argv.
+INV="$(mktemp)"
 VARS_FILE="$(write_secure_vars_file "$EXTRA_VARS")"
 trap 'rm -f "${INV}" "${VARS_FILE}"' EXIT
+log "preflight ok — all secrets/state validated; entry still up"
 
+# ===========================================================================
+# MUTATE — only now replace the entry VM. Everything it needs is already staged.
+# ===========================================================================
+log "terraform -replace entry VM (new ephemeral IP)"
+terraform -chdir="${TF_DIR}" apply -auto-approve -input=false \
+  -var "ssh_pubkey=${SSH_PUBKEY}" \
+  -replace="module.entry_vm.hcloud_server.this"
+
+NEW_ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip)"
+[ -n "${NEW_ENTRY_IP}" ] || die "no new entry_ip after replace"
+[ "${NEW_ENTRY_IP}" != "${OLD_ENTRY_IP}" ] || die "entry IP did not change — rotation failed"
+log "new entry IP: ${NEW_ENTRY_IP}"
+
+printf '[entry]\n%s ansible_host=%s node_id=%s\n' "${NODE}" "${NEW_ENTRY_IP}" "${NODE}" >"${INV}"
 retry 10 ansible -i "${INV}" entry -m ping >/dev/null
 ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"     -e target=entry -e "@${VARS_FILE}"
 ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-rotate.yml" -e target=entry -e "@${VARS_FILE}"

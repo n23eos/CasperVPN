@@ -21,6 +21,9 @@ require_cmd terraform ansible-playbook ansible jq curl openssl
 # REALITY mimicry is DATA, never hardcoded — the operator supplies it (see
 # docs/mimicry-domains.md). REALITY_DEST is the handshake upstream host:port.
 require_env REGION CLOUD SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
+# Preflight the entry<->exit PAIR PSK BEFORE any terraform apply: production
+# requires it from the secret manager (node_up cannot persist a generated one).
+PAIR_PSK="$(resolve_pair_psk)"
 ROOT="$(repo_root)"
 TF_DIR="${ROOT}/${TF_ENV_DIR_DEFAULT}"
 ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
@@ -72,11 +75,8 @@ if [ -n "${HY2_SNI:-}" ]; then
 fi
 
 # entry->exit data plane: the entry forwards decrypted traffic to the exit over
-# Shadowsocks-2022 (entry != exit). The PAIR PSK is an INTERNAL secret — never in
-# the control-plane, never in a client config. From the secret manager if given,
-# else generated once here; the operator MUST store it for future rotations
-# (a replacement entry re-reads it from the secret manager, not from the CP).
-PAIR_PSK="${PAIR_PSK:-$(openssl rand -base64 32)}"
+# Shadowsocks-2022 (entry != exit). PAIR_PSK was resolved in preflight (required
+# in production; it is an INTERNAL secret — never in the control-plane or a client).
 EXTRA_VARS="$(jq -s '.[0] * .[1]' \
   <(printf '%s' "$EXTRA_VARS") \
   <(exit_link_extra_vars "$EXIT_IP" "${EXIT_LINK_PORT:-8388}" "$PAIR_PSK"))"
