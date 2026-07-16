@@ -42,8 +42,9 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   if [ -n "$HY2_DESIRED" ]; then
     HY2_PASSWORD="${HY2_DESIRED%%$'\t'*}"
     HY2_SNI_CUR="${HY2_DESIRED##*$'\t'}"
-    [ -n "${HY2_TLS_CERT:-}" ] && [ -n "${HY2_TLS_KEY:-}" ] \
-      || die "hysteria2 is configured on ${NODE} but HY2_TLS_CERT/HY2_TLS_KEY (secret manager) are not set — a replacement VM needs the trusted cert+key or it fails the fail-closed TLS assert"
+    if [ -z "${HY2_TLS_CERT:-}" ] || [ -z "${HY2_TLS_KEY:-}" ]; then
+      die "hysteria2 is configured on ${NODE} but HY2_TLS_CERT/HY2_TLS_KEY (secret manager) are not set — a replacement VM needs the trusted cert+key or it fails the fail-closed TLS assert"
+    fi
   fi
 fi
 

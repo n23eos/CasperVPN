@@ -34,7 +34,9 @@ hy2_desired_from_cp() {
   if [ -z "$pw" ] && [ -z "$sni" ]; then
     return 0
   fi
-  [ -n "$pw" ] && [ -n "$sni" ] || die "hy2: partial hysteria2 state in control-plane for ${id} (need both password and sni)"
+  if [ -z "$pw" ] || [ -z "$sni" ]; then
+    die "hy2: partial hysteria2 state in control-plane for ${id} (need both password and sni)"
+  fi
   printf '%s\t%s' "$pw" "$sni"
 }
 
