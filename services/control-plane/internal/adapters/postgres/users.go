@@ -87,6 +87,36 @@ func (s *UserStore) AllActiveIDs(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// EligibleRealityUsers returns the (uuid, short_id) of every user a node must
+// admit: account active AND its current subscription servable (active/trialing/
+// past_due) AND not past expires_at. This mirrors the subscription service's
+// resolve eligibility exactly, so a client that gets a working config is always
+// present in the node allow-list. Ordered by uuid for a stable digest upstream.
+func (s *UserStore) EligibleRealityUsers(ctx context.Context) ([]contracts.RealityUser, error) {
+	const q = `
+SELECT u.vless_uuid, u.reality_short_id
+FROM users u
+JOIN subscriptions sub ON sub.id = u.subscription_id
+WHERE u.status = 'active'
+  AND sub.status IN ('active', 'trialing', 'past_due')
+  AND (sub.expires_at IS NULL OR sub.expires_at > now())
+ORDER BY u.vless_uuid`
+	rows, err := s.q.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: eligible reality users: %w", err)
+	}
+	defer rows.Close()
+	var out []contracts.RealityUser
+	for rows.Next() {
+		var ru contracts.RealityUser
+		if err := rows.Scan(&ru.UUID, &ru.ShortID); err != nil {
+			return nil, err
+		}
+		out = append(out, ru)
+	}
+	return out, rows.Err()
+}
+
 func scanUser(row pgx.Row) (contracts.User, error) {
 	var (
 		u           contracts.User

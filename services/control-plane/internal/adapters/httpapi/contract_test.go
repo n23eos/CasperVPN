@@ -43,6 +43,7 @@ func newTestRouter(t *testing.T) http.Handler {
 	userSvc := usecase.NewUserService(users, rot, q)
 	subSvc := usecase.NewSubscriptionService(subs, users)
 	sigSvc := usecase.NewSignalService(nodes, sigs, nodeSvc)
+	allowSvc := usecase.NewAllowListService(nodes, memory.NewAllowList(users, subs))
 
 	tokens := authz.NewTokenStore(map[string]authz.Role{
 		adminTok: authz.RoleAdmin,
@@ -51,7 +52,7 @@ func newTestRouter(t *testing.T) http.Handler {
 		subTok:   authz.RoleSubscription,
 		billTok:  authz.RoleBilling,
 	})
-	return httpapi.New(nodeSvc, userSvc, subSvc, bundle, sigSvc, tokens).Router()
+	return httpapi.New(nodeSvc, userSvc, subSvc, bundle, sigSvc, allowSvc, tokens).Router()
 }
 
 type openAPISpec struct {
