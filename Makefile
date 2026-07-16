@@ -47,12 +47,12 @@ vet:
 lint:
 	@if ! command -v golangci-lint >/dev/null 2>&1; then \
 		echo "!! golangci-lint not installed — skipping. Install: https://golangci-lint.run/welcome/install/"; \
-		exit 0; \
+	else \
+		for m in $(MODULES); do \
+			echo ">> lint $$m"; \
+			( cd $$m && golangci-lint run ) || exit 1; \
+		done; \
 	fi
-	@for m in $(MODULES); do \
-		echo ">> lint $$m"; \
-		( cd $$m && golangci-lint run ) || exit 1; \
-	done
 
 ## fmt: format all Go code
 fmt:
