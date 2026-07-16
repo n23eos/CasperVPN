@@ -27,8 +27,10 @@ ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
 # terraform -replace destroys the working entry, so a missing secret must fail
 # HERE, while the node is still up. Nothing below mutates infrastructure.
 # ===========================================================================
-OLD_ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip 2>/dev/null || echo '')"
-log "rotating ${NODE}; old entry IP: ${OLD_ENTRY_IP:-none} — preflighting secrets"
+OLD_ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip)" \
+  || die "cannot read current entry_ip from terraform (state error?) — refusing to rotate"
+[ -n "${OLD_ENTRY_IP}" ] || die "current entry_ip is empty — nothing to rotate"
+log "rotating ${NODE}; old entry IP: ${OLD_ENTRY_IP} — preflighting secrets"
 
 # hysteria2: durable password from the control-plane; TLS from the secret manager.
 # hy2_desired_from_cp HARD-FAILS if the CP is unreachable or the state is partial.
@@ -43,12 +45,15 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   fi
 fi
 
-# entry->exit chain: a paired exit (stable IP from terraform) means chaining is on;
-# the internal PAIR PSK must come from the secret manager (never CP, never the
-# destroyed VM). Hard-fail now if it is missing.
-EXIT_CONFIGURED=false
-EXIT_LINK_IP="$(terraform -chdir="${TF_DIR}" output -raw exit_ip 2>/dev/null || echo '')"
-[ -n "$EXIT_LINK_IP" ] && EXIT_CONFIGURED=true
+# entry->exit chain topology is EXPLICIT, never inferred from a command failure:
+# a terraform read error / empty exit_ip hard-fails (resolve_exit_topology), so a
+# fresh entry is never brought up chain-less by accident. A single-node
+# deployment opts out on purpose with NO_EXIT_LINK=true. The internal PAIR PSK
+# then comes from the secret manager (never CP, never the destroyed VM).
+set +e
+EXIT_LINK_IP="$(terraform -chdir="${TF_DIR}" output -raw exit_ip 2>/dev/null)"; EXIT_IP_RC=$?
+set -e
+EXIT_CONFIGURED="$(resolve_exit_topology "$EXIT_IP_RC" "$EXIT_LINK_IP")"
 require_pair_psk_for_rotation "$EXIT_CONFIGURED"
 
 # Build the desired extra-vars and stage the 0600 secret file — still no mutation.
