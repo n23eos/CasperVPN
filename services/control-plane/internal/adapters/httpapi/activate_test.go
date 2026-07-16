@@ -149,6 +149,41 @@ func TestActivate_MissingNode(t *testing.T) {
 	}
 }
 
+func TestActivate_ExitThenEntrySequence(t *testing.T) {
+	r := newTestRouter(t)
+	// eligible user
+	rec := do(t, r, http.MethodPost, "/v1/users", adminTok, `{"telegram_id":8}`)
+	var u contracts.User
+	_ = json.Unmarshal(rec.Body.Bytes(), &u)
+	do(t, r, http.MethodPost, "/v1/subscriptions", adminTok, `{"user_id":"`+u.ID+`","plan":"basic"}`)
+
+	postNode(t, r, `{"id":"en-seq","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.9.1","ephemeral_entry_ip":false,"transports":[`+vlessTr+`,`+hy2Tr+`]}`)
+	postNode(t, r, `{"id":"ex-seq","role":"exit","status":"provisioning","entry_node_id":"en-seq","provider":"l","cloud":"l","region":"eu","ephemeral_entry_ip":false,"transports":[]}`)
+
+	rec = do(t, r, http.MethodGet, "/v1/nodes/en-seq/reality-users", orchTok, "")
+	var al contracts.NodeRealityUsers
+	_ = json.Unmarshal(rec.Body.Bytes(), &al)
+
+	// entry cannot activate while exit is still provisioning.
+	if rec := activate(t, r, "en-seq", orchTok, al.Revision); rec.Code != http.StatusConflict {
+		t.Fatalf("entry before exit active: got %d, want 409", rec.Code)
+	}
+	// activate exit first (revision irrelevant for an exit).
+	if rec := activate(t, r, "ex-seq", orchTok, ""); rec.Code != http.StatusOK {
+		t.Fatalf("activate exit: got %d: %s", rec.Code, rec.Body)
+	}
+	// now the entry activates.
+	rec = activate(t, r, "en-seq", orchTok, al.Revision)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activate entry after exit: got %d: %s", rec.Code, rec.Body)
+	}
+	var n contracts.Node
+	_ = json.Unmarshal(rec.Body.Bytes(), &n)
+	if n.Status != contracts.NodeStatusActive {
+		t.Errorf("entry status = %q, want active", n.Status)
+	}
+}
+
 func TestPatch_ProvisioningToActiveForbidden(t *testing.T) {
 	r := newTestRouter(t)
 	postNode(t, r, `{"id":"en-4","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.4","ephemeral_entry_ip":false,"transports":[`+vlessTr+`,`+hy2Tr+`]}`)

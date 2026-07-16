@@ -422,28 +422,35 @@ func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision strin
 	if n.Status != contracts.NodeStatusProvisioning {
 		return contracts.Node{}, prev, domain.ErrConflict
 	}
-	if contracts.DistinctEnabledTransportTypes(n.Transports) < 2 {
-		return contracts.Node{}, prev, domain.ErrConflict
-	}
-	exitActive := false
-	for _, other := range a.nodes.nodes {
-		if other.Role == contracts.NodeRoleExit && other.EntryNodeID != nil && *other.EntryNodeID == id {
-			exitActive = other.Status == contracts.NodeStatusActive
-			break
+	if n.Role == contracts.NodeRoleExit {
+		// Exit: provisioning + paired entry. No client-transport/revision checks.
+		if n.EntryNodeID == nil || *n.EntryNodeID == "" {
+			return contracts.Node{}, prev, domain.ErrConflict
 		}
-	}
-	if !exitActive {
-		return contracts.Node{}, prev, domain.ErrConflict
-	}
-	users, err := a.allow.EligibleRealityUsers(ctx)
-	if err != nil {
-		return contracts.Node{}, prev, err
-	}
-	if users == nil {
-		users = []contracts.RealityUser{}
-	}
-	if contracts.RealityUsersRevision(users) != expectedRevision {
-		return contracts.Node{}, prev, domain.ErrConflict
+	} else {
+		if contracts.DistinctEnabledTransportTypes(n.Transports) < 2 {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+		exitActive := false
+		for _, other := range a.nodes.nodes {
+			if other.Role == contracts.NodeRoleExit && other.EntryNodeID != nil && *other.EntryNodeID == id {
+				exitActive = other.Status == contracts.NodeStatusActive
+				break
+			}
+		}
+		if !exitActive {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+		users, err := a.allow.EligibleRealityUsers(ctx)
+		if err != nil {
+			return contracts.Node{}, prev, err
+		}
+		if users == nil {
+			users = []contracts.RealityUser{}
+		}
+		if contracts.RealityUsersRevision(users) != expectedRevision {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
 	}
 	n.Status = contracts.NodeStatusActive
 	a.nodes.nodes[id] = n

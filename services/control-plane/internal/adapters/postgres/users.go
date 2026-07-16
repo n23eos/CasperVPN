@@ -105,11 +105,25 @@ WHERE u.status = 'active'
   AND (sub.expires_at IS NULL OR sub.expires_at > now())
 ORDER BY u.vless_uuid`
 
-// queryEligibleRealityUsers runs the eligibility join on any querier (pool or tx),
-// so the node-activation transaction can recompute the allow-list revision under
-// the same lock it uses to flip the status.
+// forUpdate locks the eligible users' and subscriptions' rows. Activation uses
+// this variant so a concurrent ban/rotation (UPDATE users / UPDATE subscriptions)
+// blocks until activation commits — SERIALIZABLE alone does not protect a read
+// against a READ COMMITTED writer, so the explicit row lock is what actually
+// prevents activating with an allow-list that changed mid-transaction.
+const eligibleRealityUsersForUpdateSQL = eligibleRealityUsersSQL + `
+FOR UPDATE OF u, sub`
+
+// queryEligibleRealityUsers runs the eligibility join on any querier (pool or tx).
 func queryEligibleRealityUsers(ctx context.Context, q querier) ([]contracts.RealityUser, error) {
-	rows, err := q.Query(ctx, eligibleRealityUsersSQL)
+	return scanRealityUsers(q.Query(ctx, eligibleRealityUsersSQL))
+}
+
+// queryEligibleRealityUsersForUpdate is the row-locking variant for activation.
+func queryEligibleRealityUsersForUpdate(ctx context.Context, q querier) ([]contracts.RealityUser, error) {
+	return scanRealityUsers(q.Query(ctx, eligibleRealityUsersForUpdateSQL))
+}
+
+func scanRealityUsers(rows pgx.Rows, err error) ([]contracts.RealityUser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgres: eligible reality users: %w", err)
 	}
