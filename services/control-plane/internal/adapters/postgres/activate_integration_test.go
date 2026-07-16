@@ -108,6 +108,117 @@ func TestIntegration_ActivateGuardedAndSerialized(t *testing.T) {
 	}
 }
 
+// TestIntegration_ActivateExitThenEntrySequence walks the reconciler's ordering:
+// exit activates first (role-aware, no transport/revision checks), then the entry
+// (which requires its exit already active).
+func TestIntegration_ActivateExitThenEntrySequence(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	nodeStore := postgres.NewNodeStore(pool)
+	userStore := postgres.NewUserStore(pool)
+	subStore := postgres.NewSubscriptionStore(pool)
+	usvc := usecase.NewUserService(userStore, postgres.NewRotationStore(pool), noQueue{})
+	ssvc := usecase.NewSubscriptionService(subStore, userStore)
+
+	u, err := usvc.Create(ctx, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ssvc.Create(ctx, u.ID, contracts.SubscriptionPlanBasic); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeStore.Create(ctx, provEntry("es-en", "es-ex")); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeStore.Create(ctx, exitNode("es-ex", "es-en", contracts.NodeStatusProvisioning)); err != nil {
+		t.Fatal(err)
+	}
+	users, _ := userStore.EligibleRealityUsers(ctx)
+	rev := contracts.RealityUsersRevision(users)
+
+	// entry cannot go active while its exit is provisioning.
+	if _, _, err := nodeStore.Activate(ctx, "es-en", rev); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("entry before exit: got %v, want ErrConflict", err)
+	}
+	// activate exit first.
+	if _, _, err := nodeStore.Activate(ctx, "es-ex", ""); err != nil {
+		t.Fatalf("activate exit: %v", err)
+	}
+	// entry now activates.
+	if _, _, err := nodeStore.Activate(ctx, "es-en", rev); err != nil {
+		t.Fatalf("activate entry after exit: %v", err)
+	}
+	got, _ := nodeStore.Get(ctx, "es-en")
+	if got.Status != contracts.NodeStatusActive {
+		t.Fatalf("entry final status = %s, want active", got.Status)
+	}
+}
+
+// TestIntegration_ActivateEligibilityRaceStaysConsistent runs activation
+// concurrently with an eligibility mutation (banning the only eligible user)
+// under SERIALIZABLE. The activation must never crash and never activate against
+// a stale allow-list: it either commits with the revision it verified, or loses
+// the race (ErrConflict). Repeated to exercise the timing window.
+func TestIntegration_ActivateEligibilityRaceStaysConsistent(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	nodeStore := postgres.NewNodeStore(pool)
+	userStore := postgres.NewUserStore(pool)
+	subStore := postgres.NewSubscriptionStore(pool)
+	usvc := usecase.NewUserService(userStore, postgres.NewRotationStore(pool), noQueue{})
+	ssvc := usecase.NewSubscriptionService(subStore, userStore)
+
+	for iter := 0; iter < 25; iter++ {
+		truncate(t, pool)
+		u, err := usvc.Create(ctx, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ssvc.Create(ctx, u.ID, contracts.SubscriptionPlanBasic); err != nil {
+			t.Fatal(err)
+		}
+		entryID := "rc-en"
+		if err := nodeStore.Create(ctx, provEntry(entryID, "rc-ex")); err != nil {
+			t.Fatal(err)
+		}
+		if err := nodeStore.Create(ctx, exitNode("rc-ex", entryID, contracts.NodeStatusActive)); err != nil {
+			t.Fatal(err)
+		}
+		users, _ := userStore.EligibleRealityUsers(ctx)
+		rev := contracts.RealityUsersRevision(users)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		var actErr error
+		go func() {
+			defer wg.Done()
+			_, _, actErr = nodeStore.Activate(ctx, entryID, rev)
+		}()
+		go func() {
+			defer wg.Done()
+			// ban the only eligible user -> eligibility changes
+			banned := u
+			banned.Status = contracts.UserStatusBanned
+			_, _ = usvc.Update(ctx, u.ID, banned, "race")
+		}()
+		wg.Wait()
+
+		if actErr != nil && !errors.Is(actErr, domain.ErrConflict) {
+			t.Fatalf("iter %d: unexpected activate error: %v", iter, actErr)
+		}
+		got, _ := nodeStore.Get(ctx, entryID)
+		if actErr == nil {
+			// If it activated, it must have committed BEFORE the ban took effect,
+			// i.e. under serializable ordering the revision it verified was valid.
+			if got.Status != contracts.NodeStatusActive {
+				t.Fatalf("iter %d: nil error but status=%s", iter, got.Status)
+			}
+		} else if got.Status != contracts.NodeStatusProvisioning {
+			t.Fatalf("iter %d: conflict but status=%s (want provisioning)", iter, got.Status)
+		}
+	}
+}
+
 func TestIntegration_ActivateRejectsIneligibleStructure(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)

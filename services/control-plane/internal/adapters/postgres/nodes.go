@@ -148,54 +148,68 @@ func (s *NodeStore) SetStatus(ctx context.Context, id string, status contracts.N
 	return prev, err
 }
 
-// Activate atomically promotes a provisioning node to active. In one transaction
-// it locks the node row (FOR UPDATE — a concurrent activation blocks, then sees
-// the changed status and 409s), then verifies: status is provisioning; the node
-// carries >=2 DISTINCT enabled client transport types; its paired exit is active;
-// and the current allow-list revision equals expectedRevision (recomputed under
-// the same lock, so a ban/rotation racing the reconciler cannot slip through).
-// Any failed check returns domain.ErrConflict and rolls back — the node stays
-// provisioning. Returns the activated node and its previous status.
+// Activate atomically promotes a provisioning node to active. It runs in a
+// SERIALIZABLE transaction and locks the node row (FOR UPDATE): a concurrent
+// activation blocks then sees the changed status and 409s, and — crucially — a
+// concurrent ban/rotation that changes the eligibility this transaction read
+// forces a serialization failure at commit, which maps to a conflict. So a node
+// never activates against a stale allow-list.
+//
+// Guards are ROLE-AWARE, enabling the reconciler's "exit first, entry last"
+// sequence (an entry requires its exit already active, which would be impossible
+// if the exit itself demanded two client transports + an active exit):
+//   - exit:  provisioning + a paired entry (entry_node_id set). No client
+//     transport / revision checks — an exit carries no client-facing transport.
+//   - entry: provisioning + >=2 DISTINCT enabled client transport types + its
+//     paired exit already active + revision == expectedRevision.
+//
+// Any failed check rolls back with domain.ErrConflict (node stays provisioning).
 func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string) (contracts.Node, contracts.NodeStatus, error) {
 	var activated contracts.Node
 	var prev contracts.NodeStatus
-	err := withTx(ctx, s.pool, func(q querier) error {
+	err := withSerializableTx(ctx, s.pool, func(q querier) error {
 		n, err := scanNode(q.QueryRow(ctx, `SELECT `+nodeColumns+` FROM nodes WHERE id=$1 FOR UPDATE`, id))
 		if err != nil {
-			return err // domain.ErrNotFound on no rows (scanNode maps it)
+			return err // domain.ErrNotFound on no rows
 		}
 		prev = n.Status
 		if n.Status != contracts.NodeStatusProvisioning {
 			return fmt.Errorf("%w: node %s is %s, not provisioning", domain.ErrConflict, id, n.Status)
 		}
 
-		tr, err := loadTransports(ctx, q, []string{id})
-		if err != nil {
-			return err
-		}
-		n.Transports = tr[id]
-		if contracts.DistinctEnabledTransportTypes(n.Transports) < 2 {
-			return fmt.Errorf("%w: node %s has fewer than 2 distinct enabled client transports", domain.ErrConflict, id)
-		}
+		if n.Role == contracts.NodeRoleExit {
+			if n.EntryNodeID == nil || *n.EntryNodeID == "" {
+				return fmt.Errorf("%w: exit %s has no paired entry", domain.ErrConflict, id)
+			}
+		} else {
+			tr, err := loadTransports(ctx, q, []string{id})
+			if err != nil {
+				return err
+			}
+			n.Transports = tr[id]
+			if contracts.DistinctEnabledTransportTypes(n.Transports) < 2 {
+				return fmt.Errorf("%w: node %s has fewer than 2 distinct enabled client transports", domain.ErrConflict, id)
+			}
 
-		var exitStatus string
-		err = q.QueryRow(ctx, `SELECT status FROM nodes WHERE entry_node_id=$1 AND role='exit' LIMIT 1`, id).Scan(&exitStatus)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("%w: node %s has no paired exit", domain.ErrConflict, id)
-		}
-		if err != nil {
-			return err
-		}
-		if contracts.NodeStatus(exitStatus) != contracts.NodeStatusActive {
-			return fmt.Errorf("%w: paired exit of %s is %s, not active", domain.ErrConflict, id, exitStatus)
-		}
+			var exitStatus string
+			err = q.QueryRow(ctx, `SELECT status FROM nodes WHERE entry_node_id=$1 AND role='exit' LIMIT 1`, id).Scan(&exitStatus)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: node %s has no paired exit", domain.ErrConflict, id)
+			}
+			if err != nil {
+				return err
+			}
+			if contracts.NodeStatus(exitStatus) != contracts.NodeStatusActive {
+				return fmt.Errorf("%w: paired exit of %s is %s, not active", domain.ErrConflict, id, exitStatus)
+			}
 
-		users, err := queryEligibleRealityUsers(ctx, q)
-		if err != nil {
-			return err
-		}
-		if rev := contracts.RealityUsersRevision(users); rev != expectedRevision {
-			return fmt.Errorf("%w: allow-list revision changed (have %s, expected %s)", domain.ErrConflict, rev, expectedRevision)
+			users, err := queryEligibleRealityUsersForUpdate(ctx, q)
+			if err != nil {
+				return err
+			}
+			if rev := contracts.RealityUsersRevision(users); rev != expectedRevision {
+				return fmt.Errorf("%w: allow-list revision changed (have %s, expected %s)", domain.ErrConflict, rev, expectedRevision)
+			}
 		}
 
 		if _, err := q.Exec(ctx, `UPDATE nodes SET status='active' WHERE id=$1`, id); err != nil {
@@ -205,6 +219,9 @@ func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string) (
 		activated = n
 		return nil
 	})
+	if isSerializationFailure(err) {
+		return contracts.Node{}, prev, fmt.Errorf("%w: activation lost a serialization race (eligibility changed concurrently)", domain.ErrConflict)
+	}
 	return activated, prev, err
 }
 
