@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
 
 INFRA := infra
@@ -93,6 +93,10 @@ e2e-hy2-guards:
 ## e2e-transport-probe: per-transport authenticated HTTP through entry->exit (opt-in)
 e2e-transport-probe:
 	@test/e2e/transport-probe.sh
+
+## e2e-probe-gate: pure-shell guards for the reconciler transport gate (fail-closed)
+e2e-probe-gate:
+	@test/e2e/probe-gate-guards.sh
 
 ## clean: remove build artifacts
 clean:

@@ -16,11 +16,16 @@
 # env unset -> SKIP; set but dest not TLS 1.3 -> FAIL.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+# shellcheck source=/dev/null
+source infra/scripts/lib.sh
+# shellcheck source=/dev/null
+source infra/scripts/probe.sh
 
 NET=capvpn-probe-net
 IMG=ghcr.io/sagernet/sing-box:v1.11.4
 ECHO=pb-echo ENTRY=pb-entry EXIT=pb-exit CLIENT=pb-client
 SOCKS_PORT=21099
+export PROBE_IMG="$IMG" PROBE_NET="$NET" PROBE_CLIENT="$CLIENT"
 WORK="$(mktemp -d "$(pwd)/test/e2e/.probe.XXXXXX")"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -95,27 +100,15 @@ docker run -d --name "$ENTRY" --network "$NET" \
 sleep 2
 ENTRY_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$ENTRY")"
 
-# probe_transport <name> <client-outbound-json> -> 0 if HTTP ok AND egress==EXIT
-probe_transport() {
-  local name="$1" ob="$2"
+# probe_one <type> <client-outbound-json> — render a single-transport client and
+# run the shared probe_transport helper; echoes the structured result.
+probe_one() {
+  local type="$1" ob="$2"
   jq -n --argjson ob "$ob" '{log:{level:"warn"},
     inbounds:[{type:"mixed",tag:"in",listen:"0.0.0.0",listen_port:1080}],
     outbounds:[$ob,{type:"direct",tag:"direct"}],
     route:{final:($ob.tag)}}' > "$WORK/client.json"
-  docker rm -f "$CLIENT" >/dev/null 2>&1 || true
-  docker run -d --name "$CLIENT" --network "$NET" -p "${SOCKS_PORT}:1080" \
-    -v "$WORK/client.json:/c.json:ro" "$IMG" run -c /c.json >/dev/null
-  sleep 3
-  local body remote code
-  body="$(curl -sS --max-time 20 --proxy "socks5h://127.0.0.1:${SOCKS_PORT}" "http://${ECHO}/" 2>/dev/null || true)"
-  code=$?
-  remote="$(printf '%s' "$body" | awk -F'[ :]' '/^RemoteAddr:/{print $3}')"
-  docker rm -f "$CLIENT" >/dev/null 2>&1 || true
-  if [ -z "$body" ]; then echo "    $name: no HTTP response"; return 1; fi
-  if [ "$remote" != "$EXIT_IP" ]; then
-    echo "    $name: egress via $remote, expected EXIT $EXIT_IP (not proven through exit)"; return 1
-  fi
-  echo "    $name: authenticated HTTP ok, egress via EXIT ($remote)"; return 0
+  probe_transport "$type" "$WORK/client.json" "$SOCKS_PORT" "$ECHO" "$EXIT_IP"
 }
 
 VLESS_OB="$(jq -n --arg uuid "$UUID" --arg sni "$REALITY_SERVER_NAME" --arg pub "$RPUB" --arg sid "$SID" --arg s "$ENTRY_IP" '{
@@ -126,18 +119,22 @@ HY2_OB="$(jq -n --arg s "$ENTRY_IP" --arg pw "$HY2_PW" --arg sni "$REALITY_SERVE
   tls:{enabled:true,server_name:$sni,insecure:true,alpn:["h3"]}}')"
 
 step "probe transport #1: vless-reality"
-live=0
-probe_transport "vless-reality" "$VLESS_OB" && live=$((live+1))
+R_VLESS="$(probe_one vless-reality "$VLESS_OB" || true)"; echo "    $R_VLESS"
 step "probe transport #2: hysteria2"
-probe_transport "hysteria2" "$HY2_OB" && live=$((live+1))
+R_HY2="$(probe_one hysteria2 "$HY2_OB" || true)"; echo "    $R_HY2"
 
-step "negative: wrong vless uuid must NOT prove live"
+step "negative: wrong vless uuid must NOT verify"
 BAD_OB="$(jq --arg u "00000000-0000-0000-0000-0000000000ff" '.uuid=$u|.tag="bad-out"' <<<"$VLESS_OB")"
-if probe_transport "vless-wrong-uuid" "$BAD_OB"; then fail "a wrong-credential transport passed the probe"; fi
-echo "    wrong-credential transport correctly not live"
+R_BAD="$(probe_one vless-reality "$BAD_OB" || true)"; echo "    $R_BAD"
+jq -e '.authenticated_http==false or .exit_ip_verified==false' <<<"$R_BAD" >/dev/null \
+  || fail "wrong-credential transport was verified"
 
-step "verdict: need >=2 live client transports (protocol-aware, egress via exit)"
-[ "$live" -ge 2 ] || fail "only $live live transport(s), need >=2"
+step "verdict: transport_gate requires >=2 distinct verified types"
+transport_gate "$(jq -sc '.' <<<"$R_VLESS"$'\n'"$R_HY2")" \
+  || fail "gate denied two verified distinct transports"
+# and the bad one alone must NOT pass the gate
+transport_gate "$(jq -sc '.' <<<"$R_BAD")" \
+  && fail "gate passed on a single failed transport"
 
 echo
-echo "PASS: $live client transports each carry authenticated HTTP through entry->exit (egress via EXIT); wrong creds rejected"
+echo "PASS: vless-reality + hysteria2 each verified (auth HTTP + egress via EXIT); wrong creds rejected; gate requires >=2 distinct"
