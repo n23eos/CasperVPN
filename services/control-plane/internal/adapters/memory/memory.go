@@ -83,6 +83,23 @@ func (r *Nodes) SetStatus(_ context.Context, id string, status contracts.NodeSta
 	return prev, nil
 }
 
+func (r *Nodes) Demote(_ context.Context, id string) (contracts.NodeStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.nodes[id]
+	if !ok {
+		return "", domain.ErrNotFound
+	}
+	prev := n.Status
+	switch prev {
+	case contracts.NodeStatusDraining, contracts.NodeStatusRetired:
+		return prev, domain.ErrConflict
+	}
+	n.Status = contracts.NodeStatusProvisioning
+	r.nodes[id] = n
+	return prev, nil
+}
+
 func (r *Nodes) SetEntryIP(_ context.Context, id, entryIP string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -67,6 +67,21 @@ func (r *fakeNodeRepo) SetStatus(_ context.Context, id string, status contracts.
 	return prev, nil
 }
 
+func (r *fakeNodeRepo) Demote(_ context.Context, id string) (contracts.NodeStatus, error) {
+	n, ok := r.nodes[id]
+	if !ok {
+		return "", domain.ErrNotFound
+	}
+	prev := n.Status
+	switch prev {
+	case contracts.NodeStatusDraining, contracts.NodeStatusRetired:
+		return prev, domain.ErrConflict
+	}
+	n.Status = contracts.NodeStatusProvisioning
+	r.nodes[id] = n
+	return prev, nil
+}
+
 func (r *fakeNodeRepo) SetEntryIP(_ context.Context, id, entryIP string) error {
 	n, ok := r.nodes[id]
 	if !ok {

@@ -14,6 +14,10 @@ type NodeRepo interface {
 	Update(ctx context.Context, n contracts.Node) error
 	// SetStatus transitions status atomically and returns the previous status.
 	SetStatus(ctx context.Context, id string, status contracts.NodeStatus) (prev contracts.NodeStatus, err error)
+	// Demote atomically sets status=provisioning ONLY from a non-terminal state
+	// (active/degraded/blocked/provisioning). draining/retired -> ErrConflict, so a
+	// stale reconciler cannot resurrect an operator-retired/draining node.
+	Demote(ctx context.Context, id string) (prev contracts.NodeStatus, err error)
 	// SetEntryIP updates the advertised ingress address.
 	SetEntryIP(ctx context.Context, id, entryIP string) error
 	// ListActive returns nodes serving traffic (status = active), with transports.
