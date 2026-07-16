@@ -64,6 +64,24 @@ resolve_pair_psk() {
   die "PAIR_PSK is required (entry<->exit pair secret from the secret manager). node_up does not persist it, so a generated one could never be recovered for a rotation. Mint it once with an operator command, store it in the secret manager, and pass it as PAIR_PSK. For a throwaway e2e set EXIT_LINK_E2E=true."
 }
 
+# resolve_exit_topology <exit_ip_read_rc> <exit_ip> -> prints "true"/"false" for
+# EXIT_CONFIGURED. Topology is EXPLICIT, never inferred from a command failure: a
+# terraform/state read error or an empty exit_ip HARD-FAILS (so a fresh entry is
+# never brought up chain-less by accident, egressing its own IP). A genuine
+# single-node deployment must opt out on purpose with NO_EXIT_LINK=true.
+resolve_exit_topology() {
+  local read_rc="$1" exit_ip="$2"
+  if [ "${NO_EXIT_LINK:-false}" = "true" ]; then
+    printf 'false'
+    return 0
+  fi
+  [ "$read_rc" = "0" ] \
+    || die "cannot read exit_ip (terraform/state error) — refusing to rotate; set NO_EXIT_LINK=true ONLY for an intentional single-node (entry==exit) deployment"
+  [ -n "$exit_ip" ] \
+    || die "exit_ip is empty — refusing to rotate blind (would egress the entry's own IP, breaking entry != exit); set NO_EXIT_LINK=true if that is intended"
+  printf 'true'
+}
+
 # require_pair_psk_for_rotation <exit-configured?> — hard-fail if the entry->exit
 # chain is configured but PAIR_PSK is absent, so a rotation cannot silently drop
 # the link (which would send the fresh entry's traffic out its own IP, breaking

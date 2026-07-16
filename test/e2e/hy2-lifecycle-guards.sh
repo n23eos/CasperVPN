@@ -101,6 +101,21 @@ fi
 [ -n "$(EXIT_LINK_E2E=true resolve_pair_psk 2>/dev/null)" ] && ok "e2e mode mints an ephemeral PAIR_PSK" || bad "e2e mode should mint a PSK"
 [ "$(PAIR_PSK=mypsk resolve_pair_psk 2>/dev/null)" = "mypsk" ] && ok "PAIR_PSK from the secret manager is used verbatim" || bad "env PAIR_PSK not used"
 
+# --- 9b. resolve_exit_topology: fail-closed, never inferred from a command error -
+unset NO_EXIT_LINK
+if ( resolve_exit_topology 1 "" ) >/dev/null 2>&1; then
+  bad "terraform read error did not hard-fail (fail-open topology)"
+else
+  ok "exit_ip read error hard-fails (no fail-open)"
+fi
+if ( resolve_exit_topology 0 "" ) >/dev/null 2>&1; then
+  bad "empty exit_ip did not hard-fail"
+else
+  ok "empty exit_ip hard-fails"
+fi
+[ "$(resolve_exit_topology 0 1.2.3.4)" = "true" ] && ok "valid exit_ip -> chain configured" || bad "valid exit_ip should configure the chain"
+[ "$(NO_EXIT_LINK=true resolve_exit_topology 1 '')" = "false" ] && ok "NO_EXIT_LINK=true opts out explicitly (even on read error)" || bad "NO_EXIT_LINK should opt out"
+
 # --- 10. node_rotate mutates AFTER preflight (destructive replace is last) ------
 rl="$(grep -n 'require_pair_psk_for_rotation' infra/scripts/node_rotate.sh | head -1 | cut -d: -f1)"
 tl="$(grep -n -- '-replace=' infra/scripts/node_rotate.sh | head -1 | cut -d: -f1)"
