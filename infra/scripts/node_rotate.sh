@@ -30,6 +30,8 @@ ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
 OLD_ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip)" \
   || die "cannot read current entry_ip from terraform (state error?) — refusing to rotate"
 [ -n "${OLD_ENTRY_IP}" ] || die "current entry_ip is empty — nothing to rotate"
+# NODE is a required env input (require_env NODE above), not a typo of a local 'node'.
+# shellcheck disable=SC2153
 log "rotating ${NODE}; old entry IP: ${OLD_ENTRY_IP} — preflighting secrets"
 
 # hysteria2: durable password from the control-plane; TLS from the secret manager.

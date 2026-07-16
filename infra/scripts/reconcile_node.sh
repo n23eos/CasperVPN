@@ -143,6 +143,8 @@ reconcile_main() {
   trap 'rc=$?; reconcile_cleanup; exit "$rc"' EXIT
   trap 'reconcile_cleanup; trap - INT TERM EXIT; exit 130' INT
   trap 'reconcile_cleanup; trap - INT TERM EXIT; exit 143' TERM
+  # ENTRY is a required env input (require_env ENTRY above), not a typo of local 'entry'.
+  # shellcheck disable=SC2153
   RECON_LOCK="/tmp/caspervpn-reconcile-${ENTRY}"
   acquire_lock "$RECON_LOCK" || { RECON_LOCK=""; die "another reconcile for ${ENTRY} is in progress"; }
   reconcile_pair "$ENTRY" "$EXIT"
