@@ -164,7 +164,7 @@ func (s *NodeStore) SetStatus(ctx context.Context, id string, status contracts.N
 //     paired exit already active + revision == expectedRevision.
 //
 // Any failed check rolls back with domain.ErrConflict (node stays provisioning).
-func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string) (contracts.Node, contracts.NodeStatus, error) {
+func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
 	var activated contracts.Node
 	var prev contracts.NodeStatus
 	err := withSerializableTx(ctx, s.pool, func(q querier) error {
@@ -180,6 +180,11 @@ func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string) (
 		if n.Role == contracts.NodeRoleExit {
 			if n.EntryNodeID == nil || *n.EntryNodeID == "" {
 				return fmt.Errorf("%w: exit %s has no paired entry", domain.ErrConflict, id)
+			}
+			// Structural presence is not readiness: require the reconciler's
+			// authenticated entry->exit probe attestation.
+			if evidence != contracts.ExitDataPlaneVerified {
+				return fmt.Errorf("%w: exit %s activation requires valid data-plane evidence", domain.ErrConflict, id)
 			}
 		} else {
 			tr, err := loadTransports(ctx, q, []string{id})

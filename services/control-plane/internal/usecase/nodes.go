@@ -35,11 +35,11 @@ func (s *NodeService) WithActivator(a domain.NodeActivator) *NodeService {
 // Activate promotes a provisioning node to active through the guarded, atomic
 // activator (see domain.NodeActivator). Rotation history + rebuild enqueue happen
 // only after the status flip commits.
-func (s *NodeService) Activate(ctx context.Context, id, expectedRevision, actor string) (contracts.Node, error) {
+func (s *NodeService) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence, actor string) (contracts.Node, error) {
 	if s.activator == nil {
 		return contracts.Node{}, errors.New("usecase: node activator not configured")
 	}
-	n, prev, err := s.activator.Activate(ctx, id, expectedRevision)
+	n, prev, err := s.activator.Activate(ctx, id, expectedRevision, evidence)
 	if err != nil {
 		return contracts.Node{}, err
 	}

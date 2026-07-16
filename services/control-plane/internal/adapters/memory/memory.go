@@ -411,7 +411,7 @@ func NewNodeActivator(nodes *Nodes, allow *AllowList) *NodeActivator {
 	return &NodeActivator{nodes: nodes, allow: allow}
 }
 
-func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision string) (contracts.Node, contracts.NodeStatus, error) {
+func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
 	a.nodes.mu.Lock()
 	defer a.nodes.mu.Unlock()
 	n, ok := a.nodes.nodes[id]
@@ -423,8 +423,11 @@ func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision strin
 		return contracts.Node{}, prev, domain.ErrConflict
 	}
 	if n.Role == contracts.NodeRoleExit {
-		// Exit: provisioning + paired entry. No client-transport/revision checks.
+		// Exit: provisioning + paired entry + reconciler data-plane evidence.
 		if n.EntryNodeID == nil || *n.EntryNodeID == "" {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+		if evidence != contracts.ExitDataPlaneVerified {
 			return contracts.Node{}, prev, domain.ErrConflict
 		}
 	} else {

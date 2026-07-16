@@ -44,7 +44,7 @@ type AllowListRepo interface {
 // status. ErrNotFound if absent; ErrConflict for any failed guard or a concurrent
 // activation.
 type NodeActivator interface {
-	Activate(ctx context.Context, id, expectedRevision string) (contracts.Node, contracts.NodeStatus, error)
+	Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error)
 }
 
 // SubscriptionRepo persists subscriptions. NO card/payment data — hashed token only.

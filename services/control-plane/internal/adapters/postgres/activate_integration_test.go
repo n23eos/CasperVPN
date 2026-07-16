@@ -68,7 +68,7 @@ func TestIntegration_ActivateGuardedAndSerialized(t *testing.T) {
 	rev := contracts.RealityUsersRevision(users)
 
 	// stale revision -> conflict, node stays provisioning
-	if _, _, err := nodeStore.Activate(ctx, "en", "stale"); !errors.Is(err, domain.ErrConflict) {
+	if _, _, err := nodeStore.Activate(ctx, "en", "stale", ""); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("stale revision: got %v, want ErrConflict", err)
 	}
 
@@ -81,7 +81,7 @@ func TestIntegration_ActivateGuardedAndSerialized(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, err := nodeStore.Activate(ctx, "en", rev)
+			_, _, err := nodeStore.Activate(ctx, "en", rev, "")
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -137,15 +137,15 @@ func TestIntegration_ActivateExitThenEntrySequence(t *testing.T) {
 	rev := contracts.RealityUsersRevision(users)
 
 	// entry cannot go active while its exit is provisioning.
-	if _, _, err := nodeStore.Activate(ctx, "es-en", rev); !errors.Is(err, domain.ErrConflict) {
+	if _, _, err := nodeStore.Activate(ctx, "es-en", rev, ""); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("entry before exit: got %v, want ErrConflict", err)
 	}
 	// activate exit first.
-	if _, _, err := nodeStore.Activate(ctx, "es-ex", ""); err != nil {
+	if _, _, err := nodeStore.Activate(ctx, "es-ex", "", contracts.ExitDataPlaneVerified); err != nil {
 		t.Fatalf("activate exit: %v", err)
 	}
 	// entry now activates.
-	if _, _, err := nodeStore.Activate(ctx, "es-en", rev); err != nil {
+	if _, _, err := nodeStore.Activate(ctx, "es-en", rev, ""); err != nil {
 		t.Fatalf("activate entry after exit: %v", err)
 	}
 	got, _ := nodeStore.Get(ctx, "es-en")
@@ -192,7 +192,7 @@ func TestIntegration_ActivateEligibilityRaceStaysConsistent(t *testing.T) {
 		var actErr error
 		go func() {
 			defer wg.Done()
-			_, _, actErr = nodeStore.Activate(ctx, entryID, rev)
+			_, _, actErr = nodeStore.Activate(ctx, entryID, rev, "")
 		}()
 		go func() {
 			defer wg.Done()
@@ -230,7 +230,7 @@ func TestIntegration_ActivateRejectsIneligibleStructure(t *testing.T) {
 	if err := nodeStore.Create(ctx, one); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := nodeStore.Activate(ctx, "en1", contracts.RealityUsersRevision(nil)); !errors.Is(err, domain.ErrConflict) {
+	if _, _, err := nodeStore.Activate(ctx, "en1", contracts.RealityUsersRevision(nil), ""); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("one transport type: got %v, want ErrConflict", err)
 	}
 
@@ -241,7 +241,7 @@ func TestIntegration_ActivateRejectsIneligibleStructure(t *testing.T) {
 	if err := nodeStore.Create(ctx, exitNode("ex2", "en2", contracts.NodeStatusProvisioning)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := nodeStore.Activate(ctx, "en2", contracts.RealityUsersRevision(nil)); !errors.Is(err, domain.ErrConflict) {
+	if _, _, err := nodeStore.Activate(ctx, "en2", contracts.RealityUsersRevision(nil), ""); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("exit not active: got %v, want ErrConflict", err)
 	}
 }
