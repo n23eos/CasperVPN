@@ -135,9 +135,14 @@ _reconcile_after_exit() {
 reconcile_main() {
   require_cmd jq curl
   require_env ENTRY EXIT CONTROL_PLANE_URL CONTROL_PLANE_TOKEN
-  # ONE cleanup trap owns both the exit rollback and the lock release, so nothing
-  # clobbers it (acquire_lock deliberately installs no trap).
-  trap reconcile_cleanup EXIT INT TERM
+  # Signals MUST terminate: bash resumes the script after an INT/TERM handler that
+  # returns, which would let a signalled run keep mutating after the exit was
+  # already rolled back and the lock released (and a new reconciler could grab it).
+  # So the signal handlers reset the traps (no double cleanup) and exit with the
+  # signal code; the EXIT trap covers the normal path.
+  trap 'rc=$?; reconcile_cleanup; exit "$rc"' EXIT
+  trap 'reconcile_cleanup; trap - INT TERM EXIT; exit 130' INT
+  trap 'reconcile_cleanup; trap - INT TERM EXIT; exit 143' TERM
   RECON_LOCK="/tmp/caspervpn-reconcile-${ENTRY}"
   acquire_lock "$RECON_LOCK" || { RECON_LOCK=""; die "another reconcile for ${ENTRY} is in progress"; }
   reconcile_pair "$ENTRY" "$EXIT"
