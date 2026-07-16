@@ -76,9 +76,9 @@ func Load() Config {
 		AdminToken:     getStr("DELIVERY_ADMIN_TOKEN", ""),
 		ArtifactMaxAge: getDur("DELIVERY_ARTIFACT_MAX_AGE", 0),
 		SignKeyID:      getStr("DELIVERY_SIGN_KEY_ID", "delivery-ephemeral"),
-		SignSeedB64: getStr("DELIVERY_SIGN_SEED", ""),
-		VerifyKeys:  parseKeyMap(getStr("DELIVERY_VERIFY_KEYS", "")),
-		SealKeyB64:  getStr("DELIVERY_SEAL_KEY", ""),
+		SignSeedB64:    getStr("DELIVERY_SIGN_SEED", ""),
+		VerifyKeys:     parseKeyMap(getStr("DELIVERY_VERIFY_KEYS", "")),
+		SealKeyB64:     getStr("DELIVERY_SEAL_KEY", ""),
 
 		DNSZone:       getStr("DELIVERY_DNS_ZONE", ""),
 		DoHEndpoint:   getStr("DELIVERY_DOH_ENDPOINT", ""),
