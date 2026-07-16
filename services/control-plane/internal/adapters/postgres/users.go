@@ -93,7 +93,10 @@ func (s *UserStore) AllActiveIDs(ctx context.Context) ([]string, error) {
 // resolve eligibility exactly, so a client that gets a working config is always
 // present in the node allow-list. Ordered by uuid for a stable digest upstream.
 func (s *UserStore) EligibleRealityUsers(ctx context.Context) ([]contracts.RealityUser, error) {
-	const q = `
+	return queryEligibleRealityUsers(ctx, s.q)
+}
+
+const eligibleRealityUsersSQL = `
 SELECT u.vless_uuid, u.reality_short_id
 FROM users u
 JOIN subscriptions sub ON sub.id = u.subscription_id
@@ -101,7 +104,12 @@ WHERE u.status = 'active'
   AND sub.status IN ('active', 'trialing', 'past_due')
   AND (sub.expires_at IS NULL OR sub.expires_at > now())
 ORDER BY u.vless_uuid`
-	rows, err := s.q.Query(ctx, q)
+
+// queryEligibleRealityUsers runs the eligibility join on any querier (pool or tx),
+// so the node-activation transaction can recompute the allow-list revision under
+// the same lock it uses to flip the status.
+func queryEligibleRealityUsers(ctx context.Context, q querier) ([]contracts.RealityUser, error) {
+	rows, err := q.Query(ctx, eligibleRealityUsersSQL)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: eligible reality users: %w", err)
 	}

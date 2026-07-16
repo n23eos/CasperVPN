@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/caspervpn/contracts"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -19,4 +20,22 @@ func (h *Handler) getNodeRealityUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, res)
+}
+
+// activateNode serves POST /v1/nodes/{id}/activate — the guarded, atomic
+// provisioning->active promotion. no-store is set on ALL responses (success and
+// error) since the request reflects reconciler state. Guard failures map to 409.
+func (h *Handler) activateNode(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var req contracts.NodeActivation
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	n, err := h.nodes.Activate(r.Context(), chi.URLParam(r, "id"), req.ExpectedRevision, actorFromContext(r.Context()))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
 }

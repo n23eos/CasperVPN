@@ -88,6 +88,8 @@ func main() {
 	signalSvc := usecase.NewSignalService(nodeStore, signalStore, nodeSvc)
 	// UserStore's EligibleRealityUsers does the eligibility join in one query.
 	allowSvc := usecase.NewAllowListService(nodeStore, userStore)
+	// NodeStore.Activate does the guarded promotion in one locked transaction.
+	nodeSvc = nodeSvc.WithActivator(nodeStore)
 
 	if os.Getenv("SEED") == "true" {
 		if err := seed.Run(ctx, seed.Services{Nodes: nodeSvc, Users: userSvc, Subs: subSvc, Bundles: bundleSvc}); err != nil {
