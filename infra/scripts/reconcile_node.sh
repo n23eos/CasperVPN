@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# reconcile_node.sh — declarative reconciler that promotes a provisioning
-# entry+exit PAIR to active, fail-closed. It is the ONLY thing that flips a node
-# to active: it syncs the user allow-list onto the node, verifies >=2 client
-# transports protocol-aware, and calls the guarded /activate — exit first, entry
-# last. ANY error leaves the node(s) provisioning.
+# reconcile_node.sh — declarative, fail-closed reconciler that promotes a
+# provisioning entry+exit PAIR to active. It is the ONLY path to active: it syncs
+# the user allow-list onto the node, verifies >=2 client transports protocol-aware,
+# and calls the guarded /activate — exit first, entry last.
 #
-# Pair state machine (each step aborts -> pair stays provisioning):
-#   0. serialize per pair (flock) — a stale run must not race a newer one.
-#   1. demote the entry to provisioning before any mutation.
-#   2. prepare + verify the EXIT (its SS2022 egress works) -> activate EXIT
-#      (POST /activate {evidence: exit_data_plane_verified}).
-#   3. fetch R1 (allow-list) -> push each user's uuid/short-id onto the entry ->
-#      converge + restart the node config.
-#   4. re-fetch R2; if R2 != R1 (a ban/rotation raced the converge) -> DO NOT
-#      activate; redo the full sync.
-#   5. probe every client transport; require >=2 distinct verified (transport_gate).
-#   6. activate the ENTRY (POST /activate {expected_revision: R1}); the CP re-checks
-#      the digest under a lock, so a 409 just means "retry".
+# STRICT rollback/retry model (so "any error leaves the pair provisioning" holds
+# AND a re-run is idempotent):
+#   0. serialize per pair (portable lock).
+#   1. HARD-DEMOTE both entry and exit to provisioning up front. This is a barrier:
+#      a CP error here aborts immediately (an old active entry must not keep
+#      serving while we converge). Demoting both means every run starts clean, so
+#      re-activating is never a 409-on-already-active.
+#   2. verify the EXIT data plane -> activate the EXIT (evidence).
+#   3. from here, ANY failure best-effort demotes the EXIT back to provisioning,
+#      so a partial run leaves entry=provisioning AND exit=provisioning.
+#   4. fetch R1 -> sync allow-list onto the entry -> converge.
+#   5. re-fetch R2; R2 != R1 (raced ban/rotation) -> abort (roll back exit).
+#   6. probe >=2 distinct verified client transports (transport_gate).
+#   7. activate the ENTRY {expected_revision: R1}.
 #
-# Usage:  ENTRY=<entry-id> EXIT=<exit-id> reconcile_node.sh
-# Env:    CONTROL_PLANE_URL CONTROL_PLANE_TOKEN; probing needs PROBE_IMG/PROBE_NET
-#         and the node-config apply hook (RECONCILE_APPLY_CMD) supplied by the
-#         orchestrator/e2e. This script owns the DECISIONS; the caller supplies the
-#         node-mutation + probe-config builders as hooks so the logic is testable.
+# Node mutation + probe-config building are caller hooks (RECONCILE_VERIFY_EXIT,
+# RECONCILE_APPLY_CMD, RECONCILE_PROBE_CMD) so the DECISION logic is testable; the
+# full drive is the e2e. Source with RECONCILE_LIB_ONLY=true to load functions
+# without running.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -32,10 +32,8 @@ source "${HERE}/control_plane.sh"
 # shellcheck source=probe.sh
 source "${HERE}/probe.sh"
 
-require_cmd jq curl flock
-require_env ENTRY EXIT CONTROL_PLANE_URL CONTROL_PLANE_TOKEN
-
-_cp() { # _cp METHOD PATH [body] -> echoes body, dies on non-2xx
+# _cp METHOD PATH [body] -> echoes body; returns 0 on 2xx, the HTTP code otherwise.
+_cp() {
   local method="$1" path="$2" body="${3:-}"
   local code out; out="$(mktemp)"
   if [ -n "$body" ]; then
@@ -46,56 +44,82 @@ _cp() { # _cp METHOD PATH [body] -> echoes body, dies on non-2xx
       || { rm -f "$out"; return 22; }
   fi
   cat "$out"; rm -f "$out"
-  case "$code" in 2??) return 0 ;; *) return "$code" ;; esac
+  case "$code" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
-# reconcile_pair — the state machine. Returns non-zero (pair stays provisioning)
-# on any failed step. Idempotent: a re-run of an already-active pair is a no-op
-# via the CP's not-provisioning 409s.
+# _cp_demote <id> -> set the node's status to provisioning. PATCH /v1/nodes is a
+# full-body replace, so GET first, flip status, PATCH the whole object back.
+_cp_demote() {
+  local id="$1" node
+  node="$(_cp GET "/v1/nodes/${id}")" || return 1
+  node="$(jq -c '.status = "provisioning"' <<<"$node")" || return 1
+  _cp PATCH "/v1/nodes/${id}" "$node" >/dev/null || return 1
+}
+
+# reconcile_pair <entry-id> <exit-id> -> 0 iff the entry ends active. Any failure
+# leaves BOTH provisioning.
 reconcile_pair() {
-  # 1. demote entry (fail-closed: never leave a half-synced node serving).
-  log "reconcile: demoting entry ${ENTRY} to provisioning before sync"
-  _cp PATCH "/v1/nodes/${ENTRY}" "$(jq -n '{status:"provisioning"}')" >/dev/null 2>&1 || true
+  local entry="$1" exit_id="$2"
 
-  # 2. EXIT first — the reconciler's authenticated entry->exit probe is the evidence.
+  # 1. Barrier: hard-demote both. A CP error aborts before anything is activated.
+  _cp_demote "$entry"   || { log "reconcile: demote entry ${entry} failed — aborting (node may still be serving; not converging)"; return 1; }
+  _cp_demote "$exit_id" || { log "reconcile: demote exit ${exit_id} failed — aborting"; return 1; }
+  log "reconcile: entry+exit demoted to provisioning"
+
+  # 2. Exit first — the reconciler's authenticated probe is the evidence.
   if ! "${RECONCILE_VERIFY_EXIT:?RECONCILE_VERIFY_EXIT hook required}"; then
-    log "reconcile: exit ${EXIT} data-plane not verified — leaving provisioning"; return 1
+    log "reconcile: exit ${exit_id} data-plane not verified — leaving provisioning"; return 1
   fi
-  _cp POST "/v1/nodes/${EXIT}/activate" "$(jq -n '{expected_revision:"", evidence:"exit_data_plane_verified"}')" >/dev/null \
+  _cp POST "/v1/nodes/${exit_id}/activate" "$(jq -n '{expected_revision:"", evidence:"exit_data_plane_verified"}')" >/dev/null \
     || { log "reconcile: exit activation refused — leaving provisioning"; return 1; }
-  log "reconcile: exit ${EXIT} active"
+  log "reconcile: exit ${exit_id} active"
 
-  # 3. fetch R1 + sync the allow-list onto the entry, converge.
-  local r1 users
-  r1="$(_cp GET "/v1/nodes/${ENTRY}/reality-users")" || { log "reconcile: allow-list read failed"; return 1; }
-  users="$(jq -c '.users' <<<"$r1")"; local rev1; rev1="$(jq -r '.revision' <<<"$r1")"
-  log "reconcile: syncing $(jq 'length' <<<"$users") users onto ${ENTRY} (rev ${rev1:0:12}...)"
+  # 3. From here roll the exit back on any failure.
+  local rc=0
+  _reconcile_after_exit "$entry" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "reconcile: failed after exit activation — rolling exit ${exit_id} back to provisioning"
+    _cp_demote "$exit_id" || log "reconcile: WARN exit rollback demote failed — exit ${exit_id} may be left active"
+    return "$rc"
+  fi
+  log "reconcile: pair active (exit-first, entry-last complete)"
+}
+
+# _reconcile_after_exit <entry-id> — steps 4-7 (sync, R2 gate, probe, activate).
+_reconcile_after_exit() {
+  local entry="$1" r1 users rev1 rev2 results
+  r1="$(_cp GET "/v1/nodes/${entry}/reality-users")" || { log "reconcile: allow-list read failed"; return 1; }
+  users="$(jq -c '.users' <<<"$r1")"; rev1="$(jq -r '.revision' <<<"$r1")"
+  log "reconcile: syncing $(jq 'length' <<<"$users") users onto ${entry} (rev ${rev1:0:12}...)"
   RECONCILE_USERS="$users" "${RECONCILE_APPLY_CMD:?RECONCILE_APPLY_CMD hook required}" \
     || { log "reconcile: node apply/converge failed"; return 1; }
 
-  # 4. re-fetch R2; a mid-converge ban/rotation means redo, do NOT activate.
-  local rev2; rev2="$(_cp GET "/v1/nodes/${ENTRY}/reality-users" | jq -r '.revision')" \
+  rev2="$(_cp GET "/v1/nodes/${entry}/reality-users" | jq -r '.revision')" \
     || { log "reconcile: allow-list re-read failed"; return 1; }
   if [ "$rev2" != "$rev1" ]; then
-    log "reconcile: allow-list changed during converge (R1 ${rev1:0:8} != R2 ${rev2:0:8}) — retry, not activating"
-    return 1
+    log "reconcile: allow-list changed during converge (${rev1:0:8} != ${rev2:0:8}) — retry, not activating"; return 1
   fi
 
-  # 5. protocol-aware probes: >=2 distinct verified client transports.
-  local results; results="$("${RECONCILE_PROBE_CMD:?RECONCILE_PROBE_CMD hook required}")" \
+  results="$("${RECONCILE_PROBE_CMD:?RECONCILE_PROBE_CMD hook required}")" \
     || { log "reconcile: probing failed"; return 1; }
   if ! transport_gate "$results"; then
     log "reconcile: fewer than 2 distinct verified client transports — leaving provisioning: ${results}"; return 1
   fi
 
-  # 6. activate the ENTRY, guarded on the exact revision we synced (R1).
-  _cp POST "/v1/nodes/${ENTRY}/activate" "$(jq -n --arg r "$rev1" '{expected_revision:$r}')" >/dev/null \
-    || { log "reconcile: entry activation refused (revision race or structure) — leaving provisioning"; return 1; }
-  log "reconcile: entry ${ENTRY} ACTIVE (exit-first, entry-last complete)"
+  _cp POST "/v1/nodes/${entry}/activate" "$(jq -n --arg r "$rev1" '{expected_revision:$r}')" >/dev/null \
+    || { log "reconcile: entry activation refused (revision race or structure)"; return 1; }
+  log "reconcile: entry ${entry} ACTIVE"
 }
 
-# Serialize per pair so a stale run never activates after a newer failed one.
-LOCK="/tmp/caspervpn-reconcile-${ENTRY}.lock"
-exec 9>"$LOCK"
-flock -n 9 || die "another reconcile for ${ENTRY} is in progress"
-reconcile_pair
+reconcile_main() {
+  require_cmd jq curl
+  require_env ENTRY EXIT CONTROL_PLANE_URL CONTROL_PLANE_TOKEN
+  local lock="/tmp/caspervpn-reconcile-${ENTRY}"
+  acquire_lock "$lock" || die "another reconcile for ${ENTRY} is in progress"
+  reconcile_pair "$ENTRY" "$EXIT"
+}
+
+# Run only when executed, not when sourced (tests source with RECONCILE_LIB_ONLY).
+if [ "${RECONCILE_LIB_ONLY:-false}" != "true" ]; then
+  reconcile_main
+fi
