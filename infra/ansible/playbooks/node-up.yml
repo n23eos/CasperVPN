@@ -18,12 +18,16 @@
                'server_names': reality_server_names,
                'handshake_server': reality_handshake_server | default(reality_server_names[0]),
              })}, recursive=True) }}
-    # Hysteria2 desired state (enable + SNI + optional durable password) is DATA
-    # from the provisioner. Passing hy2_password here (e.g. read back from the
-    # control-plane on a rotation) makes keygen's explicit branch reuse it, so a
-    # replacement VM serves the SAME password the control-plane already advertises.
-    - name: Merge hysteria2 desired state into the transport matrix
-      when: hy2_sni is defined
+    # Hysteria2 is CLIENT-facing and belongs ONLY on the entry (clients connect to
+    # the entry; the exit is egress with no client inbound). Gate on node_role so
+    # global extra-vars can't enable a client hysteria2 inbound on the exit too.
+    # Passing hy2_password here (read back from the control-plane on a rotation)
+    # makes keygen's explicit branch reuse it, so a replacement VM serves the SAME
+    # password the control-plane already advertises.
+    - name: Merge hysteria2 desired state into the transport matrix (entry only)
+      when:
+        - hy2_sni is defined
+        - node_role | default('') == 'entry'
       ansible.builtin.set_fact:
         transports: >-
           {{ transports | combine({'hysteria2':
@@ -32,6 +36,26 @@
                'tls_sni': hy2_sni,
                'password': hy2_password | default(''),
              })}, recursive=True) }}
+    # Install the trusted TLS cert+key supplied by the secret manager BEFORE the
+    # transports role's fail-closed TLS assert. A VM replacement wipes on-disk
+    # material, so rotation must re-supply it here (the private key is a server
+    # secret and is never held by the control-plane). no_log — the key is secret.
+    - name: Install hysteria2 TLS material from the secret manager (entry only)
+      when:
+        - hy2_sni is defined
+        - node_role | default('') == 'entry'
+        - hy2_tls_cert is defined
+        - hy2_tls_key is defined
+      ansible.builtin.copy:
+        dest: "{{ item.path }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - { path: "{{ transports.hysteria2.tls_cert_path }}", content: "{{ hy2_tls_cert }}" }
+        - { path: "{{ transports.hysteria2.tls_key_path }}", content: "{{ hy2_tls_key }}" }
+      no_log: true
   roles:
     - role: singbox
     - role: transports

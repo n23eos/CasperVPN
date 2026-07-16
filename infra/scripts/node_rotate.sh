@@ -13,6 +13,8 @@ source "${HERE}/lib.sh"
 source "${HERE}/control_plane.sh"
 # shellcheck source=reality_sync.sh
 source "${HERE}/reality_sync.sh"
+# shellcheck source=hy2_lifecycle.sh
+source "${HERE}/hy2_lifecycle.sh"
 
 require_cmd terraform ansible-playbook ansible jq curl
 require_env NODE SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
@@ -39,18 +41,23 @@ log "new entry IP: ${NEW_ENTRY_IP}"
 INV="$(mktemp)"; trap 'rm -f "${INV}"' EXIT
 printf '[entry]\n%s ansible_host=%s node_id=%s\n' "${NODE}" "${NEW_ENTRY_IP}" "${NODE}" >"${INV}"
 
-# The hysteria2 password is a DURABLE client secret — it must survive a VM
-# replacement. terraform -replace wipes the on-VM state file, and regenerating it
-# would desync the fresh server from what the control-plane still advertises to
-# clients. So read it (and its SNI) back from the control-plane — the trusted
-# source that already holds it — and feed it into the fresh VM's keygen (explicit
-# branch) so the replacement serves the SAME password. Empty => hysteria2 was not
-# configured on this node.
+# The hysteria2 PASSWORD is a durable client secret that must survive the replace.
+# terraform -replace wipes the on-VM state file; regenerating would desync the
+# fresh server from what the control-plane still advertises. Read it (+ SNI) back
+# from the control-plane — the durable source — and feed it forward. hy2_desired_
+# from_cp HARD-FAILS if the control-plane is unreachable (never rotate blind) or
+# if the hysteria2 state is partial. Empty => this node has no hysteria2.
 HY2_PASSWORD=""; HY2_SNI_CUR=""
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
-  CUR_NODE="$(cp_get_node "${NODE}" 2>/dev/null || echo '{}')"
-  HY2_PASSWORD="$(printf '%s' "$CUR_NODE" | jq -r 'first(.transports[]? | select(.type=="hysteria2")).hysteria2.password // empty')"
-  HY2_SNI_CUR="$(printf '%s' "$CUR_NODE" | jq -r 'first(.transports[]? | select(.type=="hysteria2")).hysteria2.sni // empty')"
+  HY2_DESIRED="$(hy2_desired_from_cp "${NODE}")"
+  if [ -n "$HY2_DESIRED" ]; then
+    HY2_PASSWORD="${HY2_DESIRED%%$'\t'*}"
+    HY2_SNI_CUR="${HY2_DESIRED##*$'\t'}"
+    # The TLS PRIVATE KEY is a server secret and is never in the control-plane, so
+    # a replacement must re-supply the trusted cert+key from the secret manager.
+    [ -n "${HY2_TLS_CERT:-}" ] && [ -n "${HY2_TLS_KEY:-}" ] \
+      || die "hysteria2 is configured on ${NODE} but HY2_TLS_CERT/HY2_TLS_KEY (secret manager) are not set — a replacement VM needs the trusted cert+key or it fails the fail-closed TLS assert"
+  fi
 fi
 
 # Mimicry must reach the transports role, or the fresh entry hits the empty
@@ -59,13 +66,20 @@ REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
 EXTRA_VARS="$(jq -n \
   --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
   --arg handshake "$REALITY_HANDSHAKE" \
-  --arg hy2sni "$HY2_SNI_CUR" --arg hy2pw "$HY2_PASSWORD" \
-  '{reality_server_names: $names, reality_handshake_server: $handshake}
-   + (if $hy2sni != "" then {hy2_sni: $hy2sni, hy2_password: $hy2pw} else {} end)')"
+  '{reality_server_names: $names, reality_handshake_server: $handshake}')"
+if [ -n "$HY2_SNI_CUR" ]; then
+  EXTRA_VARS="$(jq -s '.[0] * .[1]' \
+    <(printf '%s' "$EXTRA_VARS") \
+    <(hy2_extra_vars "$HY2_SNI_CUR" "$HY2_PASSWORD" "${HY2_TLS_CERT:-}" "${HY2_TLS_KEY:-}"))"
+fi
+
+# Secret vars via a 0600 file (-e @file), never on argv.
+VARS_FILE="$(write_secure_vars_file "$EXTRA_VARS")"
+trap 'rm -f "${INV}" "${VARS_FILE}"' EXIT
 
 retry 10 ansible -i "${INV}" entry -m ping >/dev/null
-ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"     -e target=entry -e "${EXTRA_VARS}"
-ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-rotate.yml" -e target=entry -e "${EXTRA_VARS}"
+ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"     -e target=entry -e "@${VARS_FILE}"
+ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-rotate.yml" -e target=entry -e "@${VARS_FILE}"
 
 # 3. Read the rotation artifact (new REALITY public key + short-id pool).
 ART="$(ansible -i "${INV}" entry -b -m slurp -a src=/etc/caspervpn/reality.pub \
