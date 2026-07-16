@@ -1,0 +1,4 @@
+# Resolve `# shellcheck source=…` and sourced files relative to each script's own
+# directory, so `source "${HERE}/lib.sh"` is followed when shellcheck runs from
+# the repo root (fixes SC1091 without weakening the gate).
+source-path=SCRIPTDIR

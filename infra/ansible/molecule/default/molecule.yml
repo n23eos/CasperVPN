@@ -17,5 +17,8 @@ provisioner:
   config_options:
     defaults:
       interpreter_python: auto_silent
+      # converge.yml includes roles by name (singbox, transports, …); point Ansible
+      # at the repo roles dir (MOLECULE_PROJECT_DIRECTORY is infra/ansible).
+      roles_path: "${MOLECULE_PROJECT_DIRECTORY}/roles"
 verifier:
   name: ansible
