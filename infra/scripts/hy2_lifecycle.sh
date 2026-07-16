@@ -38,6 +38,35 @@ hy2_desired_from_cp() {
   printf '%s\t%s' "$pw" "$sni"
 }
 
+# --- entry<->exit link (Shadowsocks-2022) --------------------------------------
+# The PAIR PSK is an INTERNAL secret of the entry<->exit data plane: it is never
+# stored in the control-plane and never rendered into a client config. Both sides
+# of ONE pair share it (exit SS2022 inbound psk == entry exit_endpoint password).
+# It is a pair-level (not per-node) secret spanning two VMs, so it cannot live in
+# a single on-VM state file — it comes from the operator secret manager (PAIR_PSK)
+# and is re-supplied to a replacement VM from there (never from the control-plane,
+# which does not hold it, and never from the destroyed VM).
+
+# require_pair_psk_for_rotation <exit-configured?> — hard-fail if the entry->exit
+# chain is configured but PAIR_PSK is absent, so a rotation cannot silently drop
+# the link (which would send the fresh entry's traffic out its own IP, breaking
+# entry != exit).
+require_pair_psk_for_rotation() {
+  local exit_configured="$1"
+  [ "$exit_configured" = "true" ] || return 0
+  [ -n "${PAIR_PSK:-}" ] \
+    || die "entry->exit chaining is configured but PAIR_PSK (secret manager) is not set — a replacement entry needs the pair PSK or the chain breaks (traffic would egress the entry, violating entry != exit)"
+}
+
+# exit_link_extra_vars <server> <port> <psk> -> JSON for the entry's exit_endpoint
+# (outbound to the exit) and, on the exit host, the SS2022 inbound psk. Consumed
+# by node-up.yml pre_tasks (gated by node_role). psk is secret => vars via file.
+exit_link_extra_vars() {
+  local server="$1" port="$2" psk="$3"
+  jq -n --arg server "$server" --argjson port "${port:-8388}" --arg psk "$psk" \
+    '{pair_psk: $psk, exit_link_server: $server, exit_link_port: $port}'
+}
+
 # hy2_extra_vars <sni> <password> <tls_cert> <tls_key> -> JSON object of the
 # hysteria2 desired state for ansible. TLS cert/key are SERVER secrets (never in
 # the control-plane) and must come from the operator's secret manager on both

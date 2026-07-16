@@ -9,6 +9,8 @@ source infra/scripts/lib.sh
 # shellcheck source=/dev/null
 source infra/scripts/control_plane.sh
 # shellcheck source=/dev/null
+source infra/scripts/reality_sync.sh
+# shellcheck source=/dev/null
 source infra/scripts/hy2_lifecycle.sh
 
 pass=0; fail=0
@@ -60,9 +62,38 @@ cp_get_node() { printf '%s' '{"id":"nd","transports":[{"type":"hysteria2","hyste
 out="$(hy2_desired_from_cp "nd")"
 [ "$out" = "$(printf 'PW\tcdn.x')" ] && ok "full state -> password<TAB>sni" || bad "full state got '$out'"
 
+# --- 7. entry->exit PAIR PSK: fail-closed on rotation when chain configured -----
+export PAIR_PSK=""
+if ( require_pair_psk_for_rotation "true" ) >/dev/null 2>&1; then
+  bad "rotation with chain configured but no PAIR_PSK did not fail"
+else
+  ok "rotation without PAIR_PSK (chain configured) hard-fails"
+fi
+export PAIR_PSK="a-pair-psk"
+( require_pair_psk_for_rotation "true" ) >/dev/null 2>&1 && ok "rotation with PAIR_PSK proceeds" || bad "rotation with PAIR_PSK should proceed"
+( require_pair_psk_for_rotation "false" ) >/dev/null 2>&1 && ok "no chain -> PAIR_PSK not required" || bad "no chain should not require PAIR_PSK"
+
+# --- 8. PAIR PSK isolation: it must NEVER reach the control-plane transports -----
+# reality_sync builds only CLIENT transports (vless-reality + optional hysteria2).
+# Even with PAIR_PSK in the environment, its output must carry no shadowsocks-2022
+# transport and not the PSK string (the entry<->exit link is infra, not a CP transport).
+export PAIR_PSK="TOPSECRET-PAIR-PSK"
+export REALITY_PUBLIC_KEY=PUB REALITY_SERVER_NAMES=a.com REALITY_DEST=a.com:443
+TR="$(_transports_json)"
+if printf '%s' "$TR" | jq -e 'any(.[]; .type=="shadowsocks-2022")' >/dev/null 2>&1; then
+  bad "reality_sync leaked a shadowsocks-2022 (exit link) transport into CP"
+else
+  ok "no exit-link transport in reality_sync output"
+fi
+if printf '%s' "$TR" | grep -q "TOPSECRET-PAIR-PSK"; then
+  bad "PAIR PSK leaked into the control-plane transport payload"
+else
+  ok "PAIR PSK absent from control-plane payload"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
-  echo "PASS: hysteria2 lifecycle guards ($pass checks)"
+  echo "PASS: hysteria2 + exit-link lifecycle guards ($pass checks)"
 else
   echo "FAIL: $fail check(s) failed" >&2
   exit 1
