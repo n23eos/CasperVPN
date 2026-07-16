@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-user-removal \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
 
 INFRA := infra
@@ -101,6 +101,10 @@ e2e-probe-gate:
 ## e2e-reconcile-state: pure-shell guards for the reconciler state machine (rollback/retry/lock)
 e2e-reconcile-state:
 	@test/e2e/reconcile-state-guards.sh
+
+## e2e-user-removal: ban removes a user's REALITY access after converge+restart (opt-in)
+e2e-user-removal:
+	@test/e2e/user-removal.sh
 
 ## clean: remove build artifacts
 clean:
