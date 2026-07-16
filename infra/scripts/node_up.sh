@@ -81,6 +81,18 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   ENTRY_SIDS="$(printf '%s' "$ENTRY_BLOB" | awk -F= '/^short_ids/{print $2}')"
   [ -n "$ENTRY_PUB" ] || die "no public_key artifact from entry ${ENTRY_ID}"
 
+  # Optional 2nd client transport. When the operator enabled hysteria2 (HY2_SNI
+  # set), slurp its generated password so the node registers with vless-reality +
+  # hysteria2 (the >=2 distinct types the activation gate requires). Production
+  # runs a trusted cert => insecure=false; the self-signed/insecure path is e2e
+  # only (real-node.sh), never node-up.
+  HY2_PASSWORD=""; HY2_INSECURE="false"
+  if [ -n "${HY2_SNI:-}" ]; then
+    HY2_PASSWORD="$(ansible -i "${INV}" "${ENTRY_ID}" -b -m slurp -a src="${HY2_CRED_STATE_FILE:-/etc/caspervpn/hysteria2.cred}" \
+                     | awk '/"content":/ {gsub(/[",]/,""); print $2}' | base64 -d | awk -F= '/^password/{print $2}')"
+    [ -n "$HY2_PASSWORD" ] || die "HY2_SNI set but no hysteria2 credential on entry ${ENTRY_ID}"
+  fi
+
   # Register as PROVISIONING, not active. Subscription serves only status='active'
   # nodes (control-plane ListActive: WHERE status='active'), so a fresh node stays
   # out of every client bundle until a reconciler has (1) pushed each subscriber's
@@ -93,6 +105,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
     ENTRY_IP="${ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
     REALITY_PUBLIC_KEY="$ENTRY_PUB" REALITY_SHORT_IDS="$ENTRY_SIDS" \
     REALITY_SERVER_NAMES="$REALITY_SERVER_NAMES" REALITY_DEST="$REALITY_DEST" \
+    HY2_PASSWORD="$HY2_PASSWORD" HY2_SNI="${HY2_SNI:-}" HY2_INSECURE="$HY2_INSECURE" \
     reality_sync_node
 
   # Exit: plain inventory node, no client transport (see comment above), also

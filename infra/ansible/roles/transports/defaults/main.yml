@@ -18,6 +18,15 @@ reality_pub_artifact: "/etc/caspervpn/reality.pub"
 reality_explicit_private_key: ""
 reality_explicit_public_key: ""
 
+# Hysteria2 credential lifecycle (see tasks/hy2_keygen.yml). The password is
+# generated once and persisted 0600; a plain converge / REALITY rotation reuse it.
+hysteria2_cred_state_file: "/etc/caspervpn/hysteria2.cred"
+# TLS model: production REQUIRES an operator-provided trusted cert+key (paths in
+# transports.hysteria2.tls_cert_path/tls_key_path). A self-signed cert + client
+# insecure:true is allowed ONLY under this explicit e2e flag — never a silent
+# production fallback.
+hysteria2_insecure_e2e: false
+
 # per-user VLESS users (uuid + optional personal short_id) — filled by control-plane.
 reality_users: []
 
