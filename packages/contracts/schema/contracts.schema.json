@@ -177,6 +177,16 @@
       }
     },
 
+    "NodeActivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_revision"],
+      "description": "Body of POST /v1/nodes/{id}/activate. The control-plane activates only if the current eligibility revision equals expected_revision (guards against a ban/rotation racing the converge).",
+      "properties": {
+        "expected_revision": { "type": "string", "description": "Allow-list revision the reconciler synced onto the node." }
+      }
+    },
+
     "User": {
       "type": "object",
       "additionalProperties": false,

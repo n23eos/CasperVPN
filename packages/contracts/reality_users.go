@@ -27,6 +27,27 @@ type NodeRealityUsers struct {
 	Users    []RealityUser `json:"users"`
 }
 
+// NodeActivation is the body of POST /v1/nodes/{id}/activate. ExpectedRevision is
+// the allow-list revision the reconciler synced; the control-plane refuses to
+// activate if the current eligibility revision differs (a ban/rotation raced the
+// converge), so a node never goes active with a stale allow-list.
+type NodeActivation struct {
+	ExpectedRevision string `json:"expected_revision"`
+}
+
+// DistinctEnabledTransportTypes counts the DISTINCT types among enabled
+// transports — the anti-block diversity measure. Two enabled transports of the
+// same type count as one: diversity is about kinds of transport, not records.
+func DistinctEnabledTransportTypes(ts []Transport) int {
+	seen := map[TransportType]struct{}{}
+	for _, t := range ts {
+		if t.Enabled {
+			seen[t.Type] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
 // RealityUsersRevision computes a stable SHA-256 digest over the user set. It is a
 // pure function of the set: equal sets (in any order) yield equal revisions, and
 // any add / remove / short-id rotation yields a different one. Fields are
