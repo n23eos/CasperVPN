@@ -36,7 +36,10 @@ repo_root() {
   cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd
 }
 
+# Consumed by node_up.sh / node_rotate.sh / node_down.sh which source this file.
+# shellcheck disable=SC2034
 TF_ENV_DIR_DEFAULT="infra/terraform/envs/example"
+# shellcheck disable=SC2034
 ANSIBLE_DIR_DEFAULT="infra/ansible"
 
 # acquire_lock <path> — portable NON-BLOCKING mutex. Uses flock(1) when available

@@ -10,6 +10,10 @@
 provider "hcloud" {}
 
 provider "vultr" {
+  # api_key is a required provider argument (unlike hcloud's optional token), so
+  # validate needs a definition even though the value comes from the environment
+  # (TF_VAR_vultr_api_key / VULTR_API_KEY). Default is empty — never a secret in code.
+  api_key     = var.vultr_api_key
   rate_limit  = 700
   retry_limit = 3
 }
