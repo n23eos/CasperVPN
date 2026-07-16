@@ -47,9 +47,9 @@ fi
 
 # entry->exit chain topology is EXPLICIT, never inferred from a command failure:
 # a terraform read error / empty exit_ip hard-fails (resolve_exit_topology), so a
-# fresh entry is never brought up chain-less by accident. A single-node
-# deployment opts out on purpose with NO_EXIT_LINK=true. The internal PAIR PSK
-# then comes from the secret manager (never CP, never the destroyed VM).
+# fresh entry is never brought up chain-less by accident. NO_EXIT_LINK=true is a
+# deliberate test/recovery opt-out only (a chainless entry still won't activate).
+# The internal PAIR PSK then comes from the secret manager (never CP, never VM).
 set +e
 EXIT_LINK_IP="$(terraform -chdir="${TF_DIR}" output -raw exit_ip 2>/dev/null)"; EXIT_IP_RC=$?
 set -e
