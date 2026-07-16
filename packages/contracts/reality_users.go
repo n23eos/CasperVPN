@@ -27,12 +27,30 @@ type NodeRealityUsers struct {
 	Users    []RealityUser `json:"users"`
 }
 
+// NodeActivationEvidence is a reconciler-supplied attestation carried on an
+// activation. The control-plane does not itself probe a node's data plane; it
+// requires the reconciler to assert, after its own authenticated check, that a
+// gate is satisfied. Distinguishes a verified node from mere structural presence.
+type NodeActivationEvidence string
+
+const (
+	// ExitDataPlaneVerified attests that the reconciler ran an authenticated
+	// entry->exit probe and the exit's egress (SS2022 inbound) actually works.
+	// REQUIRED to activate an exit — its readiness is not structurally derivable.
+	ExitDataPlaneVerified NodeActivationEvidence = "exit_data_plane_verified"
+)
+
+// Valid reports whether e is a known evidence value.
+func (e NodeActivationEvidence) Valid() bool { return e == ExitDataPlaneVerified }
+
 // NodeActivation is the body of POST /v1/nodes/{id}/activate. ExpectedRevision is
 // the allow-list revision the reconciler synced; the control-plane refuses to
 // activate if the current eligibility revision differs (a ban/rotation raced the
-// converge), so a node never goes active with a stale allow-list.
+// converge), so a node never goes active with a stale allow-list. Evidence is
+// required for exit nodes (see ExitDataPlaneVerified) and ignored for entries.
 type NodeActivation struct {
-	ExpectedRevision string `json:"expected_revision"`
+	ExpectedRevision string                 `json:"expected_revision"`
+	Evidence         NodeActivationEvidence `json:"evidence,omitempty"`
 }
 
 // DistinctEnabledTransportTypes counts the DISTINCT types among enabled

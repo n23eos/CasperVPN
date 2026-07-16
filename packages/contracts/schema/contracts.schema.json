@@ -181,9 +181,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["expected_revision"],
-      "description": "Body of POST /v1/nodes/{id}/activate. The control-plane activates only if the current eligibility revision equals expected_revision (guards against a ban/rotation racing the converge).",
+      "description": "Body of POST /v1/nodes/{id}/activate. The control-plane activates only if the current eligibility revision equals expected_revision (guards against a ban/rotation racing the converge). For exit nodes, evidence is required.",
       "properties": {
-        "expected_revision": { "type": "string", "description": "Allow-list revision the reconciler synced onto the node." }
+        "expected_revision": { "type": "string", "description": "Allow-list revision the reconciler synced onto the node." },
+        "evidence": { "type": "string", "enum": ["exit_data_plane_verified"], "description": "Reconciler attestation after an authenticated probe. Required to activate an exit; ignored for entries." }
       }
     },
 
