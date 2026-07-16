@@ -39,7 +39,7 @@ check_listener udp {{ transports.hysteria2.port }} "hysteria2"
 check_listener tcp {{ transports.shadowsocks_2022.port }} "shadowsocks-2022"
 {% endif %}
 
-if [ "${#signals[@]}" -eq 0 ]; then
+if [ "{% raw %}${#signals[@]}{% endraw %}" -eq 0 ]; then
   exit 0
 fi
 

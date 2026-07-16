@@ -32,3 +32,10 @@ variable "exit_size" {
   type        = string
   default     = "vc2-1c-1gb"
 }
+
+variable "vultr_api_key" {
+  description = "Vultr API key. Supply via TF_VAR_vultr_api_key/env — never commit a value."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
