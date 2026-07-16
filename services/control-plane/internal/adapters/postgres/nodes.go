@@ -230,6 +230,31 @@ func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string, e
 	return activated, prev, err
 }
 
+// Demote atomically sets status=provisioning, but ONLY from a non-terminal state.
+// Under one row lock it reads the current status and rejects draining/retired
+// (operator-controlled terminal states) with ErrConflict — a stale reconciler
+// task must not pull a decommissioned node back into the lifecycle.
+func (s *NodeStore) Demote(ctx context.Context, id string) (contracts.NodeStatus, error) {
+	var prev contracts.NodeStatus
+	err := withTx(ctx, s.pool, func(q querier) error {
+		var cur string
+		if err := q.QueryRow(ctx, `SELECT status FROM nodes WHERE id=$1 FOR UPDATE`, id).Scan(&cur); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		prev = contracts.NodeStatus(cur)
+		switch prev {
+		case contracts.NodeStatusDraining, contracts.NodeStatusRetired:
+			return fmt.Errorf("%w: node %s is %s — refusing to demote a terminal/operator-controlled state", domain.ErrConflict, id, prev)
+		}
+		_, err := q.Exec(ctx, `UPDATE nodes SET status='provisioning' WHERE id=$1`, id)
+		return err
+	})
+	return prev, err
+}
+
 // SetEntryIP updates the advertised ingress address.
 func (s *NodeStore) SetEntryIP(ctx context.Context, id, entryIP string) error {
 	ct, err := s.q.Exec(ctx, `UPDATE nodes SET entry_ip=$2 WHERE id=$1`, id, entryIP)

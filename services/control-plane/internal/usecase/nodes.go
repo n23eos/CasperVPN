@@ -168,13 +168,14 @@ func (s *NodeService) Retire(ctx context.Context, id, actor string) error {
 // the way a read-modify-write full-body PATCH would). Used by the reconciler as a
 // hard barrier before it converges a node. Returns the demoted node.
 func (s *NodeService) Demote(ctx context.Context, id, actor string) (contracts.Node, error) {
-	prev, err := s.nodes.SetStatus(ctx, id, contracts.NodeStatusProvisioning)
+	// Conditional atomic transition: draining/retired -> ErrConflict (409).
+	prev, err := s.nodes.Demote(ctx, id)
 	if err != nil {
 		return contracts.Node{}, err
 	}
-	if err := s.recordRotation(ctx, id, &prev, contracts.NodeStatusProvisioning, "demote", "", actor); err != nil {
-		return contracts.Node{}, err
-	}
+	// Post-commit, best-effort: the barrier is already applied. A failed history
+	// write must not turn a successful demote into a 500 (matches Activate).
+	_ = s.recordRotation(ctx, id, &prev, contracts.NodeStatusProvisioning, "demote", "", actor)
 	s.queue.EnqueueNode(id)
 	return s.nodes.Get(ctx, id)
 }
