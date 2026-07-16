@@ -122,6 +122,9 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   # with reality_users:[] and would authenticate nobody — and (2) ensured at least
   # two client transports are up (anti-block: never a monoculture). Flipping to
   # active is that reconciler's job (see docs/FIRST-WORKING-USER.md), NOT node-up's.
+  # Env-prefix vars are read by reality_sync_node as shell vars; bash passes them
+  # to the function (SC2097/2098 assume POSIX sh, where it differs).
+  # shellcheck disable=SC2097,SC2098
   NODE_ID="${ENTRY_ID}" NODE_ROLE="entry" NODE_STATUS="provisioning" \
     PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" \
     ENTRY_IP="${ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
@@ -132,6 +135,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
 
   # Exit: plain inventory node, no client transport (see comment above), also
   # provisioning until the reconciler blesses the pair.
+  # shellcheck disable=SC2097,SC2098
   NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \
     PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
     cp_register_node "$(NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \

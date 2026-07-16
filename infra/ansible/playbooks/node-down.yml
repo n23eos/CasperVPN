@@ -3,7 +3,7 @@
 # actual VM teardown is done by Terraform in scripts/node_down.sh; this is the
 # graceful software-side drain that runs first.
 - name: Drain and stop a CasperVPN node
-  hosts: "{{ target }}"
+  hosts: "{{ target | default('nodes') }}"
   become: true
   tasks:
     - name: Stop sing-box
