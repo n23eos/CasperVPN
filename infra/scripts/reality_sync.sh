@@ -17,6 +17,9 @@
 #     optional:    ENTRY_IP EPHEMERAL_ENTRY_IP(true/false) ENTRY_NODE_ID
 #   REALITY:       REALITY_PUBLIC_KEY REALITY_SERVER_NAMES(csv) REALITY_DEST
 #     optional:    REALITY_SHORT_IDS(csv) REALITY_FLOW REALITY_TAG REALITY_PORT
+#   Hysteria2 (2nd client transport, optional — set HY2_PASSWORD to include it):
+#                  HY2_PASSWORD HY2_SNI
+#     optional:    HY2_INSECURE(true/false, e2e only) HY2_PORT HY2_TAG HY2_OBFS HY2_OBFS_PASSWORD
 
 # _reality_transport_json — build one contracts.Transport (vless-reality variant).
 _reality_transport_json() {
@@ -42,7 +45,41 @@ _reality_transport_json() {
      }'
 }
 
-# reality_sync_node — upsert the node with its REALITY transport. Idempotent.
+# _hy2_transport_json — build one contracts.Transport (hysteria2 variant), or
+# nothing when HY2_PASSWORD is unset. The password is a client secret that flows
+# to the client via /sub, so it is carried here by design. insecure is true only
+# for the local e2e (self-signed); production sends a trusted cert => insecure false.
+_hy2_transport_json() {
+  [ -n "${HY2_PASSWORD:-}" ] || return 0
+  require_env HY2_SNI
+  local tag="${HY2_TAG:-hysteria2-in}" port="${HY2_PORT:-8443}"
+  local insecure="${HY2_INSECURE:-false}"
+  jq -n \
+    --arg tag "$tag" --argjson port "$port" --arg pw "$HY2_PASSWORD" --arg sni "$HY2_SNI" \
+    --argjson insecure "$insecure" --arg obfs "${HY2_OBFS:-}" --arg obfspw "${HY2_OBFS_PASSWORD:-}" \
+    '{
+       tag: $tag, type: "hysteria2", version: "v1", port: $port,
+       enabled: true, priority: 1,
+       hysteria2: ({ password: $pw, sni: $sni, insecure: $insecure }
+                   + (if $obfs != "" then { obfs: $obfs, obfs_password: $obfspw } else {} end))
+     }'
+}
+
+# _transports_json — the full enabled client transport array (vless-reality plus
+# hysteria2 when configured). This is what gives a node the >=2 distinct types the
+# activation gate requires.
+_transports_json() {
+  local vless hy2
+  vless="$(_reality_transport_json)"
+  hy2="$(_hy2_transport_json)"
+  if [ -n "$hy2" ]; then
+    jq -n --argjson v "$vless" --argjson h "$hy2" '[$v, $h]'
+  else
+    jq -n --argjson v "$vless" '[$v]'
+  fi
+}
+
+# reality_sync_node — upsert the node with its client transports. Idempotent.
 # NOTE: this only syncs the REALITY public material and the caller-supplied
 # NODE_STATUS. It does NOT gate activation: it neither pushes the per-user
 # allow-list (UUID/short-id) onto the node nor enforces the ≥2-client-transport
@@ -51,12 +88,12 @@ _reality_transport_json() {
 # (see node_up.sh / node_rotate.sh comments and docs/FIRST-WORKING-USER.md).
 reality_sync_node() {
   require_env NODE_ID NODE_ROLE NODE_STATUS PROVIDER CLOUD REGION
-  local transport code
-  transport="$(_reality_transport_json)"
+  local transports code
+  transports="$(_transports_json)"
 
-  # Attempt create with the full node (transports carrying vless-reality).
+  # Attempt create with the full node (all enabled client transports).
   local node_json
-  node_json="$(TRANSPORTS_JSON="[$transport]" build_node_json)"
+  node_json="$(TRANSPORTS_JSON="$transports" build_node_json)"
   code="$(curl -sS -o "/tmp/reality_sync.$$" -w '%{http_code}' \
     -X POST "${CONTROL_PLANE_URL:?}/v1/nodes" \
     -H "$(_cp_auth)" -H 'Content-Type: application/json' \
@@ -64,13 +101,13 @@ reality_sync_node() {
 
   case "$code" in
     201|200)
-      log "reality_sync: node ${NODE_ID} created with REALITY pub=${REALITY_PUBLIC_KEY:0:12}..."
+      log "reality_sync: node ${NODE_ID} created (pub=${REALITY_PUBLIC_KEY:0:12}..., hy2=$([ -n "${HY2_PASSWORD:-}" ] && echo yes || echo no))"
       rm -f "/tmp/reality_sync.$$"
       return 0
       ;;
     409)
       rm -f "/tmp/reality_sync.$$"
-      log "reality_sync: node ${NODE_ID} exists — merging REALITY transport"
+      log "reality_sync: node ${NODE_ID} exists — merging transports"
       ;;
     *)
       cat "/tmp/reality_sync.$$" >&2; rm -f "/tmp/reality_sync.$$"
@@ -78,30 +115,31 @@ reality_sync_node() {
       ;;
   esac
 
-  # Merge path: GET current node, then update the MUTABLE node fields (a rotation
-  # bumps entry_ip/ephemeral_entry_ip, not just the key) AND upsert the
-  # vless-reality transport in place. Fields taken from the freshly built node
-  # JSON so callers' new IP/status actually land; the short-id pool is unioned so
-  # per-user isolation is never collapsed. Identity fields (id, role) are left as
-  # the control-plane holds them.
+  # Merge path: GET current node, update the MUTABLE node fields (a rotation bumps
+  # entry_ip/ephemeral_entry_ip), then upsert EACH desired transport by type —
+  # vless-reality in place (bump key, UNION short_ids so per-user isolation is
+  # never collapsed), hysteria2 replaced wholesale, and any absent one appended.
+  # Other existing transports are preserved.
   local current merged
   current="$(cp_get_node "$NODE_ID")"
-  merged="$(printf '%s' "$current" | jq --argjson t "$transport" --argjson new "$node_json" '
+  merged="$(printf '%s' "$current" | jq --argjson desired "$transports" --argjson new "$node_json" '
     .status = $new.status
     | .entry_ip = $new.entry_ip
     | .ephemeral_entry_ip = $new.ephemeral_entry_ip
     | (if $new.entry_node_id then .entry_node_id = $new.entry_node_id else . end)
-    | .transports = (
-        (.transports // []) as $ts
-        | if any($ts[]?; .type == "vless-reality")
-          then ($ts | map(
-                 if .type == "vless-reality"
-                 then .vless_reality = ($t.vless_reality + {
-                        short_ids: (((.vless_reality.short_ids // []) + $t.vless_reality.short_ids) | unique)
-                      })
-                 else . end))
-          else ($ts + [$t])
-          end)')"
+    | reduce $desired[] as $d (.;
+        .transports = (
+          (.transports // []) as $ts
+          | if any($ts[]?; .type == $d.type)
+            then ($ts | map(
+                   if .type == $d.type and $d.type == "vless-reality"
+                   then $d + {vless_reality: ($d.vless_reality + {
+                          short_ids: (((.vless_reality.short_ids // []) + $d.vless_reality.short_ids) | unique)})}
+                   elif .type == $d.type
+                   then $d
+                   else . end))
+            else ($ts + [$d])
+            end))')"
   cp_patch_node "$NODE_ID" "$merged"
-  log "reality_sync: node ${NODE_ID} merged (entry_ip=${ENTRY_IP:-<unset>}, pub=${REALITY_PUBLIC_KEY:0:12}...)"
+  log "reality_sync: node ${NODE_ID} merged (entry_ip=${ENTRY_IP:-<unset>}, transports=$(printf '%s' "$transports" | jq length))"
 }

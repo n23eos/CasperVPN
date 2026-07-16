@@ -37,9 +37,44 @@
       hysteria2 is UDP-only; if UDP/443 is cut clients lose it. Enable
       vless-reality (TCP/443) as the mandatory fallback before enabling hysteria2.
 
-# --- hysteria2 needs a TLS cert (QUIC). Self-signed, CN = mimicry SNI. ---
-- name: Generate hysteria2 self-signed cert (QUIC TLS)
+# --- hysteria2 password: resolve once, persist, reuse (idempotent). ---
+- name: Resolve hysteria2 password
   when: transports.hysteria2.enabled
+  ansible.builtin.include_tasks: hy2_keygen.yml
+
+# --- hysteria2 QUIC TLS. FAIL-CLOSED: production requires an operator-provided
+# trusted cert+key (from a secret manager). A self-signed cert is generated ONLY
+# under the explicit e2e flag; production never silently falls back to insecure —
+# missing material fails the converge, so the node stays provisioning. ---
+- name: Assert production hysteria2 TLS material is present (fail-closed)
+  when:
+    - transports.hysteria2.enabled
+    - not (hysteria2_insecure_e2e | bool)
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ transports.hysteria2.tls_cert_path }}"
+    - "{{ transports.hysteria2.tls_key_path }}"
+  register: hy2_tls_stat
+
+- name: Fail closed when production hysteria2 TLS material is missing
+  when:
+    - transports.hysteria2.enabled
+    - not (hysteria2_insecure_e2e | bool)
+  ansible.builtin.assert:
+    that:
+      - hy2_tls_stat.results | map(attribute='stat.exists') | select('equalto', false) | list | length == 0
+    fail_msg: >-
+      hysteria2 is enabled in production but its TLS certificate/key are missing.
+      Provide a TRUSTED cert+key from the secret manager (tls_cert_path /
+      tls_key_path). Refusing to silently fall back to a self-signed/insecure cert
+      — the node stays provisioning until real TLS material is supplied. To run the
+      local e2e with a self-signed cert, set hysteria2_insecure_e2e=true.
+
+- name: (e2e only) Generate hysteria2 self-signed cert
+  when:
+    - transports.hysteria2.enabled
+    - hysteria2_insecure_e2e | bool
   ansible.builtin.command:
     cmd: >-
       openssl req -x509 -nodes -newkey ec
