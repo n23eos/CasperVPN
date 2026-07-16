@@ -67,8 +67,13 @@ resolve_pair_psk() {
 # resolve_exit_topology <exit_ip_read_rc> <exit_ip> -> prints "true"/"false" for
 # EXIT_CONFIGURED. Topology is EXPLICIT, never inferred from a command failure: a
 # terraform/state read error or an empty exit_ip HARD-FAILS (so a fresh entry is
-# never brought up chain-less by accident, egressing its own IP). A genuine
-# single-node deployment must opt out on purpose with NO_EXIT_LINK=true.
+# never brought up chain-less by accident, egressing its own IP).
+#
+# NO_EXIT_LINK=true is a deliberate TEST/RECOVERY opt-out only: it drops the
+# entry->exit chain but the node is still registered as role=entry, so guarded
+# activation (which requires a paired active exit for an entry) will NOT promote
+# it — a chainless entry cannot become serving through the normal path. It does
+# NOT confer combined-node semantics (that is a separate, unimplemented role).
 resolve_exit_topology() {
   local read_rc="$1" exit_ip="$2"
   if [ "${NO_EXIT_LINK:-false}" = "true" ]; then
@@ -76,9 +81,9 @@ resolve_exit_topology() {
     return 0
   fi
   [ "$read_rc" = "0" ] \
-    || die "cannot read exit_ip (terraform/state error) — refusing to rotate; set NO_EXIT_LINK=true ONLY for an intentional single-node (entry==exit) deployment"
+    || die "cannot read exit_ip (terraform/state error) — refusing to rotate; set NO_EXIT_LINK=true ONLY as a deliberate test/recovery opt-out"
   [ -n "$exit_ip" ] \
-    || die "exit_ip is empty — refusing to rotate blind (would egress the entry's own IP, breaking entry != exit); set NO_EXIT_LINK=true if that is intended"
+    || die "exit_ip is empty — refusing to rotate blind (would egress the entry's own IP, breaking entry != exit); set NO_EXIT_LINK=true only as a deliberate test/recovery opt-out"
   printf 'true'
 }
 
