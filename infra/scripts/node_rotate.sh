@@ -60,6 +60,18 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   fi
 fi
 
+# entry->exit chaining: if the node has a paired exit, the entry forwards to it
+# over Shadowsocks-2022. The PAIR PSK is an internal pair secret — never in the
+# control-plane and never on the (destroyed) VM — so a replacement re-reads it
+# from the secret manager. Hard-fail if the chain is configured but PAIR_PSK is
+# absent (otherwise the fresh entry would egress its own IP, breaking entry!=exit).
+# A paired exit is discovered from terraform (its IP is stable across an entry
+# replace). Its presence means the entry->exit chain is configured.
+EXIT_CONFIGURED=false
+EXIT_LINK_IP="$(terraform -chdir="${TF_DIR}" output -raw exit_ip 2>/dev/null || echo '')"
+[ -n "$EXIT_LINK_IP" ] && EXIT_CONFIGURED=true
+require_pair_psk_for_rotation "$EXIT_CONFIGURED"
+
 # Mimicry must reach the transports role, or the fresh entry hits the empty
 # server_names/handshake_server asserts and fails before it can be re-keyed.
 REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
@@ -71,6 +83,11 @@ if [ -n "$HY2_SNI_CUR" ]; then
   EXTRA_VARS="$(jq -s '.[0] * .[1]' \
     <(printf '%s' "$EXTRA_VARS") \
     <(hy2_extra_vars "$HY2_SNI_CUR" "$HY2_PASSWORD" "${HY2_TLS_CERT:-}" "${HY2_TLS_KEY:-}"))"
+fi
+if [ "$EXIT_CONFIGURED" = true ]; then
+  EXTRA_VARS="$(jq -s '.[0] * .[1]' \
+    <(printf '%s' "$EXTRA_VARS") \
+    <(exit_link_extra_vars "$EXIT_LINK_IP" "${EXIT_LINK_PORT:-8388}" "$PAIR_PSK"))"
 fi
 
 # Secret vars via a 0600 file (-e @file), never on argv.

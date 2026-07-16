@@ -17,7 +17,7 @@ source "${HERE}/reality_sync.sh"
 # shellcheck source=hy2_lifecycle.sh
 source "${HERE}/hy2_lifecycle.sh"
 
-require_cmd terraform ansible-playbook ansible jq curl
+require_cmd terraform ansible-playbook ansible jq curl openssl
 # REALITY mimicry is DATA, never hardcoded — the operator supplies it (see
 # docs/mimicry-domains.md). REALITY_DEST is the handshake upstream host:port.
 require_env REGION CLOUD SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
@@ -54,12 +54,8 @@ entry
 exit
 EOF
 
-# Mimicry passed as extra-vars (data, not code). NOTE: entry->exit SS chaining is
-# NOT wired here — it needs a matching Shadowsocks inbound (enabled, password,
-# port 8388) on the exit and credentials shared with the entry's outbound. That
-# is a separate, unproven task (see docs/FIRST-WORKING-USER.md); half-wiring a
-# passwordless exit_endpoint on port 443 would only produce a broken chain. For
-# now the entry terminates traffic directly (entry==exit egress).
+# Mimicry passed as extra-vars (data, not code). entry->exit SS-2022 chaining is
+# wired below (shared PAIR PSK) so the entry forwards to the exit (entry != exit).
 REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
 # hy2_sni enables + configures hysteria2 in the role (entry only; the exit gate is
 # in node-up.yml). Password is empty on the first node-up so keygen generates it;
@@ -75,8 +71,18 @@ if [ -n "${HY2_SNI:-}" ]; then
     <(hy2_extra_vars "$HY2_SNI" "" "${HY2_TLS_CERT:-}" "${HY2_TLS_KEY:-}"))"
 fi
 
-# Pass extra-vars through a 0600 file (-e @file), never on argv: hy2_tls_key/
-# hy2_password would otherwise be visible in the process list.
+# entry->exit data plane: the entry forwards decrypted traffic to the exit over
+# Shadowsocks-2022 (entry != exit). The PAIR PSK is an INTERNAL secret — never in
+# the control-plane, never in a client config. From the secret manager if given,
+# else generated once here; the operator MUST store it for future rotations
+# (a replacement entry re-reads it from the secret manager, not from the CP).
+PAIR_PSK="${PAIR_PSK:-$(openssl rand -base64 32)}"
+EXTRA_VARS="$(jq -s '.[0] * .[1]' \
+  <(printf '%s' "$EXTRA_VARS") \
+  <(exit_link_extra_vars "$EXIT_IP" "${EXIT_LINK_PORT:-8388}" "$PAIR_PSK"))"
+
+# Pass extra-vars through a 0600 file (-e @file), never on argv: pair_psk /
+# hy2_tls_key / hy2_password would otherwise be visible in the process list.
 VARS_FILE="$(write_secure_vars_file "$EXTRA_VARS")"
 trap 'rm -f "${INV}" "${VARS_FILE}"' EXIT
 
