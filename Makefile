@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-user-removal \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-user-removal e2e-reconcile \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
 
 INFRA := infra
@@ -105,6 +105,10 @@ e2e-reconcile-state:
 ## e2e-user-removal: ban removes a user's REALITY access after converge+restart (opt-in)
 e2e-user-removal:
 	@test/e2e/user-removal.sh
+
+## e2e-reconcile: full CP->data-plane reconcile loop, real ban + node resync (opt-in)
+e2e-reconcile:
+	@test/e2e/reconcile-e2e.sh
 
 ## clean: remove build artifacts
 clean:
