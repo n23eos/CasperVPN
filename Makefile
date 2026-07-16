@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
 
 INFRA := infra
@@ -81,6 +81,10 @@ e2e-real-node:
 ## e2e-sync-merge: regression for reality_sync upsert merge (postgres + control-plane only)
 e2e-sync-merge:
 	@test/e2e/reality-sync-merge.sh
+
+## e2e-hy2-rotation: regression — hysteria2 password survives a VM replacement
+e2e-hy2-rotation:
+	@test/e2e/hy2-rotation-preserve.sh
 
 ## clean: remove build artifacts
 clean:

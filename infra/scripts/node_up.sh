@@ -59,10 +59,15 @@ EOF
 # passwordless exit_endpoint on port 443 would only produce a broken chain. For
 # now the entry terminates traffic directly (entry==exit egress).
 REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
+# hy2_sni enables + configures hysteria2 in the role (the env alone did not — the
+# role reads transports.hysteria2, populated here). Password is left empty on the
+# first node-up so keygen generates it; a rotation supplies the durable one.
 EXTRA_VARS="$(jq -n \
   --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
   --arg handshake "$REALITY_HANDSHAKE" \
-  '{reality_server_names: $names, reality_handshake_server: $handshake}')"
+  --arg hy2sni "${HY2_SNI:-}" \
+  '{reality_server_names: $names, reality_handshake_server: $handshake}
+   + (if $hy2sni != "" then {hy2_sni: $hy2sni, hy2_password: ""} else {} end)')"
 
 log "ansible node-up (wait for cloud-init, then converge)"
 retry 10 ansible -i "${INV}" nodes -m ping >/dev/null

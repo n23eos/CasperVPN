@@ -1,0 +1,7 @@
+# Override for the hysteria2 rotation-preserve regression
+# (test/e2e/hy2-rotation-preserve.sh). Own host ports so it never collides.
+services:
+  postgres:
+    ports: !override ["45432:5432"]
+  control-plane:
+    ports: !override ["48081:8081"]

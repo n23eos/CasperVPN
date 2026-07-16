@@ -39,13 +39,29 @@ log "new entry IP: ${NEW_ENTRY_IP}"
 INV="$(mktemp)"; trap 'rm -f "${INV}"' EXIT
 printf '[entry]\n%s ansible_host=%s node_id=%s\n' "${NODE}" "${NEW_ENTRY_IP}" "${NODE}" >"${INV}"
 
+# The hysteria2 password is a DURABLE client secret — it must survive a VM
+# replacement. terraform -replace wipes the on-VM state file, and regenerating it
+# would desync the fresh server from what the control-plane still advertises to
+# clients. So read it (and its SNI) back from the control-plane — the trusted
+# source that already holds it — and feed it into the fresh VM's keygen (explicit
+# branch) so the replacement serves the SAME password. Empty => hysteria2 was not
+# configured on this node.
+HY2_PASSWORD=""; HY2_SNI_CUR=""
+if [ -n "${CONTROL_PLANE_URL:-}" ]; then
+  CUR_NODE="$(cp_get_node "${NODE}" 2>/dev/null || echo '{}')"
+  HY2_PASSWORD="$(printf '%s' "$CUR_NODE" | jq -r 'first(.transports[]? | select(.type=="hysteria2")).hysteria2.password // empty')"
+  HY2_SNI_CUR="$(printf '%s' "$CUR_NODE" | jq -r 'first(.transports[]? | select(.type=="hysteria2")).hysteria2.sni // empty')"
+fi
+
 # Mimicry must reach the transports role, or the fresh entry hits the empty
 # server_names/handshake_server asserts and fails before it can be re-keyed.
 REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
 EXTRA_VARS="$(jq -n \
   --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
   --arg handshake "$REALITY_HANDSHAKE" \
-  '{reality_server_names: $names, reality_handshake_server: $handshake}')"
+  --arg hy2sni "$HY2_SNI_CUR" --arg hy2pw "$HY2_PASSWORD" \
+  '{reality_server_names: $names, reality_handshake_server: $handshake}
+   + (if $hy2sni != "" then {hy2_sni: $hy2sni, hy2_password: $hy2pw} else {} end)')"
 
 retry 10 ansible -i "${INV}" entry -m ping >/dev/null
 ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"     -e target=entry -e "${EXTRA_VARS}"
@@ -75,6 +91,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
     ENTRY_IP="${NEW_ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
     REALITY_PUBLIC_KEY="${NEW_PUB}" REALITY_SHORT_IDS="${NEW_SIDS}" \
     REALITY_SERVER_NAMES="${REALITY_SERVER_NAMES}" REALITY_DEST="${REALITY_DEST}" \
+    HY2_PASSWORD="${HY2_PASSWORD}" HY2_SNI="${HY2_SNI_CUR}" HY2_INSECURE=false \
     reality_sync_node
   log "control-plane updated for ${NODE}: entry_ip=${NEW_ENTRY_IP}, REALITY pub=${NEW_PUB:0:12}... (status=provisioning until user allow-list re-synced)"
 else
