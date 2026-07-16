@@ -41,8 +41,9 @@ ANSIBLE_DIR_DEFAULT="infra/ansible"
 
 # acquire_lock <path> — portable NON-BLOCKING mutex. Uses flock(1) when available
 # (Linux), else an atomic mkdir lock (macOS has no flock). Returns non-zero if the
-# lock is already held. On the mkdir path it installs an EXIT trap to release.
-# Set LOCK_FORCE_MKDIR=true to force the portable path (used by tests).
+# lock is already held. It does NOT install a trap — the caller owns a single
+# cleanup trap (installing one here would clobber the caller's). Release with
+# release_lock. Set LOCK_FORCE_MKDIR=true to force the portable path (tests).
 acquire_lock() {
   local path="$1"
   if [ "${LOCK_FORCE_MKDIR:-false}" != "true" ] && command -v flock >/dev/null 2>&1; then
@@ -52,11 +53,11 @@ acquire_lock() {
   fi
   # mkdir is atomic: the directory's existence IS the lock.
   mkdir "${path}.d" 2>/dev/null || return 1
-  trap 'rmdir "'"${path}"'.d" 2>/dev/null || true' EXIT
   return 0
 }
 
-# release_lock <path> — release the mkdir lock (flock releases on process exit).
+# release_lock <path> — release the mkdir lock (flock releases on process exit;
+# the rmdir is then a harmless no-op).
 release_lock() {
   rmdir "${1}.d" 2>/dev/null || true
 }

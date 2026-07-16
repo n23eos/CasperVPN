@@ -120,6 +120,21 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /v1/nodes/{id}/demote:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [nodes]
+      summary: Atomically set a node's status to provisioning (reconciler barrier)
+      description: >
+        Status-only, single locked update — unlike the full-body PATCH it cannot
+        clobber a concurrent rotation's IP/keys/transports. Used by the reconciler
+        to demote a node before converging it. Restricted to orchestrator/admin.
+      operationId: demoteNode
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/nodes/{id}/reality-users:
     parameters:
       - { in: path, name: id, required: true, schema: { type: string } }
