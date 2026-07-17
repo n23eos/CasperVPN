@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # reconcile_node.sh — declarative, fail-closed reconciler that promotes a
-# provisioning entry+exit PAIR to active. It is the ONLY path to active: it syncs
-# the user allow-list onto the node, verifies >=2 client transports protocol-aware,
-# and calls the guarded /activate — exit first, entry last.
+# provisioning entry+exit PAIR to active. It is the only path that PROMOTES a
+# provisioning node to active (a plain PATCH provisioning->active is rejected): it
+# syncs the user allow-list onto the node, verifies >=2 client transports
+# protocol-aware, and calls the guarded /activate — exit first, entry last.
+# (Direct register-as-active and field-signal degraded->active recovery are separate
+# create/recovery paths, not gated here — see the Register hardening follow-up.)
 #
 # STRICT rollback/retry model (so "any error leaves the pair provisioning" holds
 # AND a re-run is idempotent):
