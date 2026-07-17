@@ -37,6 +37,14 @@ func (s *NodeService) Register(ctx context.Context, n contracts.Node, actor stri
 	if n.Status == "" {
 		n.Status = contracts.NodeStatusProvisioning
 	}
+	// Registration never creates a SERVING node. Reaching active is only via the
+	// guarded /activate path (allow-list synced, >=2 transports, exit active,
+	// revision-checked). A POST with status:active would bypass every gate, so
+	// reject it explicitly rather than silently downgrade — the caller must register
+	// provisioning and then activate. Mirrors the Update guard on non-active->active.
+	if n.Status == contracts.NodeStatusActive {
+		return contracts.Node{}, fmt.Errorf("%w: register creates a provisioning node; reach active via POST /v1/nodes/{id}/activate", domain.ErrConflict)
+	}
 	if n.CreatedAt.IsZero() {
 		n.CreatedAt = s.now()
 	}
@@ -49,9 +57,8 @@ func (s *NodeService) Register(ctx context.Context, n contracts.Node, actor stri
 	if err := s.recordRotation(ctx, n.ID, nil, n.Status, "register", n.EntryIP, actor); err != nil {
 		return contracts.Node{}, err
 	}
-	if n.Status == contracts.NodeStatusActive {
-		s.queue.EnqueueNode(n.ID)
-	}
+	// A freshly registered node is always provisioning (active is rejected above),
+	// so it never enters the active set here — no rebuild enqueue is needed.
 	return n, nil
 }
 
