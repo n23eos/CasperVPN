@@ -1,0 +1,74 @@
+# Postgres-backed integration CI: runs the DATABASE_URL-gated billing store tests
+# and the `-tags integration` control-plane tests against a real Postgres, in two
+# separate databases (billing and control-plane share table/migration names, so one
+# shared DB would collide). REQUIRE_INTEGRATION_DB=true makes a missing DB a hard
+# failure, so a silently-skipped suite can never pass as green.
+name: integration-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "packages/**"
+      - "go.work"
+      - "**/go.mod"
+      - "**/go.sum"
+      - "Makefile"
+      - ".github/workflows/integration-ci.yml"
+  pull_request:
+    paths:
+      - "services/**"
+      - "packages/**"
+      - "go.work"
+      - "**/go.mod"
+      - "**/go.sum"
+      - "Makefile"
+      - ".github/workflows/integration-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres-integration:
+    name: postgres integration (billing + control-plane)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: caspervpn
+          POSTGRES_PASSWORD: dev_only_ci
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        # Readiness: steps do not start until Postgres answers pg_isready.
+        options: >-
+          --health-cmd "pg_isready -U caspervpn"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: dev_only_ci
+      BILLING_DATABASE_URL: postgres://caspervpn:dev_only_ci@localhost:5432/billing_test?sslmode=disable
+      TEST_DATABASE_URL: postgres://caspervpn:dev_only_ci@localhost:5432/cp_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: "**/go.sum"
+      - name: install psql client
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: create the two integration databases
+        run: |
+          psql "postgres://caspervpn:dev_only_ci@localhost:5432/postgres?sslmode=disable" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE billing_test;'
+          psql "postgres://caspervpn:dev_only_ci@localhost:5432/postgres?sslmode=disable" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE cp_test;'
+      - name: apply billing schema (control-plane migrates in-test)
+        run: psql "$BILLING_DATABASE_URL" -v ON_ERROR_STOP=1 -f services/billing/internal/store/schema.sql
+      - name: integration tests
+        run: make test-integration
