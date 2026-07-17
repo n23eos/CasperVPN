@@ -14,7 +14,7 @@ MODULES := packages/contracts $(SERVICES)
 BIN := bin
 
 .PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-reconcile-signal e2e-user-removal e2e-reconcile \
-	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode infra-guards
+	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode infra-guards gate0
 
 INFRA := infra
 
@@ -152,6 +152,10 @@ node-down:
 ## infra-guards: pure-shell P0 live-lifecycle guards (no cloud/docker)
 infra-guards:
 	@set -e; for g in test/infra/*.sh; do echo ">> $$g"; bash "$$g"; done
+
+## gate0: operator GATE-0 preflight — validates the paid-step inputs, no cloud resources (see docs/GATE-0-preflight.md)
+gate0:
+	@$(INFRA)/scripts/gate0.sh
 
 ## infra-fmt: terraform fmt check across all modules/envs
 infra-fmt:
