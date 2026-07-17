@@ -39,3 +39,16 @@ type Gateway interface {
 	// settled/updated events. Webhook-driven gateways return nil.
 	Poll(ctx context.Context, open []model.Invoice) ([]model.Event, error)
 }
+
+// OnChainGateway is a poll-based gateway that verifies payments per invoice against a
+// chain. The poller drives it specially: it wraps each check in a durable poll lease
+// and records a DEFINITIVE post-deadline negative, so a concurrent sweep can only
+// expire an on-chain invoice once such a negative check exists — never burying a
+// payment confirmed within the grace window.
+type OnChainGateway interface {
+	Gateway
+	// CheckInvoice checks one invoice: a settled Event if paid+confirmed, negative=true
+	// if the chain is reachable but payment is absent/insufficient, or err for a chain
+	// API failure (neither positive nor a definitive negative).
+	CheckInvoice(ctx context.Context, inv model.Invoice) (event *model.Event, negative bool, err error)
+}
