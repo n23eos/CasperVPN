@@ -61,7 +61,7 @@ func TestProcess_ScheduleFailure_ReconcileCompletesNoDoublePeriod(t *testing.T) 
 	}
 
 	// Durable recovery finishes it with one period.
-	if err := proc.Reconcile(ctx, now, time.Minute, 100); err != nil {
+	if _, err := proc.Reconcile(ctx, now, time.Minute, 100); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if fake.CreateCalls != 1 {
