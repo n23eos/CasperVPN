@@ -323,6 +323,55 @@ func TestExpireOverdue_SkipsClaimed(t *testing.T) {
 	}
 }
 
+// (i) Regression for the re-review HIGH: if MarkSettlementActivated fails AFTER a
+// successful activation, settle must still flip the invoice to settled — otherwise
+// recovery would re-activate and grant a second period. A transient marker error is
+// not a crash, so this must hold without any process death.
+func TestSettle_MarkFailureStillSettlesNoDoublePeriod(t *testing.T) {
+	fake := seededFakeCP(t, "acct-1")
+	clk := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clk }
+	catalog := plan.NewCatalog(plan.Plan{
+		ID: contracts.SubscriptionPlanBasic, Duration: 30 * day, Grace: 3 * day,
+		Prices: map[string]string{"BTC": "0.0001"},
+	})
+	repo := &markFailStore{Memory: store.NewMemoryWithClock(now)}
+	act := subscription.NewActivator(fake, catalog, repo, now)
+	proc := NewProcessor(repo, act, 0, now)
+	seedPending(t, repo.Memory, "inv-1", "acct-1", clk.Add(time.Hour))
+
+	if err := proc.Process(context.Background(), settledEvent("d1")); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if got := statusOf(t, repo.Memory, "inv-1"); got != model.StatusSettled {
+		t.Fatalf("status = %q, want settled despite marker failure", got)
+	}
+	if fake.CreateCalls != 1 || fake.SetCalls != 1 {
+		t.Fatalf("want create=1 set=1, got create=%d set=%d", fake.CreateCalls, fake.SetCalls)
+	}
+
+	// Recovery must not re-activate a settled invoice.
+	if err := proc.Reconcile(context.Background(), clk, leaseFor, batch); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if fake.SetCalls != 1 {
+		t.Fatalf("set-period calls = %d, want 1 (no second period)", fake.SetCalls)
+	}
+	if got, want := subExpiry(t, fake, "acct-1"), clk.Add(30*day); !got.Equal(want) {
+		t.Fatalf("expiry = %v, want %v (single term)", got, want)
+	}
+}
+
+// markFailStore makes MarkSettlementActivated always fail, simulating a transient DB
+// error on that write while the rest of the store works.
+type markFailStore struct {
+	*store.Memory
+}
+
+func (m *markFailStore) MarkSettlementActivated(context.Context, string) error {
+	return fmt.Errorf("simulated marker write failure")
+}
+
 // flakyOnceCP fails the first SetSubscriptionPeriod (create has already succeeded),
 // simulating a transient activation failure mid-settle.
 type flakyOnceCP struct {

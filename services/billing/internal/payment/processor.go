@@ -119,9 +119,10 @@ func (p *Processor) finishSettlement(ctx context.Context, s store.StuckSettlemen
 		if _, err := p.activator.Activate(ctx, inv.AnonUserID, contracts.SubscriptionPlan(inv.Plan)); err != nil {
 			return fmt.Errorf("payment: recover activate %q: %w", inv.ID, err)
 		}
-		if err := p.store.MarkSettlementActivated(ctx, inv.ID); err != nil {
-			return fmt.Errorf("payment: mark activated %q: %w", inv.ID, err)
-		}
+		// Best-effort marker; status=settled below is the durable guard against a
+		// second period (see settle). A marker-write error must not leave the invoice
+		// pending+unactivated, which would re-activate on the next pass.
+		_ = p.store.MarkSettlementActivated(ctx, inv.ID)
 	}
 	return p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled)
 }
@@ -170,10 +171,12 @@ func (p *Processor) settle(ctx context.Context, ev model.Event) error {
 		_ = p.store.ReleaseSettlement(ctx, inv.ID)
 		return fmt.Errorf("payment: activate: %w", err)
 	}
-	// Record the activation before flipping status: if the process dies here, the
-	// reconciler finishes the status without re-activating (no second period).
-	if err := p.store.MarkSettlementActivated(ctx, inv.ID); err != nil {
-		return fmt.Errorf("payment: mark activated: %w", err)
-	}
+	// Activation succeeded. The marker is a best-effort optimization (it lets recovery
+	// skip re-activation if the status flip below is what crashes); the DURABLE guard
+	// against a second period is status=settled, which finishSettlement short-circuits
+	// on. So never bail on a marker-write error — bailing would leave pending +
+	// activated_at=NULL, and a single transient DB blip here (not just a crash) would
+	// then double-credit on the next recovery pass.
+	_ = p.store.MarkSettlementActivated(ctx, inv.ID)
 	return p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled)
 }
