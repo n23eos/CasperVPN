@@ -82,6 +82,51 @@ func (p *Processor) Process(ctx context.Context, ev model.Event) error {
 	return p.store.RecordEvent(ctx, ev.Provider, ev.ExternalID)
 }
 
+// Reconcile finishes settlements that were claimed but never completed — the crash
+// window between the ClaimSettlement commit and the remote activation / status flip.
+// It leases a batch cross-process-safely (so two reconcilers never touch the same
+// invoice), and for each: if activation was already applied, only flips the invoice
+// to settled; otherwise activates once, marks it, then flips. A per-invoice error is
+// swallowed so one stuck invoice can't stall the batch — its lease expires and a
+// later cycle retries. olderThan gates how stale a claim must be before recovery
+// kicks in; it must exceed the activation HTTP timeout so a live in-flight settle is
+// never pre-empted.
+func (p *Processor) Reconcile(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) error {
+	stuck, err := p.store.LeaseStuckSettlements(ctx, olderThan, leaseFor, limit)
+	if err != nil {
+		return fmt.Errorf("payment: lease stuck settlements: %w", err)
+	}
+	for _, s := range stuck {
+		// A per-invoice failure is left claimed+leased; the lease expires and a later
+		// cycle retries. It must not stop the rest of the batch.
+		_ = p.finishSettlement(ctx, s)
+	}
+	return nil
+}
+
+// finishSettlement completes one crashed settlement. If the activation was already
+// applied (Activated), it only flips the invoice to settled — re-activating would
+// add a second period. Otherwise it activates once, marks it, then flips.
+func (p *Processor) finishSettlement(ctx context.Context, s store.StuckSettlement) error {
+	inv, err := p.store.GetInvoice(ctx, s.InvoiceID)
+	if err != nil {
+		return err
+	}
+	if inv.Status == model.StatusSettled {
+		return nil
+	}
+	if !s.Activated {
+		if _, err := p.activator.Activate(ctx, inv.AnonUserID, contracts.SubscriptionPlan(inv.Plan)); err != nil {
+			return fmt.Errorf("payment: recover activate %q: %w", inv.ID, err)
+		}
+		// Best-effort marker; status=settled below is the durable guard against a
+		// second period (see settle). A marker-write error must not leave the invoice
+		// pending+unactivated, which would re-activate on the next pass.
+		_ = p.store.MarkSettlementActivated(ctx, inv.ID)
+	}
+	return p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled)
+}
+
 func (p *Processor) settle(ctx context.Context, ev model.Event) error {
 	inv, err := p.store.GetInvoice(ctx, ev.InvoiceID)
 	if err != nil {
@@ -126,5 +171,12 @@ func (p *Processor) settle(ctx context.Context, ev model.Event) error {
 		_ = p.store.ReleaseSettlement(ctx, inv.ID)
 		return fmt.Errorf("payment: activate: %w", err)
 	}
+	// Activation succeeded. The marker is a best-effort optimization (it lets recovery
+	// skip re-activation if the status flip below is what crashes); the DURABLE guard
+	// against a second period is status=settled, which finishSettlement short-circuits
+	// on. So never bail on a marker-write error — bailing would leave pending +
+	// activated_at=NULL, and a single transient DB blip here (not just a crash) would
+	// then double-credit on the next recovery pass.
+	_ = p.store.MarkSettlementActivated(ctx, inv.ID)
 	return p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled)
 }

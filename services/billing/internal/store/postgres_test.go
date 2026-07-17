@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,5 +112,165 @@ func TestPostgres_ClaimSettlementAtMostOnce(t *testing.T) {
 	again, err := repo.ClaimSettlement(ctx, invID)
 	if err != nil || !again {
 		t.Fatalf("claim after release = %v, %v; want true, nil", again, err)
+	}
+}
+
+// seedPGInvoice inserts a pending invoice and registers cleanup of both it and any
+// settlement row keyed by it.
+func seedPGInvoice(t *testing.T, pool *pgxpool.Pool, repo *store.Postgres, id string, expiresAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	inv := model.Invoice{
+		ID: id, Provider: "mock", AnonUserID: "acct-pg", Plan: "basic",
+		Currency: "BTC", Amount: "0.0001", PayAddress: "addr", ProviderInvoiceID: "prov",
+		Status: model.StatusPending, CreatedAt: time.Now().UTC(), ExpiresAt: expiresAt,
+	}
+	if err := repo.CreateInvoice(ctx, inv); err != nil {
+		t.Fatalf("seed invoice %s: %v", id, err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM settlements WHERE invoice_id = $1`, id)
+		_, _ = pool.Exec(ctx, `DELETE FROM invoices WHERE id = $1`, id)
+	})
+}
+
+// TestPostgres_LeaseRecoversStuckSettlement covers the crash-recovery path: a claimed
+// but unsettled invoice is leased once, the lease is exclusive (a second immediate
+// lease sees nothing), and the activation marker flows back through the lease.
+func TestPostgres_LeaseRecoversStuckSettlement(t *testing.T) {
+	pool := newTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+	repo := store.NewPostgres(pool)
+	id := "stuck-pg-" + time.Now().UTC().Format("20060102150405.000000000")
+	seedPGInvoice(t, pool, repo, id, time.Now().Add(time.Hour))
+
+	if ok, err := repo.ClaimSettlement(ctx, id); err != nil || !ok {
+		t.Fatalf("claim: %v ok=%v", err, ok)
+	}
+
+	// Cutoff in the future so the just-made claim is eligible.
+	leased, err := repo.LeaseStuckSettlements(ctx, time.Now().Add(time.Minute), 30*time.Second, 10)
+	if err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	if len(leased) != 1 || leased[0].InvoiceID != id || leased[0].Activated {
+		t.Fatalf("lease = %+v, want [{%s false}]", leased, id)
+	}
+
+	// The lease is exclusive: a second immediate pass sees nothing (row leased).
+	again, err := repo.LeaseStuckSettlements(ctx, time.Now().Add(time.Minute), 30*time.Second, 10)
+	if err != nil {
+		t.Fatalf("lease 2: %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("second lease = %+v, want empty (exclusive)", again)
+	}
+
+	// After activation and lease expiry, recovery sees Activated=true.
+	if err := repo.MarkSettlementActivated(ctx, id); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE settlements SET reconcile_leased_until = now() - interval '1 minute' WHERE invoice_id = $1`, id); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	released, err := repo.LeaseStuckSettlements(ctx, time.Now().Add(time.Minute), 30*time.Second, 10)
+	if err != nil {
+		t.Fatalf("re-lease: %v", err)
+	}
+	if len(released) != 1 || !released[0].Activated {
+		t.Fatalf("re-lease = %+v, want [{%s true}]", released, id)
+	}
+}
+
+// TestPostgres_LeaseAgeGate: a claim younger than the cutoff is not leased.
+func TestPostgres_LeaseAgeGate(t *testing.T) {
+	pool := newTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+	repo := store.NewPostgres(pool)
+	id := "agegate-pg-" + time.Now().UTC().Format("20060102150405.000000000")
+	seedPGInvoice(t, pool, repo, id, time.Now().Add(time.Hour))
+	if ok, err := repo.ClaimSettlement(ctx, id); err != nil || !ok {
+		t.Fatalf("claim: %v ok=%v", err, ok)
+	}
+
+	early, err := repo.LeaseStuckSettlements(ctx, time.Now().Add(-time.Hour), 30*time.Second, 10)
+	if err != nil {
+		t.Fatalf("lease early: %v", err)
+	}
+	for _, s := range early {
+		if s.InvoiceID == id {
+			t.Fatalf("claim leased below cutoff: %+v", s)
+		}
+	}
+}
+
+// TestPostgres_ExpireOverdueSkipsClaimed: an overdue invoice with a claim is never expired.
+func TestPostgres_ExpireOverdueSkipsClaimed(t *testing.T) {
+	pool := newTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+	repo := store.NewPostgres(pool)
+	stamp := time.Now().UTC().Format("20060102150405.000000000")
+	claimed := "ovd-claimed-" + stamp
+	open := "ovd-open-" + stamp
+	past := time.Now().Add(-time.Hour)
+	seedPGInvoice(t, pool, repo, claimed, past)
+	seedPGInvoice(t, pool, repo, open, past)
+	if ok, err := repo.ClaimSettlement(ctx, claimed); err != nil || !ok {
+		t.Fatalf("claim: %v ok=%v", err, ok)
+	}
+
+	if err := repo.ExpireOverdue(ctx, time.Now()); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+
+	ci, _ := repo.GetInvoice(ctx, claimed)
+	if ci.Status != model.StatusPending {
+		t.Fatalf("claimed invoice = %q, want still pending", ci.Status)
+	}
+	oi, _ := repo.GetInvoice(ctx, open)
+	if oi.Status != model.StatusExpired {
+		t.Fatalf("unclaimed overdue = %q, want expired", oi.Status)
+	}
+}
+
+// TestPostgres_LeaseConcurrentExclusive: two reconcilers racing lease the same stuck
+// invoice at most once between them (FOR UPDATE SKIP LOCKED + lease column).
+func TestPostgres_LeaseConcurrentExclusive(t *testing.T) {
+	pool := newTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+	repo := store.NewPostgres(pool)
+	id := "race-pg-" + time.Now().UTC().Format("20060102150405.000000000")
+	seedPGInvoice(t, pool, repo, id, time.Now().Add(time.Hour))
+	if ok, err := repo.ClaimSettlement(ctx, id); err != nil || !ok {
+		t.Fatalf("claim: %v ok=%v", err, ok)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	total := 0
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			leased, err := repo.LeaseStuckSettlements(ctx, time.Now().Add(time.Minute), 30*time.Second, 10)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			for _, s := range leased {
+				if s.InvoiceID == id {
+					total++
+				}
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if total != 1 {
+		t.Fatalf("invoice leased %d times across concurrent reconcilers, want 1", total)
 	}
 }
