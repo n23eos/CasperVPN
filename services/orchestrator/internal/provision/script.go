@@ -56,6 +56,12 @@ type ScriptRunner struct {
 
 const tailBytes = 4 << 10 // keep the last 4 KiB of output for diagnostics
 
+// scriptWaitDelay bounds how long cmd.Wait blocks after the timeout kill before Go
+// force-closes the I/O pipes and returns — a fallback for the case a descendant still
+// holds an inherited pipe. The process-group kill (setProcGroup) is the primary
+// mechanism; this only guards against a wedged Wait.
+const scriptWaitDelay = 2 * time.Second
+
 // NodeUp provisions a fresh entry+exit pair in the given placement.
 func (s *ScriptRunner) NodeUp(ctx context.Context, region, cloud string) error {
 	if region == "" || cloud == "" {
@@ -94,6 +100,13 @@ func (s *ScriptRunner) run(ctx context.Context, script string, vars map[string]s
 	}
 
 	cmd := exec.CommandContext(ctx, path)
+	// Kill the WHOLE process tree on timeout, not just the direct child. A script
+	// whose shell forks a grandchild (e.g. dash running `sleep`) would otherwise
+	// leave that grandchild alive holding the output pipe, so cmd.Run() blocks until
+	// it exits on its own. setProcGroup puts the command in its own group and cancels
+	// by signalling the group; WaitDelay is the bounded fallback for a wedged Wait.
+	setProcGroup(cmd)
+	cmd.WaitDelay = scriptWaitDelay
 	cmd.Env = os.Environ()
 	for k, v := range s.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
