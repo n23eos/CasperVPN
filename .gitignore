@@ -31,3 +31,6 @@ pgdata/
 /telemetry
 /orchestrator
 test/e2e/.realnode.*/
+
+# Live-run artifacts (manifests, 0600 token files) — NEVER commit
+.runs/
