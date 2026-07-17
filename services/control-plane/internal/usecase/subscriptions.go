@@ -77,21 +77,15 @@ func (s *SubscriptionService) Create(ctx context.Context, userID string, plan co
 	if err := sub.Validate(); err != nil {
 		return domain.SubscriptionWithToken{}, fmt.Errorf("%w: %s", domain.ErrValidation, err)
 	}
-	if err := s.subs.Create(ctx, sub, secret.HashToken(token), secret.Prefix(token, tokenPrefixLen)); err != nil {
+	// Atomic create+link in ONE transaction with the user row locked (FOR UPDATE):
+	// if the user already has a subscription the whole operation is rejected with
+	// ErrConflict (HTTP 409) and NOTHING is written — the generated plaintext token
+	// is simply discarded here, never persisted or returned. This closes both the
+	// duplicate-create race (two callers each creating) and the orphan window (a
+	// subscription can never exist unlinked). billing's renewal path relies on the
+	// link holding, so it must be atomic with the insert.
+	if err := s.subs.CreateAndLink(ctx, sub, secret.HashToken(token), secret.Prefix(token, tokenPrefixLen), userID); err != nil {
 		return domain.SubscriptionWithToken{}, err
-	}
-	// Link the subscription onto the user. This link MUST hold: billing's renewal
-	// path reuses an existing user.SubscriptionID to avoid creating a duplicate
-	// (orphan) subscription on retry. Swallowing a failure here would leave the sub
-	// created but unlinked, so a later renewal would create a second one.
-	u, err := s.users.Get(ctx, userID)
-	if err != nil {
-		return domain.SubscriptionWithToken{}, fmt.Errorf("link subscription to user: %w", err)
-	}
-	u.SubscriptionID = &sub.ID
-	u.UpdatedAt = now
-	if err := s.users.Update(ctx, u); err != nil {
-		return domain.SubscriptionWithToken{}, fmt.Errorf("link subscription to user: %w", err)
 	}
 	// Push the fresh token into the subscription service's index so /sub/{token}
 	// resolves without waiting for an out-of-band sync (TZ-token-revocation §2).

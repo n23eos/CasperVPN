@@ -41,7 +41,7 @@ func newTestRouterWithNodes(t *testing.T) (http.Handler, *memory.Nodes) {
 	t.Helper()
 	nodes := memory.NewNodes()
 	users := memory.NewUsers()
-	subs := memory.NewSubscriptions()
+	subs := memory.NewSubscriptions().WithUsers(users)
 	rot := memory.NewRotations()
 	sets := memory.NewSets()
 	sigs := memory.NewSignals()
