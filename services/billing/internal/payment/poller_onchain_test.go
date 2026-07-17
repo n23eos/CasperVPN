@@ -62,7 +62,7 @@ func newOnChainPoller(t *testing.T, gw fakeOnChain, now time.Time) (*payment.Pol
 	reg := payment.NewRegistry()
 	reg.Register(gw)
 	oc := payment.OnChain{Grace: 15 * time.Minute, PollLease: 30 * time.Second, ChainTimeout: 10 * time.Second, Owner: "test"}
-	return payment.NewPoller(repo, reg, proc, payment.Recovery{}, oc, func() time.Time { return now }), repo, fake
+	return payment.NewPoller(repo, reg, proc, payment.Recovery{}, oc, noopRecoveryLog, func() time.Time { return now }), repo, fake
 }
 
 func seedOnChain(t *testing.T, repo *store.Memory, id string, expiresAt time.Time) {
@@ -165,7 +165,7 @@ func TestPoller_OnChain_PositiveDisarmsStaleNegativeNoBurial(t *testing.T) {
 	}}}}
 	reg.Register(gw)
 	oc := payment.OnChain{Grace: 15 * time.Minute, PollLease: 30 * time.Second, ChainTimeout: 10 * time.Second, Owner: "test"}
-	poller := payment.NewPoller(repo, reg, proc, payment.Recovery{}, oc, clock)
+	poller := payment.NewPoller(repo, reg, proc, payment.Recovery{}, oc, noopRecoveryLog, clock)
 
 	// Past the deadline with a stale post-deadline negative already recorded.
 	seedOnChain(t, repo.Memory, "inv-1", now.Add(-20*time.Minute)) // deadline now-5m

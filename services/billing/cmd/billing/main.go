@@ -59,11 +59,14 @@ func main() {
 			log.Fatalf("on-chain config: %v", err)
 		}
 	}
+	// Structured, PII-free recovery log: counts, bounded invoice IDs, and stable stage
+	// categories only — never a raw error or response body.
+	recoveryLog := func(r payment.RecoveryReport) { log.Printf("recovery %s", r.String()) }
 	poller := payment.NewPoller(repo, registry, processor, payment.Recovery{
 		// Must exceed the activation HTTP timeout (control-plane client is 10s, and an
 		// Activate makes up to a few calls) so recovery never pre-empts a live settle.
 		StaleThreshold: interval("SETTLEMENT_STALE_THRESHOLD", 2*time.Minute),
-	}, onchainCfg, time.Now)
+	}, onchainCfg, recoveryLog, time.Now)
 	sweeper := expiry.NewSweeper(repo, cp, time.Now)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

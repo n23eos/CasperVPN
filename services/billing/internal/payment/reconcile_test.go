@@ -109,7 +109,7 @@ func TestReconcile_HealsCrashedBeforeActivate(t *testing.T) {
 		t.Fatalf("claim: %v claimed=%v", err, claimed)
 	}
 
-	if err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
+	if _, err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestReconcile_SettledIsNoop(t *testing.T) {
 	}
 	before := h.fake.SetCalls
 
-	if err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
+	if _, err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if h.fake.SetCalls != before {
@@ -154,7 +154,7 @@ func TestReconcile_AgeGate(t *testing.T) {
 	}
 
 	// Cutoff strictly before the claim time — must NOT touch it.
-	if err := h.proc.Reconcile(context.Background(), h.clk.Add(-time.Second), leaseFor, batch); err != nil {
+	if _, err := h.proc.Reconcile(context.Background(), h.clk.Add(-time.Second), leaseFor, batch); err != nil {
 		t.Fatalf("reconcile early: %v", err)
 	}
 	if got := statusOf(t, h.repo, "inv-1"); got != model.StatusPending {
@@ -165,7 +165,7 @@ func TestReconcile_AgeGate(t *testing.T) {
 	}
 
 	// Cutoff at/after the claim time — recover it.
-	if err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
+	if _, err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
 		t.Fatalf("reconcile due: %v", err)
 	}
 	if got := statusOf(t, h.repo, "inv-1"); got != model.StatusSettled {
@@ -184,9 +184,14 @@ func TestReconcile_TransientFailureRetries(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	// Pass 1: activation fails inside; invoice stays pending.
-	if err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
-		t.Fatalf("reconcile 1: %v", err)
+	// Pass 1: activation fails inside; invoice stays pending and the cycle reports the
+	// failure (aggregate error non-nil) instead of stalling or hiding it.
+	rep, err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch)
+	if err == nil {
+		t.Fatal("reconcile 1: want aggregate error for the failed activation")
+	}
+	if rep.Failed != 1 || rep.Recovered != 0 {
+		t.Fatalf("report = %+v, want Failed=1 Recovered=0", rep)
 	}
 	if got := statusOf(t, h.repo, "inv-1"); got != model.StatusPending {
 		t.Fatalf("after failed pass status = %q, want pending", got)
@@ -194,7 +199,7 @@ func TestReconcile_TransientFailureRetries(t *testing.T) {
 
 	// Advance past the lease so the row is re-leasable, then retry — now succeeds.
 	*h.clk = h.clk.Add(2 * leaseFor)
-	if err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
+	if _, err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
 		t.Fatalf("reconcile 2: %v", err)
 	}
 	if got := statusOf(t, h.repo, "inv-1"); got != model.StatusSettled {
@@ -219,7 +224,7 @@ func TestReconcile_ConcurrentSingleTerm(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch)
+			_, _ = h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch)
 		}()
 	}
 	wg.Wait()
@@ -260,7 +265,7 @@ func TestReconcile_CrashAfterActivateNoDoublePeriod(t *testing.T) {
 	wantExpiry := subExpiry(t, fake, "acct-1")
 	setBefore := fake.SetCalls
 
-	if err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
+	if _, err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -288,8 +293,20 @@ func TestReconcile_OneFailureDoesNotBlockRest(t *testing.T) {
 		}
 	}
 
-	if err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch); err != nil {
-		t.Fatalf("reconcile: %v", err)
+	// [broken, good]: the batch must continue past inv-bad, settle inv-good, and report
+	// the failure structurally (counts + stage + bounded ID) with a non-nil aggregate.
+	rep, err := h.proc.Reconcile(context.Background(), *h.clk, leaseFor, batch)
+	if err == nil {
+		t.Fatal("want aggregate error naming the failed invoice")
+	}
+	if rep.Leased != 2 || rep.Recovered != 1 || rep.Failed != 1 {
+		t.Fatalf("report = %+v, want Leased=2 Recovered=1 Failed=1", rep)
+	}
+	if rep.Stages[stageActivate] != 1 {
+		t.Fatalf("stages = %v, want activate:1", rep.Stages)
+	}
+	if len(rep.FailedIDs) != 1 || rep.FailedIDs[0] != "inv-bad" {
+		t.Fatalf("failed ids = %v, want [inv-bad]", rep.FailedIDs)
 	}
 
 	if got := statusOf(t, h.repo, "inv-good"); got != model.StatusSettled {
@@ -351,7 +368,7 @@ func TestSettle_MarkFailureStillSettlesNoDoublePeriod(t *testing.T) {
 	}
 
 	// Recovery must not re-activate a settled invoice.
-	if err := proc.Reconcile(context.Background(), clk, leaseFor, batch); err != nil {
+	if _, err := proc.Reconcile(context.Background(), clk, leaseFor, batch); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if fake.SetCalls != 1 {
