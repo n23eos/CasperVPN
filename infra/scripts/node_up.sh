@@ -16,41 +16,73 @@ source "${HERE}/control_plane.sh"
 source "${HERE}/reality_sync.sh"
 # shellcheck source=hy2_lifecycle.sh
 source "${HERE}/hy2_lifecycle.sh"
+# shellcheck source=run_manifest.sh
+source "${HERE}/run_manifest.sh"
+# shellcheck source=preflight.sh
+source "${HERE}/preflight.sh"
 
 require_cmd terraform ansible-playbook ansible jq curl openssl
 # REALITY mimicry is DATA, never hardcoded — the operator supplies it (see
 # docs/mimicry-domains.md). REALITY_DEST is the handshake upstream host:port.
 require_env REGION CLOUD SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
-# Preflight the entry<->exit PAIR PSK BEFORE any terraform apply: production
-# requires it from the secret manager (node_up cannot persist a generated one).
-PAIR_PSK="$(resolve_pair_psk)"
+# Live lifecycle requires an isolated per-run workspace (never 'default'), so a
+# mistake can't mutate a shared state, and a RUN_ID to key the teardown manifest.
+require_live_run
 ROOT="$(repo_root)"
 TF_DIR="${ROOT}/${TF_ENV_DIR_DEFAULT}"
 ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
+# Single source of truth for the sing-box pin (preflight asserts it is set).
+# shellcheck source=../versions.sh
+source "${ROOT}/infra/versions.sh"
+# Resolve the PAIR PSK from the secret manager BEFORE apply (node_up cannot persist
+# a generated one); preflight validates it and every other input.
+PAIR_PSK="$(resolve_pair_psk)"
 
-log "terraform apply (entry region=${REGION}, entry cloud=${CLOUD})"
+# Isolate this run's state, then FAIL-FAST on every mandatory value BEFORE any
+# billable resource is created (cloud auth, SSH key, PSK, REALITY TLS 1.3, HY2
+# cert/key/SAN, CP reachability, tool versions). preflight_all dies on the first
+# failure — so a bad secret never costs a VM.
 terraform -chdir="${TF_DIR}" init -input=false >/dev/null
+tf_select_workspace "${TF_DIR}"
+preflight_all "${TF_DIR}"
+
+# Stub manifest BEFORE apply: a multi-provider apply can bill one VM then fail on
+# the other, and set -e would abort before the full manifest is written. The stub
+# guarantees node_down can always find the workspace and destroy the orphan.
+write_stub_manifest >/dev/null
+
+log "terraform apply (workspace=${TF_WORKSPACE}, entry region=${REGION}, entry cloud=${CLOUD})"
 terraform -chdir="${TF_DIR}" apply -auto-approve -input=false \
   -var "ssh_pubkey=${SSH_PUBKEY}" \
   -var "entry_region=${REGION}"
 
 ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip)"
 EXIT_IP="$(terraform -chdir="${TF_DIR}" output -raw exit_ip)"
-ENTRY_ID="$(terraform -chdir="${TF_DIR}" output -raw entry_id)"
-EXIT_ID="$(terraform -chdir="${TF_DIR}" output -raw exit_id)"
+ENTRY_RAW_ID="$(terraform -chdir="${TF_DIR}" output -raw entry_id)"
+EXIT_RAW_ID="$(terraform -chdir="${TF_DIR}" output -raw exit_id)"
+ENTRY_CLOUD="$(terraform -chdir="${TF_DIR}" output -raw entry_cloud)"
+EXIT_CLOUD="$(terraform -chdir="${TF_DIR}" output -raw exit_cloud)"
+ENTRY_REGION="$(terraform -chdir="${TF_DIR}" output -raw entry_region)"
+EXIT_REGION="$(terraform -chdir="${TF_DIR}" output -raw exit_region)"
 [ -n "${ENTRY_IP}" ] || die "no entry_ip from terraform"
+# Globally-unique control-plane ids: namespace the raw provider instance id by its
+# cloud so a Hetzner id can never collide with a Vultr id in one CP namespace.
+ENTRY_ID="$(logical_id "${ENTRY_CLOUD}" "${ENTRY_RAW_ID}")"
+EXIT_ID="$(logical_id "${EXIT_CLOUD}" "${EXIT_RAW_ID}")"
 
 log "building inventory (entry=${ENTRY_IP}, exit=${EXIT_IP})"
 INV="$(mktemp)"
 trap 'rm -f "${INV}"' EXIT
 # node_role is REQUIRED per host: without it the exit inherits the entry default
 # and both provision as entries. server_names[0] handshake if none given.
+# Inventory ALIAS is the raw provider id (a plain token); the CP node_id is the
+# namespaced logical id (contains a ':', not a valid inventory hostname).
 cat >"${INV}" <<EOF
 [entry]
-${ENTRY_ID} ansible_host=${ENTRY_IP} node_id=${ENTRY_ID} node_role=entry health_region=${REGION}
+${ENTRY_RAW_ID} ansible_host=${ENTRY_IP} node_id=${ENTRY_ID} node_role=entry health_region=${ENTRY_REGION}
 
 [exit]
-${EXIT_ID} ansible_host=${EXIT_IP} node_id=${EXIT_ID} node_role=exit allowed_entry_ip=${ENTRY_IP}
+${EXIT_RAW_ID} ansible_host=${EXIT_IP} node_id=${EXIT_ID} node_role=exit allowed_entry_ip=${ENTRY_IP}
 
 [nodes:children]
 entry
@@ -97,7 +129,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   # as inventory metadata with NO client transport — otherwise subscription, which
   # renders every active node's transports, would emit an outbound with an empty
   # server (the exit has no client entry_ip).
-  ENTRY_BLOB="$(ansible -i "${INV}" "${ENTRY_ID}" -b -m slurp -a src="${REALITY_PUB_ARTIFACT:-/etc/caspervpn/reality.pub}" \
+  ENTRY_BLOB="$(ansible -i "${INV}" "${ENTRY_RAW_ID}" -b -m slurp -a src="${REALITY_PUB_ARTIFACT:-/etc/caspervpn/reality.pub}" \
                  | awk '/"content":/ {gsub(/[",]/,""); print $2}' | base64 -d)"
   ENTRY_PUB="$(printf '%s' "$ENTRY_BLOB" | awk -F= '/^public_key/{print $2}')"
   ENTRY_SIDS="$(printf '%s' "$ENTRY_BLOB" | awk -F= '/^short_ids/{print $2}')"
@@ -110,7 +142,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   # only (real-node.sh), never node-up.
   HY2_PASSWORD=""; HY2_INSECURE="false"
   if [ -n "${HY2_SNI:-}" ]; then
-    HY2_PASSWORD="$(ansible -i "${INV}" "${ENTRY_ID}" -b -m slurp -a src="${HY2_CRED_STATE_FILE:-/etc/caspervpn/hysteria2.cred}" \
+    HY2_PASSWORD="$(ansible -i "${INV}" "${ENTRY_RAW_ID}" -b -m slurp -a src="${HY2_CRED_STATE_FILE:-/etc/caspervpn/hysteria2.cred}" \
                      | awk '/"content":/ {gsub(/[",]/,""); print $2}' | base64 -d | awk -F= '/^password/{print $2}')"
     [ -n "$HY2_PASSWORD" ] || die "HY2_SNI set but no hysteria2 credential on entry ${ENTRY_ID}"
   fi
@@ -126,7 +158,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   # to the function (SC2097/2098 assume POSIX sh, where it differs).
   # shellcheck disable=SC2097,SC2098
   NODE_ID="${ENTRY_ID}" NODE_ROLE="entry" NODE_STATUS="provisioning" \
-    PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" \
+    PROVIDER="${ENTRY_CLOUD}" CLOUD="${ENTRY_CLOUD}" REGION="${ENTRY_REGION}" \
     ENTRY_IP="${ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
     REALITY_PUBLIC_KEY="$ENTRY_PUB" REALITY_SHORT_IDS="$ENTRY_SIDS" \
     REALITY_SERVER_NAMES="$REALITY_SERVER_NAMES" REALITY_DEST="$REALITY_DEST" \
@@ -134,15 +166,24 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
     reality_sync_node
 
   # Exit: plain inventory node, no client transport (see comment above), also
-  # provisioning until the reconciler blesses the pair.
+  # provisioning until the reconciler blesses the pair. Register with the EXIT's own
+  # cloud/region (it is a different provider than the entry), not the entry's.
   # shellcheck disable=SC2097,SC2098
   NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \
-    PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
+    PROVIDER="${EXIT_CLOUD}" CLOUD="${EXIT_CLOUD}" REGION="${EXIT_REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
     cp_register_node "$(NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \
-      PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
+      PROVIDER="${EXIT_CLOUD}" CLOUD="${EXIT_CLOUD}" REGION="${EXIT_REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
       build_node_json)"
 else
   log "CONTROL_PLANE_URL unset — skipping registration"
 fi
 
-log "node up: entry=${ENTRY_IP} (id=${ENTRY_ID}) exit=${EXIT_IP} (id=${EXIT_ID})"
+# Durable teardown artifact: write the 0600 run manifest (logical CP ids, raw
+# provider ids, IPs, regions, clouds, state-backup path — NO secrets). After a
+# destroy, `terraform output` is gone, so node_down relies on this manifest.
+STATE_BACKUP="$(backup_state "${TF_DIR}" || true)"
+export ENTRY_LOGICAL_ID="${ENTRY_ID}" EXIT_LOGICAL_ID="${EXIT_ID}" \
+  ENTRY_RAW_ID EXIT_RAW_ID ENTRY_IP EXIT_IP ENTRY_CLOUD EXIT_CLOUD \
+  ENTRY_REGION EXIT_REGION STATE_BACKUP
+MANIFEST="$(write_manifest)"
+log "node up: entry=${ENTRY_ID} (${ENTRY_IP}) exit=${EXIT_ID} (${EXIT_IP}) manifest=${MANIFEST}"
