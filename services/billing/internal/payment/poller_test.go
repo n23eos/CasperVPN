@@ -16,6 +16,10 @@ import (
 
 const day = 24 * time.Hour
 
+// noopRecoveryLog is the required RecoveryLogger for pollers whose test doesn't assert
+// on recovery output.
+func noopRecoveryLog(payment.RecoveryReport) {}
+
 // stubGateway is a poll-based gateway that reports one settled event per open
 // invoice with a stable ExternalID (like the on-chain watcher).
 type stubGateway struct{}
@@ -56,7 +60,7 @@ func TestPoller_SweepsExpiredPending(t *testing.T) {
 	proc := payment.NewProcessor(repo, act, 0, func() time.Time { return created })
 	reg := payment.NewRegistry()
 	reg.Register(stubGateway{}) // would settle any open invoice if not swept first
-	poller := payment.NewPoller(repo, reg, proc, payment.Recovery{}, payment.OnChain{}, func() time.Time { return nowAfterExpiry })
+	poller := payment.NewPoller(repo, reg, proc, payment.Recovery{}, payment.OnChain{}, noopRecoveryLog, func() time.Time { return nowAfterExpiry })
 
 	_ = repo.CreateInvoice(context.Background(), model.Invoice{
 		ID: "inv-1", Provider: "stub", AnonUserID: "acct-1",
@@ -93,7 +97,7 @@ func TestPoller_RepeatedPollCreditsOnce(t *testing.T) {
 
 	reg := payment.NewRegistry()
 	reg.Register(stubGateway{})
-	poller := payment.NewPoller(repo, reg, proc, payment.Recovery{}, payment.OnChain{}, func() time.Time { return now })
+	poller := payment.NewPoller(repo, reg, proc, payment.Recovery{}, payment.OnChain{}, noopRecoveryLog, func() time.Time { return now })
 
 	_ = repo.CreateInvoice(context.Background(), model.Invoice{
 		ID: "inv-1", Provider: "stub", AnonUserID: "acct-1",

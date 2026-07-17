@@ -91,17 +91,37 @@ func (p *Processor) Process(ctx context.Context, ev model.Event) error {
 // later cycle retries. olderThan gates how stale a claim must be before recovery
 // kicks in; it must exceed the activation HTTP timeout so a live in-flight settle is
 // never pre-empted.
-func (p *Processor) Reconcile(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) error {
+func (p *Processor) Reconcile(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) (RecoveryReport, error) {
+	report := RecoveryReport{}
 	stuck, err := p.store.LeaseStuckSettlements(ctx, olderThan, leaseFor, limit)
 	if err != nil {
-		return fmt.Errorf("payment: lease stuck settlements: %w", err)
+		// Batch-level failure: nothing leased. Record the stable stage in the report
+		// (so it is logged) and return the raw error separately for errors.Is/As.
+		report.Stages = map[string]int{stageLeaseQuery: 1}
+		return report, &recoveryError{stage: stageLeaseQuery, err: err}
 	}
+	report.Leased = len(stuck)
+
+	var errs []error
 	for _, s := range stuck {
+		// Honor cancellation: stop taking on new work, keep what we already did, and
+		// let RunOnce log one final signal for the cycle.
+		if ctx.Err() != nil {
+			report.Canceled = true
+			break
+		}
 		// A per-invoice failure is left claimed+leased; the lease expires and a later
-		// cycle retries. It must not stop the rest of the batch.
-		_ = p.finishSettlement(ctx, s)
+		// cycle retries. It must not stop the rest of the batch — it is counted and its
+		// stage/ID recorded, and the raw error is aggregated for the caller.
+		if rerr := p.finishSettlement(ctx, s); rerr != nil {
+			report.Failed++
+			report.note(rerr)
+			errs = append(errs, rerr)
+			continue
+		}
+		report.Recovered++
 	}
-	return nil
+	return report, joinBounded(errs)
 }
 
 // finishSettlement completes one crashed settlement. If the activation was already
@@ -110,21 +130,24 @@ func (p *Processor) Reconcile(ctx context.Context, olderThan time.Time, leaseFor
 func (p *Processor) finishSettlement(ctx context.Context, s store.StuckSettlement) error {
 	inv, err := p.store.GetInvoice(ctx, s.InvoiceID)
 	if err != nil {
-		return err
+		return &recoveryError{stage: stageLoadInvoice, invoiceID: s.InvoiceID, err: err}
 	}
 	if inv.Status == model.StatusSettled {
 		return nil
 	}
 	if !s.Activated {
 		if _, err := p.activator.Activate(ctx, inv.AnonUserID, contracts.SubscriptionPlan(inv.Plan)); err != nil {
-			return fmt.Errorf("payment: recover activate %q: %w", inv.ID, err)
+			return &recoveryError{stage: stageActivate, invoiceID: inv.ID, err: err}
 		}
 		// Best-effort marker; status=settled below is the durable guard against a
 		// second period (see settle). A marker-write error must not leave the invoice
 		// pending+unactivated, which would re-activate on the next pass.
 		_ = p.store.MarkSettlementActivated(ctx, inv.ID)
 	}
-	return p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled)
+	if err := p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled); err != nil {
+		return &recoveryError{stage: stageSetStatus, invoiceID: inv.ID, err: err}
+	}
+	return nil
 }
 
 func (p *Processor) settle(ctx context.Context, ev model.Event) error {
