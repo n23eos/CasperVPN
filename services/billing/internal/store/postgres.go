@@ -280,6 +280,12 @@ func (p *Postgres) RecordNegativeCheck(ctx context.Context, invoiceID string, ch
 	return err
 }
 
+// ClearNegativeCheck wipes the negative marker once the chain shows the invoice paid.
+func (p *Postgres) ClearNegativeCheck(ctx context.Context, invoiceID string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE invoices SET last_negative_check_at = NULL WHERE id = $1 AND status = 'pending'`, invoiceID)
+	return err
+}
+
 // UpsertSchedule inserts or replaces a subscription's expiry schedule.
 func (p *Postgres) UpsertSchedule(ctx context.Context, s model.Schedule) error {
 	_, err := p.pool.Exec(ctx, `

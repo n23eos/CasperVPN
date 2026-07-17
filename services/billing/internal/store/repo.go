@@ -96,6 +96,10 @@ type Repository interface {
 	// on-chain check (payment absent/insufficient with the chain reachable) — never
 	// for a chain API error.
 	RecordNegativeCheck(ctx context.Context, invoiceID string, checkAt time.Time) error
+	// ClearNegativeCheck wipes last_negative_check_at once the chain shows the invoice
+	// paid, disarming the sweep so a positive whose settlement fails before it claims
+	// cannot be buried by a stale post-deadline negative.
+	ClearNegativeCheck(ctx context.Context, invoiceID string) error
 
 	// Expiry schedule index (billing-owned; no PII).
 	UpsertSchedule(ctx context.Context, s model.Schedule) error

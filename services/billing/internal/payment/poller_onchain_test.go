@@ -2,6 +2,7 @@ package payment_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -126,5 +127,65 @@ func TestPoller_OnChain_PositiveSettles(t *testing.T) {
 	}
 	if fake.CreateCalls != 1 || fake.SetCalls != 1 {
 		t.Fatalf("credit: create=%d set=%d, want 1/1", fake.CreateCalls, fake.SetCalls)
+	}
+}
+
+// failClaimStore fails the first ClaimSettlement to model a transient DB error at the
+// pre-claim step of settle; everything else delegates to the wrapped Memory.
+type failClaimStore struct {
+	*store.Memory
+	failNext bool
+}
+
+func (f *failClaimStore) ClaimSettlement(ctx context.Context, id string) (bool, error) {
+	if f.failNext {
+		f.failNext = false
+		return false, errors.New("transient claim error")
+	}
+	return f.Memory.ClaimSettlement(ctx, id)
+}
+
+// Regression for the burial hole: a positive whose Process fails BEFORE it claims
+// (transient error) must not leave a stale post-deadline negative armed — otherwise
+// the same-cycle sweep would expire a chain-confirmed payment. The positive disarms
+// the negative first, so the invoice stays pending and the next cycle settles it.
+func TestPoller_OnChain_PositiveDisarmsStaleNegativeNoBurial(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	fake := controlplane.NewFake()
+	fake.AddUser(contracts.User{ID: "acct-1", Status: contracts.UserStatusActive, RealityShortID: "ab", UUID: "u"})
+	catalog := plan.NewCatalog(plan.Plan{ID: contracts.SubscriptionPlanBasic, Duration: 30 * 24 * time.Hour, Grace: 3 * 24 * time.Hour, Prices: map[string]string{"BTC": "0.0001"}})
+	repo := &failClaimStore{Memory: store.NewMemoryWithClock(clock), failNext: true}
+	act := subscription.NewActivator(fake, catalog, repo, clock)
+	proc := payment.NewProcessor(repo, act, 0, clock)
+	reg := payment.NewRegistry()
+	gw := fakeOnChain{results: map[string]checkResult{"inv-1": {ev: &model.Event{
+		Provider: "onchain", ExternalID: "onchain:inv-1", InvoiceID: "inv-1",
+		Status: model.StatusSettled, Currency: "BTC", Amount: "0.0001",
+	}}}}
+	reg.Register(gw)
+	oc := payment.OnChain{Grace: 15 * time.Minute, PollLease: 30 * time.Second, ChainTimeout: 10 * time.Second, Owner: "test"}
+	poller := payment.NewPoller(repo, reg, proc, payment.Recovery{}, oc, clock)
+
+	// Past the deadline with a stale post-deadline negative already recorded.
+	seedOnChain(t, repo.Memory, "inv-1", now.Add(-20*time.Minute)) // deadline now-5m
+	if err := repo.RecordNegativeCheck(context.Background(), "inv-1", now.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cycle 1: positive observed, ClaimSettlement fails → not settled, but MUST NOT expire.
+	if err := poller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if inv, _ := repo.GetInvoice(context.Background(), "inv-1"); inv.Status != model.StatusPending {
+		t.Fatalf("after failed claim: status = %q, want pending (must not bury a confirmed payment)", inv.Status)
+	}
+
+	// Cycle 2: claim succeeds → settles.
+	if err := poller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if inv, _ := repo.GetInvoice(context.Background(), "inv-1"); inv.Status != model.StatusSettled {
+		t.Fatalf("cycle 2: status = %q, want settled", inv.Status)
 	}
 }
