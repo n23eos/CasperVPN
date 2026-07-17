@@ -33,14 +33,20 @@ source "${HERE}/control_plane.sh"
 source "${HERE}/probe.sh"
 
 # _cp METHOD PATH [body] -> echoes body; returns 0 on 2xx, the HTTP code otherwise.
+# Every call is bounded: a hung control-plane must NOT wedge the reconciler while it
+# holds the pair lock (a stalled run after exit activation would leave the exit active
+# with no entry). A connect/total timeout makes curl exit non-zero -> _cp returns 22 ->
+# the caller aborts, which rolls the exit back and the cleanup trap releases the lock.
+# Bounds are configurable (CP_CONNECT_TIMEOUT / CP_MAX_TIME) for slow links.
 _cp() {
   local method="$1" path="$2" body="${3:-}"
+  local ct="${CP_CONNECT_TIMEOUT:-5}" mt="${CP_MAX_TIME:-20}"
   local code out; out="$(mktemp)"
   if [ -n "$body" ]; then
-    code="$(curl -sS -o "$out" -w '%{http_code}' -X "$method" "${CONTROL_PLANE_URL}${path}" \
+    code="$(curl -sS --connect-timeout "$ct" --max-time "$mt" -o "$out" -w '%{http_code}' -X "$method" "${CONTROL_PLANE_URL}${path}" \
       -H "$(_cp_auth)" -H 'Content-Type: application/json' -d "$body")" || { rm -f "$out"; return 22; }
   else
-    code="$(curl -sS -o "$out" -w '%{http_code}' -X "$method" "${CONTROL_PLANE_URL}${path}" -H "$(_cp_auth)")" \
+    code="$(curl -sS --connect-timeout "$ct" --max-time "$mt" -o "$out" -w '%{http_code}' -X "$method" "${CONTROL_PLANE_URL}${path}" -H "$(_cp_auth)")" \
       || { rm -f "$out"; return 22; }
   fi
   cat "$out"; rm -f "$out"

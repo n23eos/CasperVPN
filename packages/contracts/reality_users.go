@@ -37,6 +37,12 @@ const (
 	// ExitDataPlaneVerified attests that the reconciler ran an authenticated
 	// entry->exit probe and the exit's egress (SS2022 inbound) actually works.
 	// REQUIRED to activate an exit — its readiness is not structurally derivable.
+	//
+	// Trust model: this is a TRUSTED ATTESTATION by the orchestrator-role caller,
+	// NOT a cryptographic proof. It is a fixed string any nodeWriters-role caller
+	// could supply without a probe having run; the control-plane delegates
+	// data-plane verification to the reconciler by design (RBAC is the boundary).
+	// Do not read it as the CP having independently confirmed egress.
 	ExitDataPlaneVerified NodeActivationEvidence = "exit_data_plane_verified"
 )
 

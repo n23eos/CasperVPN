@@ -20,9 +20,12 @@ bad() { echo "  FAIL: $1" >&2; fail=$((fail+1)); }
 # counter is kept in a FILE (survives subshells). Reads of RU2_REV work because a
 # subshell inherits the parent's variables; only WRITES would not propagate.
 RU_CALL_FILE="$(mktemp)"
-reset() { ACTIVATED=(); DEMOTED=(); : >"$RU_CALL_FILE"; FAIL_DEMOTE=""; FAIL_ACTIVATE=""; RU2_REV="R1"; }
+reset() { ACTIVATED=(); DEMOTED=(); : >"$RU_CALL_FILE"; FAIL_DEMOTE=""; FAIL_ACTIVATE=""; FAIL_CP_TIMEOUT=""; RU2_REV="R1"; }
 _cp() {
   local m="$1" p="$2"
+  # Simulate a hung control-plane: the bounded curl exits 22 (timeout), which the
+  # real _cp maps to return 22. Any matching call fails as a timeout would.
+  if [ -n "${FAIL_CP_TIMEOUT:-}" ] && [[ "$m $p" == $FAIL_CP_TIMEOUT ]]; then return 22; fi
   case "$m $p" in
     "GET "*"/reality-users")
       local n; n=$(( $(wc -l <"$RU_CALL_FILE" 2>/dev/null || echo 0) + 1 )); echo x >>"$RU_CALL_FILE"
@@ -65,6 +68,13 @@ has ex "${ACTIVATED[@]}" && ok "exit was activated (step 2 reached)" || bad "exi
 has en "${ACTIVATED[@]}" && bad "entry activated despite probe failure" || ok "entry NOT activated on probe failure"
 [ "$(count ex "${DEMOTED[@]}")" -ge 2 ] && ok "exit demoted again (rolled back) after failure" || bad "exit not rolled back (demoted x$(count ex "${DEMOTED[@]}"))"
 RECONCILE_PROBE_CMD=probe_good
+
+# --- 2c. a control-plane timeout after exit activation rolls the exit back -----
+reset; FAIL_CP_TIMEOUT="GET *reality-users"
+reconcile_pair en ex >/dev/null 2>&1 && bad "reconcile succeeded despite a CP timeout"
+has ex "${ACTIVATED[@]}" && ok "exit activated before the CP timeout (step 2 reached)" || bad "exit not activated"
+has en "${ACTIVATED[@]}" && bad "entry activated despite CP timeout" || ok "entry NOT activated on CP timeout"
+[ "$(count ex "${DEMOTED[@]}")" -ge 2 ] && ok "exit rolled back after CP timeout" || bad "exit not rolled back on CP timeout"
 
 # --- 3. R2 != R1 (raced ban/rotation) aborts and rolls back --------------------
 reset; RU2_REV="R2-changed"
