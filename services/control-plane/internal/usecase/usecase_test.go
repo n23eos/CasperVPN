@@ -49,7 +49,7 @@ func TestUserCreate_IssuesDistinctPersonalSecrets(t *testing.T) {
 
 func TestSubscriptionCreate_StoresOnlyHashedToken(t *testing.T) {
 	users := newFakeUserRepo()
-	subs := newFakeSubRepo()
+	subs := newFakeSubRepo().WithUsers(users)
 	usvc := NewUserService(users, newFakeRotationRepo(), newFakeQueue())
 	u, _ := usvc.Create(context.Background(), nil, nil)
 

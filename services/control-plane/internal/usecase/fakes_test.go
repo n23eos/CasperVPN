@@ -158,11 +158,14 @@ type fakeSubRepo struct {
 	subs   map[string]contracts.Subscription
 	hashes map[string]string
 	prefix map[string]string
+	users  *fakeUserRepo // for CreateAndLink
 }
 
 func newFakeSubRepo() *fakeSubRepo {
 	return &fakeSubRepo{subs: map[string]contracts.Subscription{}, hashes: map[string]string{}, prefix: map[string]string{}}
 }
+
+func (r *fakeSubRepo) WithUsers(u *fakeUserRepo) *fakeSubRepo { r.users = u; return r }
 
 func (r *fakeSubRepo) Create(_ context.Context, s contracts.Subscription, tokenHash, tokenPrefix string) error {
 	stored := s
@@ -170,6 +173,25 @@ func (r *fakeSubRepo) Create(_ context.Context, s contracts.Subscription, tokenH
 	r.subs[s.ID] = stored
 	r.hashes[s.ID] = tokenHash
 	r.prefix[s.ID] = tokenPrefix
+	return nil
+}
+
+func (r *fakeSubRepo) CreateAndLink(ctx context.Context, s contracts.Subscription, tokenHash, tokenPrefix, userID string) error {
+	if r.users == nil {
+		return domain.ErrValidation
+	}
+	u, ok := r.users.users[userID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if u.SubscriptionID != nil && *u.SubscriptionID != "" {
+		return domain.ErrConflict
+	}
+	_ = r.Create(ctx, s, tokenHash, tokenPrefix)
+	subID := s.ID
+	u.SubscriptionID = &subID
+	u.UpdatedAt = s.UpdatedAt
+	r.users.users[userID] = u
 	return nil
 }
 

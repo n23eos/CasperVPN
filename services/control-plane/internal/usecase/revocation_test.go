@@ -16,7 +16,7 @@ import (
 func makeUserAndSub(t *testing.T, rev domain.SubscriptionRevoker) (*UserService, *SubscriptionService, *fakeSubRepo, contracts.User, domain.SubscriptionWithToken) {
 	t.Helper()
 	users := newFakeUserRepo()
-	subs := newFakeSubRepo()
+	subs := newFakeSubRepo().WithUsers(users)
 	usvc := NewUserService(users, newFakeRotationRepo(), newFakeQueue()).WithRevoker(rev)
 	ssvc := NewSubscriptionService(subs, users).WithRevoker(rev)
 	u, err := usvc.Create(context.Background(), nil, nil)
