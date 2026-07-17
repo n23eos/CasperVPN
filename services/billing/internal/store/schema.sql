@@ -30,10 +30,25 @@ CREATE TABLE IF NOT EXISTS seen_events (
 );
 
 -- Settlement latch: presence of a row means the invoice is claimed/credited.
--- The primary key makes ClaimSettlement an atomic insert-if-absent.
+-- The primary key makes ClaimSettlement an atomic insert-if-absent. The recovery
+-- columns let a reconciler finish a settlement whose process died mid-flight:
+--   claimed_at             — when the credit was claimed (recover once older than a threshold)
+--   activated_at           — remote activation applied (recovery then only flips status, no re-activate)
+--   reconcile_leased_until — cross-process lease so two reconcilers never race the same invoice
 CREATE TABLE IF NOT EXISTS settlements (
-    invoice_id TEXT PRIMARY KEY
+    invoice_id             TEXT PRIMARY KEY,
+    claimed_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    activated_at           TIMESTAMPTZ,
+    reconcile_leased_until TIMESTAMPTZ
 );
+
+-- Additive migration for an existing settlements table (idempotent).
+ALTER TABLE settlements ADD COLUMN IF NOT EXISTS claimed_at             TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE settlements ADD COLUMN IF NOT EXISTS activated_at           TIMESTAMPTZ;
+ALTER TABLE settlements ADD COLUMN IF NOT EXISTS reconcile_leased_until TIMESTAMPTZ;
+
+-- LeaseStuckSettlements filters claimed-but-old, unleased rows every recovery pass.
+CREATE INDEX IF NOT EXISTS settlements_recover_idx ON settlements (claimed_at, reconcile_leased_until);
 
 -- Billing-owned expiry index for subscriptions (no PII, no entitlement copy).
 CREATE TABLE IF NOT EXISTS schedules (
