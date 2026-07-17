@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,6 +12,14 @@ import (
 
 	"github.com/caspervpn/billing/internal/model"
 )
+
+// advisoryLockNamespace namespaces billing's per-user advisory locks (the first
+// pg_advisory_lock arg) so they can't collide with any other subsystem's locks.
+const advisoryLockNamespace int32 = 0x0B111 // "BILL"
+
+// unlockTimeout bounds the best-effort unlock so a canceled request context can't
+// skip releasing the lock.
+const unlockTimeout = 5 * time.Second
 
 // Postgres is a durable Repository backed by Postgres via a pgx connection pool.
 // It is the production drop-in for Memory: state survives restarts, and the
@@ -23,6 +33,36 @@ type Postgres struct {
 // (construction from DATABASE_URL and Close) so the store stays a thin data layer.
 func NewPostgres(pool *pgxpool.Pool) *Postgres {
 	return &Postgres{pool: pool}
+}
+
+// WithUserLock holds a session-scoped advisory lock for userID on ONE dedicated
+// connection for the whole of fn, so the entire activation of one user is serialized
+// across every billing instance sharing this database.
+func (p *Postgres) WithUserLock(ctx context.Context, userID string, fn func(ctx context.Context) error) error {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("billing: acquire lock connection: %w", err)
+	}
+	key := int32(crc32.ChecksumIEEE([]byte(userID)))
+	// Blocking acquire, bounded by ctx: pgx cancels the query if the request context
+	// is done, so a caller timeout can't wedge forever waiting on the lock.
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1, $2)`, advisoryLockNamespace, key); err != nil {
+		conn.Release()
+		return fmt.Errorf("billing: advisory lock: %w", err)
+	}
+	defer func() {
+		// Unlock on the SAME session, with a fresh context so an already-canceled
+		// request ctx cannot skip the release.
+		uctx, cancel := context.WithTimeout(context.Background(), unlockTimeout)
+		defer cancel()
+		if _, uerr := conn.Exec(uctx, `SELECT pg_advisory_unlock($1, $2)`, advisoryLockNamespace, key); uerr != nil {
+			// The connection may still hold the lock — it MUST NOT go back to the pool.
+			// Force-closing the backend makes Postgres drop the session-level lock.
+			_ = conn.Conn().Close(context.Background())
+		}
+		conn.Release() // a closed conn is discarded by the pool, not reused
+	}()
+	return fn(ctx)
 }
 
 // Compile-time proof the Postgres store implements the full Repository contract.
