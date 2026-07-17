@@ -109,12 +109,16 @@ hook_verify_exit() {
   # run the remote verify script which reads the PSK from that file and removes it.
   printf '%s' "$PAIR_PSK" | rl_ssh_entry "umask 077; cat > '${remote_psk}'" \
     || { log "reconcile-live: could not stage PSK on entry"; return 1; }
+  local rc=0
   body="$(rl_ssh_entry \
             EXIT_IP="$EXIT_IP" EXIT_LINK_PORT="${EXIT_LINK_PORT:-8388}" \
             ECHO_URL="$EGRESS_ECHO_URL" SINGBOX="${REMOTE_SINGBOX:-sing-box}" \
             PSK_FILE="$remote_psk" \
-            bash -s < "${RL_REMOTE_VERIFY:-$HERE/remote/verify_exit_remote.sh}")" \
-    || { log "reconcile-live: entry->exit verify command failed"; return 1; }
+            bash -s < "${RL_REMOTE_VERIFY:-$HERE/remote/verify_exit_remote.sh}")" || rc=$?
+  # Belt-and-suspenders: the remote script removes PSK_FILE on its own exit, but if
+  # the run call died before that trap, clean the staged 0600 PSK from the operator side.
+  rl_ssh_entry "rm -f '${remote_psk}'" >/dev/null 2>&1 || true
+  [ "$rc" -eq 0 ] || { log "reconcile-live: entry->exit verify command failed"; return 1; }
   observed="$(echo_observed_ip "$body")" \
     || { log "reconcile-live: echo body did not match the {\"ip\":..} contract — fail closed"; return 1; }
   if [ "$observed" != "$EXIT_IP" ]; then
@@ -185,6 +189,19 @@ _rl_hy2_client_config() {
 reconcile_live_main() {
   require_cmd jq curl ssh
   require_env RUN_ID EGRESS_ECHO_URL CONTROL_PLANE_URL CONTROL_PLANE_TOKEN
+  # Operator-supplied values flow into a remote ssh command line; validate their
+  # shape so a stray metacharacter can't execute on the entry.
+  case "$EGRESS_ECHO_URL" in
+    https://* | http://*) ;;
+    *) die "EGRESS_ECHO_URL must be an http(s) URL" ;;
+  esac
+  # shellcheck disable=SC2016  # the '$' is a literal in this grep character class
+  if printf '%s' "$EGRESS_ECHO_URL" | grep -qE '[[:space:];`$(){}|&<>]'; then
+    die "EGRESS_ECHO_URL contains shell metacharacters"
+  fi
+  case "${EXIT_LINK_PORT:-8388}" in
+    *[!0-9]*) die "EXIT_LINK_PORT must be numeric" ;;
+  esac
   # Logical CP ids + IPs come from the durable run manifest (globally-unique ids).
   ENTRY="$(manifest_field "$RUN_ID" '.entry.cp_id')"
   EXIT="$(manifest_field "$RUN_ID" '.exit.cp_id')"

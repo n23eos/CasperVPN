@@ -61,8 +61,12 @@ pf_hy2_tls() {
     || die "preflight: HY2_TLS_CERT and HY2_TLS_KEY are not a matching pair"
   openssl x509 -in "$HY2_TLS_CERT" -noout -checkend 0 >/dev/null 2>&1 \
     || die "preflight: HY2_TLS_CERT is expired"
+  # Extract each DNS SAN and match HY2_SNI EXACTLY (whole line, fixed string) — a
+  # substring/boundary match would wrongly accept e.g. SAN hy2.example.com for SNI
+  # hy2.example, and an unescaped SNI in a regex would let '.' match any char.
   openssl x509 -in "$HY2_TLS_CERT" -noout -ext subjectAltName 2>/dev/null \
-    | grep -qi "DNS:${HY2_SNI}\b" \
+    | tr ',' '\n' | sed -n 's/.*DNS:\([^ ,]*\).*/\1/p' \
+    | grep -qxiF "$HY2_SNI" \
     || die "preflight: HY2_TLS_CERT SAN does not cover HY2_SNI ${HY2_SNI}"
 }
 

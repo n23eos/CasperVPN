@@ -46,6 +46,11 @@ terraform -chdir="${TF_DIR}" init -input=false >/dev/null
 tf_select_workspace "${TF_DIR}"
 preflight_all "${TF_DIR}"
 
+# Stub manifest BEFORE apply: a multi-provider apply can bill one VM then fail on
+# the other, and set -e would abort before the full manifest is written. The stub
+# guarantees node_down can always find the workspace and destroy the orphan.
+write_stub_manifest >/dev/null
+
 log "terraform apply (workspace=${TF_WORKSPACE}, entry region=${REGION}, entry cloud=${CLOUD})"
 terraform -chdir="${TF_DIR}" apply -auto-approve -input=false \
   -var "ssh_pubkey=${SSH_PUBKEY}" \
