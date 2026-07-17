@@ -8,20 +8,18 @@ import (
 	"testing"
 
 	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/control-plane/internal/adapters/memory"
 )
 
-// seedNodeAndEligibleUser registers an active node and an active user with a
-// servable subscription, returning the node id and the user's uuid.
-func seedNodeAndEligibleUser(t *testing.T, r http.Handler) (nodeID, userUUID string) {
+// seedNodeAndEligibleUser seeds an active node (via the repo — Register refuses
+// active) and an active user with a servable subscription, returning the node id
+// and the user's uuid.
+func seedNodeAndEligibleUser(t *testing.T, r http.Handler, nodes *memory.Nodes) (nodeID, userUUID string) {
 	t.Helper()
 
-	nodeBody := `{"id":"nd-au-1","role":"entry","status":"active","provider":"local","cloud":"local","region":"eu","entry_ip":"1.1.1.1","ephemeral_entry_ip":false,"transports":[]}`
-	rec := do(t, r, http.MethodPost, "/v1/nodes", orchTok, nodeBody)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("seed node: got %d: %s", rec.Code, rec.Body)
-	}
+	seedActive(t, nodes, `{"id":"nd-au-1","role":"entry","status":"active","provider":"local","cloud":"local","region":"eu","entry_ip":"1.1.1.1","ephemeral_entry_ip":false,"transports":[]}`)
 
-	rec = do(t, r, http.MethodPost, "/v1/users", adminTok, `{"telegram_id":42}`)
+	rec := do(t, r, http.MethodPost, "/v1/users", adminTok, `{"telegram_id":42}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("seed user: got %d: %s", rec.Code, rec.Body)
 	}
@@ -57,8 +55,8 @@ func do(t *testing.T, r http.Handler, method, path, token, body string) *httptes
 }
 
 func TestRealityUsers_OrchestratorGetsAllowListWithNoStore(t *testing.T) {
-	r := newTestRouter(t)
-	nodeID, userUUID := seedNodeAndEligibleUser(t, r)
+	r, nodes := newTestRouterWithNodes(t)
+	nodeID, userUUID := seedNodeAndEligibleUser(t, r, nodes)
 
 	rec := do(t, r, http.MethodGet, "/v1/nodes/"+nodeID+"/reality-users", orchTok, "")
 	if rec.Code != http.StatusOK {
@@ -93,8 +91,8 @@ func TestRealityUsers_OrchestratorGetsAllowListWithNoStore(t *testing.T) {
 }
 
 func TestRealityUsers_RBACAndMissingNode(t *testing.T) {
-	r := newTestRouter(t)
-	nodeID, _ := seedNodeAndEligibleUser(t, r)
+	r, nodes := newTestRouterWithNodes(t)
+	nodeID, _ := seedNodeAndEligibleUser(t, r, nodes)
 
 	// subscription role must NOT read the allow-list (live admission creds).
 	if rec := do(t, r, http.MethodGet, "/v1/nodes/"+nodeID+"/reality-users", subTok, ""); rec.Code != http.StatusForbidden {
