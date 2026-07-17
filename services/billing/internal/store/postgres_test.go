@@ -236,7 +236,7 @@ func TestPostgres_ExpireOverdueSkipsClaimed(t *testing.T) {
 		t.Fatalf("claim: %v ok=%v", err, ok)
 	}
 
-	if err := repo.ExpireOverdue(ctx, time.Now()); err != nil {
+	if err := repo.ExpireOverdue(ctx, time.Now(), nil, 0); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 
