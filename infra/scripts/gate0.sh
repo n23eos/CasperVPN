@@ -15,8 +15,9 @@
 # Optional: HY2_SNI (+HY2_TLS_CERT/HY2_TLS_KEY), RUN_ID (generated if unset),
 #   RUN_MAX_MINUTES (default 120), BUDGET_ALERTS_CONFIRMED=1, E2E_CONFIRMED=1.
 # The gate_* checks are invoked indirectly (passed by name to `check`), which the
-# linter cannot see; disable the "never invoked" warning file-wide.
-# shellcheck disable=SC2329
+# linter cannot see; disable "never invoked" (SC2329) and "unreachable" (SC2317)
+# file-wide (different shellcheck versions flag one or the other).
+# shellcheck disable=SC2329,SC2317
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
