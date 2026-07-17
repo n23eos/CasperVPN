@@ -15,7 +15,7 @@ import (
 func TestRun_SeedsActiveFleetIdempotently(t *testing.T) {
 	nodes := memory.NewNodes()
 	users := memory.NewUsers()
-	subs := memory.NewSubscriptions()
+	subs := memory.NewSubscriptions().WithUsers(users)
 	rot := memory.NewRotations()
 	sets := memory.NewSets()
 	q := memory.NewNoopQueue()
