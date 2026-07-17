@@ -57,7 +57,7 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body any, out 
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
-		return fmt.Errorf("controlplane: %s %s status %d: %s", method, path, resp.StatusCode, string(b))
+		return &statusError{method: method, path: path, code: resp.StatusCode, body: string(b)}
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -78,8 +78,13 @@ func (c *HTTPClient) GetUser(ctx context.Context, id string) (contracts.User, er
 func (c *HTTPClient) CreateSubscription(ctx context.Context, userID string, plan contracts.SubscriptionPlan) (contracts.Subscription, error) {
 	body := map[string]any{"user_id": userID, "plan": plan}
 	var s contracts.Subscription
-	err := c.do(ctx, http.MethodPost, "/v1/subscriptions", body, &s)
-	return s, err
+	if err := c.do(ctx, http.MethodPost, "/v1/subscriptions", body, &s); err != nil {
+		if statusCode(err) == http.StatusConflict {
+			return contracts.Subscription{}, ErrSubscriptionExists
+		}
+		return contracts.Subscription{}, err
+	}
+	return s, nil
 }
 
 // SetSubscriptionPeriod implements Client (additive PATCH /v1/subscriptions/{id}).

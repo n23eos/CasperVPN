@@ -7,9 +7,8 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"hash/fnv"
-	"sync"
 	"time"
 
 	"github.com/caspervpn/billing/internal/controlplane"
@@ -19,24 +18,12 @@ import (
 	"github.com/caspervpn/contracts"
 )
 
-// lockStripes is the fixed number of per-user mutex stripes. Serialization only
-// needs same-user settlements to hash to the same lock; a fixed pool avoids the
-// unbounded per-id map that would otherwise leak one mutex per paying user in a
-// long-running process. Rare cross-user collisions only add brief contention.
-const lockStripes = 256
-
 // Activator applies plan durations to subscriptions.
 type Activator struct {
 	cp      controlplane.Client
 	catalog *plan.Catalog
 	store   store.Repository
 	now     func() time.Time
-
-	// stripes serialize Activate per anon_user_id (hashed to a fixed stripe). Two
-	// concurrent settlements for one user would otherwise both read a nil
-	// SubscriptionID and each create a subscription (double create / double period).
-	// The lock makes get-user → create-or-reuse → set-period atomic per user.
-	stripes [lockStripes]sync.Mutex
 }
 
 // NewActivator wires the activator. now is injectable for deterministic tests.
@@ -47,64 +34,79 @@ func NewActivator(cp controlplane.Client, catalog *plan.Catalog, repo store.Repo
 	return &Activator{cp: cp, catalog: catalog, store: repo, now: now}
 }
 
-// lockFor returns the mutex stripe serializing this user's activations.
-func (a *Activator) lockFor(anonUserID string) *sync.Mutex {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(anonUserID))
-	return &a.stripes[h.Sum32()%lockStripes]
-}
-
 // Activate creates or renews the subscription for an anonymous account and returns
-// the updated subscription (carrying its sub_token). It is safe to call for both
-// first purchase and renewal; the caller (payment processor) guarantees it runs at
-// most once per settled payment, which is what keeps a double webhook from adding a
-// double period.
+// the updated subscription (carrying its sub_token). Safe for both first purchase
+// and renewal.
+//
+// The WHOLE get-user → create-or-reuse → set-period → upsert-schedule sequence runs
+// under a per-user lock (store.WithUserLock), so two DISTINCT settlements for the
+// same user apply their periods one after another (expiry advances by 2×duration)
+// instead of racing and losing one. Cross-instance serialization comes from the
+// Postgres advisory lock; the memory backend is single-process only. A concurrent
+// winner that slipped past the lock (e.g. two processes on the memory backend) is
+// still caught: CreateSubscription returns ErrSubscriptionExists, and this reads the
+// user back and reuses the now-linked subscription rather than creating a second.
 func (a *Activator) Activate(ctx context.Context, anonUserID string, planID contracts.SubscriptionPlan) (contracts.Subscription, error) {
 	p, ok := a.catalog.Get(planID)
 	if !ok {
 		return contracts.Subscription{}, fmt.Errorf("subscription: unknown plan %q", planID)
 	}
 
-	// Serialize activation per user so concurrent settlements can't double-create.
-	l := a.lockFor(anonUserID)
-	l.Lock()
-	defer l.Unlock()
+	var result contracts.Subscription
+	err := a.store.WithUserLock(ctx, anonUserID, func(ctx context.Context) error {
+		user, err := a.cp.GetUser(ctx, anonUserID)
+		if err != nil {
+			return fmt.Errorf("subscription: get user: %w", err)
+		}
 
-	user, err := a.cp.GetUser(ctx, anonUserID)
-	if err != nil {
-		return contracts.Subscription{}, fmt.Errorf("subscription: get user: %w", err)
-	}
+		var subID string
+		if user.SubscriptionID != nil && *user.SubscriptionID != "" {
+			subID = *user.SubscriptionID
+		} else {
+			sub, cerr := a.cp.CreateSubscription(ctx, user.ID, planID)
+			switch {
+			case errors.Is(cerr, controlplane.ErrSubscriptionExists):
+				// A concurrent settlement won the create and linked the subscription;
+				// re-read the user and reuse it (never create a second).
+				user, err = a.cp.GetUser(ctx, anonUserID)
+				if err != nil {
+					return fmt.Errorf("subscription: get user after conflict: %w", err)
+				}
+				if user.SubscriptionID == nil || *user.SubscriptionID == "" {
+					return fmt.Errorf("subscription: create conflicted but user still unlinked")
+				}
+				subID = *user.SubscriptionID
+			case cerr != nil:
+				return fmt.Errorf("subscription: create: %w", cerr)
+			default:
+				subID = sub.ID
+			}
+		}
 
-	base := a.now()
-	var subID string
-	if user.SubscriptionID != nil && *user.SubscriptionID != "" {
-		subID = *user.SubscriptionID
-		// Extend from the later of now and the current expiry (don't lose paid days).
-		if sched, err := a.store.GetSchedule(ctx, subID); err == nil && sched.ExpiresAt.After(base) {
+		// Extend from max(now, current expiry) so paying early never burns unused
+		// days — applies to reuse and post-conflict reuse; a fresh subscription has no
+		// schedule yet (ErrNotFound), so base stays now.
+		base := a.now()
+		if sched, serr := a.store.GetSchedule(ctx, subID); serr == nil && sched.ExpiresAt.After(base) {
 			base = sched.ExpiresAt
 		}
-	} else {
-		sub, err := a.cp.CreateSubscription(ctx, user.ID, planID)
+		newExpiry := base.Add(p.Duration)
+
+		sub, err := a.cp.SetSubscriptionPeriod(ctx, subID, contracts.SubscriptionStatusActive, newExpiry)
 		if err != nil {
-			return contracts.Subscription{}, fmt.Errorf("subscription: create: %w", err)
+			return fmt.Errorf("subscription: set period: %w", err)
 		}
-		subID = sub.ID
-	}
-
-	newExpiry := base.Add(p.Duration)
-	sub, err := a.cp.SetSubscriptionPeriod(ctx, subID, contracts.SubscriptionStatusActive, newExpiry)
-	if err != nil {
-		return contracts.Subscription{}, fmt.Errorf("subscription: set period: %w", err)
-	}
-
-	if err := a.store.UpsertSchedule(ctx, model.Schedule{
-		SubID:      subID,
-		AnonUserID: user.ID,
-		Status:     string(contracts.SubscriptionStatusActive),
-		ExpiresAt:  newExpiry,
-		GraceUntil: newExpiry.Add(p.Grace),
-	}); err != nil {
-		return contracts.Subscription{}, fmt.Errorf("subscription: upsert schedule: %w", err)
-	}
-	return sub, nil
+		if err := a.store.UpsertSchedule(ctx, model.Schedule{
+			SubID:      subID,
+			AnonUserID: user.ID,
+			Status:     string(contracts.SubscriptionStatusActive),
+			ExpiresAt:  newExpiry,
+			GraceUntil: newExpiry.Add(p.Grace),
+		}); err != nil {
+			return fmt.Errorf("subscription: upsert schedule: %w", err)
+		}
+		result = sub
+		return nil
+	})
+	return result, err
 }
