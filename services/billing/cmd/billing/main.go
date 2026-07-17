@@ -45,7 +45,11 @@ func main() {
 	)
 	activator := subscription.NewActivator(cp, catalog, repo, time.Now)
 	processor := payment.NewProcessor(repo, activator, replayWindow(), time.Now)
-	poller := payment.NewPoller(repo, registry, processor, time.Now)
+	poller := payment.NewPoller(repo, registry, processor, payment.Recovery{
+		// Must exceed the activation HTTP timeout (control-plane client is 10s, and an
+		// Activate makes up to a few calls) so recovery never pre-empts a live settle.
+		StaleThreshold: interval("SETTLEMENT_STALE_THRESHOLD", 2*time.Minute),
+	}, time.Now)
 	sweeper := expiry.NewSweeper(repo, cp, time.Now)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
