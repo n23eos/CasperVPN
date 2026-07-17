@@ -17,3 +17,23 @@ output "exit_id" {
   description = "Provider instance id of the exit."
   value       = module.exit_vm.id
 }
+
+output "entry_region" {
+  description = "Region of the entry (for the control-plane node record)."
+  value       = var.entry_region
+}
+
+output "exit_region" {
+  description = "Region of the exit (for the control-plane node record)."
+  value       = var.exit_region
+}
+
+output "entry_cloud" {
+  description = "Cloud of the entry in this reference env (Hetzner)."
+  value       = "hetzner"
+}
+
+output "exit_cloud" {
+  description = "Cloud of the exit in this reference env (Vultr)."
+  value       = "vultr"
+}

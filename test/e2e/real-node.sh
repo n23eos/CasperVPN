@@ -37,7 +37,11 @@ SUB=http://localhost:28082
 BILL=http://localhost:28084
 ADMIN_TOKEN=dev-admin-token
 MOCK_SECRET=dev-mock-webhook-secret
-SINGBOX_IMG=ghcr.io/sagernet/sing-box:v1.11.4
+# sing-box pin: single source of truth (infra/versions.sh), kept equal to the
+# ansible role default by test/infra/versions-pin-guard.sh.
+# shellcheck source=../../infra/versions.sh
+source infra/versions.sh
+SINGBOX_IMG="ghcr.io/sagernet/sing-box:v${SINGBOX_VERSION}"
 NODE_CT=rn-node
 CLIENT_CT=rn-client
 CLIENT_SOCKS_PORT=21080
