@@ -38,6 +38,12 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 // WithUserLock holds a session-scoped advisory lock for userID on ONE dedicated
 // connection for the whole of fn, so the entire activation of one user is serialized
 // across every billing instance sharing this database.
+//
+// Pool sizing: this holds one pooled connection for all of fn, during which the
+// caller (the activator) acquires OTHER pooled connections for its schedule reads/
+// writes. Size the pool comfortably above peak concurrent distinct-user activations
+// (≈ 2×) so activations don't starve each other waiting for a query connection while
+// holding a lock connection. Starvation surfaces as a ctx timeout, never a deadlock.
 func (p *Postgres) WithUserLock(ctx context.Context, userID string, fn func(ctx context.Context) error) error {
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
