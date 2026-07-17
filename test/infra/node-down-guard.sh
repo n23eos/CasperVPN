@@ -74,6 +74,17 @@ fi
 out="$(RUN_ID=no-such bash infra/scripts/node_down.sh 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && grep -qi 'manifest not found' <<<"$out" && ok "missing manifest fails closed" || bad "missing manifest not handled"
 
+# --- E. partial-apply STUB manifest (empty CP ids): destroy the orphan VM, no retire crash ---
+jq -n '{run_id:"stub-run", tf_workspace:"ws-stub-run",
+  entry:{cp_id:"", raw_id:"", ip:"", cloud:"", region:""},
+  exit:{cp_id:"", raw_id:"", ip:"", cloud:"", region:""}, state_backup:""}' >"$RUN_DIR/stub-run.json"
+out="$(RUN_ID=stub-run FAKE_RETIRE_CODE=204 run_down)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'infra destroyed' <<<"$out" && grep -qi 'partial apply' <<<"$out"; then
+  ok "partial-apply stub: reaps the VM without a retire crash"
+else
+  bad "partial-apply stub not handled (rc=$rc): $out"
+fi
+
 rm -rf "$BIN" "$RUN_DIR"
 echo "node-down-guard: ${pass} ok, ${fail} fail"
 [ "$fail" = 0 ]

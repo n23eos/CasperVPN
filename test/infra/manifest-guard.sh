@@ -41,6 +41,13 @@ p="$(write_manifest)"
 [ "$(manifest_field run-test '.tf_workspace')" = "ws-run-test" ] && ok "records workspace" || bad "workspace"
 if grep -qiE 'psk|secret|private|token|password' "$p"; then bad "manifest appears to leak a secret"; else ok "manifest carries no secrets"; fi
 ( manifest_field no-such-run '.entry.cp_id' ) >/dev/null 2>&1 && bad "read a missing manifest" || ok "missing manifest fails closed"
+
+# --- stub manifest (written BEFORE apply) so a partial apply is still tearable ---
+export RUN_ID=stub-test TF_WORKSPACE=ws-stub
+sp="$(write_stub_manifest)"
+[ -f "$sp" ] && [ "$(perms "$sp")" = "600" ] && ok "stub manifest written 0600" || bad "stub manifest perms"
+[ "$(manifest_field stub-test '.tf_workspace')" = "ws-stub" ] && ok "stub records the workspace" || bad "stub workspace"
+[ "$(manifest_field stub-test '.entry.cp_id')" = "" ] && ok "stub has empty ids (nothing provisioned yet)" || bad "stub ids not empty"
 rm -rf "$RUN_DIR"
 
 echo "manifest-guard: ${pass} ok, ${fail} fail"

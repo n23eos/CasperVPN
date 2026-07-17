@@ -67,6 +67,27 @@ backup_state() {
   fi
 }
 
+# write_stub_manifest -> write a MINIMAL 0600 manifest (run_id + workspace, empty
+# node fields) BEFORE apply. A multi-provider apply can bill one VM and then fail on
+# the other; set -e would abort before write_manifest, leaving a running, billed VM
+# with no teardown key. The stub guarantees node_down can always select the
+# workspace and destroy — even after a partial apply. write_manifest overwrites it
+# with the full record on success.
+write_stub_manifest() {
+  require_env RUN_ID TF_WORKSPACE
+  local path; path="$(manifest_path "$RUN_ID")"
+  mkdir -p "$(dirname "$path")"
+  ( umask 077
+    jq -n --arg run_id "$RUN_ID" --arg ws "$TF_WORKSPACE" \
+      '{run_id:$run_id, tf_workspace:$ws,
+        entry:{cp_id:"", raw_id:"", ip:"", cloud:"", region:""},
+        exit:{cp_id:"", raw_id:"", ip:"", cloud:"", region:""},
+        state_backup:""}' >"$path"
+  )
+  chmod 600 "$path"
+  printf '%s' "$path"
+}
+
 # write_manifest -> emit the 0600 run manifest JSON from env; echo its path. NO
 # secrets. Required env: RUN_ID TF_WORKSPACE ENTRY_LOGICAL_ID EXIT_LOGICAL_ID
 #   ENTRY_RAW_ID EXIT_RAW_ID ENTRY_CLOUD EXIT_CLOUD ENTRY_REGION EXIT_REGION

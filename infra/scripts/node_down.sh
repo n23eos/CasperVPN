@@ -58,10 +58,12 @@ if [ -n "${ENTRY_IP}${EXIT_IP}" ]; then
 fi
 
 # 2. Retire BOTH Node records (best effort; a subshell isolates cp_retire_node's
-#    die so an unreachable CP never blocks the destroy).
+#    die so an unreachable CP never blocks the destroy). Empty ids come from a stub
+#    manifest after a partial apply — there is nothing to retire, only VMs to reap.
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
-  ( cp_retire_node "${ENTRY_CP}" ) || WARN+=("retire entry ${ENTRY_CP}")
-  ( cp_retire_node "${EXIT_CP}" )  || WARN+=("retire exit ${EXIT_CP}")
+  [ -n "${ENTRY_CP}" ] && { ( cp_retire_node "${ENTRY_CP}" ) || WARN+=("retire entry ${ENTRY_CP}"); }
+  [ -n "${EXIT_CP}" ]  && { ( cp_retire_node "${EXIT_CP}" )  || WARN+=("retire exit ${EXIT_CP}"); }
+  [ -z "${ENTRY_CP}${EXIT_CP}" ] && log "no CP ids in manifest (partial apply) — destroying VMs only"
 else
   log "CONTROL_PLANE_URL unset — skipping retire"
 fi

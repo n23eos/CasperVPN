@@ -35,6 +35,12 @@ export HY2_SNI=hy2.example HY2_TLS_CERT="$TMP/c.pem" HY2_TLS_KEY="$TMP/k.pem"
 ( pf_hy2_tls ) 2>/dev/null && ok "accepts a matching cert/key with covering SAN" || bad "rejected a valid hy2 cert/key"
 HY2_TLS_KEY="$TMP/k2.pem"; ( pf_hy2_tls ) 2>/dev/null && bad "accepted a mismatched cert/key pair" || ok "rejects mismatched cert/key"
 HY2_TLS_KEY="$TMP/k.pem"; HY2_SNI=notcovered.example; ( pf_hy2_tls ) 2>/dev/null && bad "accepted a SAN that doesn't cover HY2_SNI" || ok "rejects SAN not covering HY2_SNI"
+# a SUPERDOMAIN cert (SAN hy2.example) must NOT satisfy SNI hy2.example.com and
+# vice-versa — exact per-entry match, no boundary/substring over-match.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TMP/ks.pem" -out "$TMP/cs.pem" -days 2 \
+  -subj "/CN=hy2.example.com" -addext "subjectAltName=DNS:hy2.example.com" >/dev/null 2>&1
+HY2_TLS_CERT="$TMP/cs.pem" HY2_TLS_KEY="$TMP/ks.pem" HY2_SNI=hy2.example
+( pf_hy2_tls ) 2>/dev/null && bad "accepted a superdomain SAN (hy2.example.com) for SNI hy2.example" || ok "rejects a suffix/superdomain SAN over-match"
 unset HY2_SNI HY2_TLS_CERT HY2_TLS_KEY; rm -rf "$TMP"
 
 # --- preflight_all aborts on the FIRST failure (before cloud auth / apply) ---
