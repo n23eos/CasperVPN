@@ -28,6 +28,10 @@
       when:
         - hy2_sni is defined
         - node_role | default('') == 'entry'
+      # no_log — this folds the durable hy2 password (read back from the CP on a
+      # rotation) into the fact; matches the no_log discipline on every other
+      # hy2-password task (see roles/transports/tasks/hy2_keygen.yml).
+      no_log: true
       ansible.builtin.set_fact:
         transports: >-
           {{ transports | combine({'hysteria2':

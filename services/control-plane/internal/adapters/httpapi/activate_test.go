@@ -196,21 +196,34 @@ func TestActivate_ExitThenEntrySequence(t *testing.T) {
 	}
 }
 
-func TestPatch_ProvisioningToActiveForbidden(t *testing.T) {
+// nodeBody builds a valid entry-node PATCH/POST body with a given id and status.
+func nodeBody(id, status string) string {
+	return `{"id":"` + id + `","role":"entry","status":"` + status + `","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.9","ephemeral_entry_ip":false,"transports":[` + vlessTr + `,` + hy2Tr + `]}`
+}
+
+// Reaching active is ONLY via the guarded /activate path. A plain PATCH into active
+// from ANY non-active state must be refused — including a resurrection of a
+// decommissioned draining/retired node.
+func TestPatch_NonActiveToActiveForbidden(t *testing.T) {
 	r := newTestRouter(t)
-	postNode(t, r, `{"id":"en-4","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.4","ephemeral_entry_ip":false,"transports":[`+vlessTr+`,`+hy2Tr+`]}`)
-	body := `{"id":"en-4","role":"entry","status":"active","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.4","ephemeral_entry_ip":false,"transports":[` + vlessTr + `,` + hy2Tr + `]}`
-	if rec := do(t, r, http.MethodPatch, "/v1/nodes/en-4", orchTok, body); rec.Code != http.StatusConflict {
-		t.Errorf("PATCH provisioning->active: got %d, want 409 (use /activate)", rec.Code)
+	for _, src := range []string{"provisioning", "degraded", "blocked", "draining", "retired"} {
+		id := "na-" + src
+		postNode(t, r, nodeBody(id, src))
+		rec := do(t, r, http.MethodPatch, "/v1/nodes/"+id, orchTok, nodeBody(id, "active"))
+		if rec.Code != http.StatusConflict {
+			t.Errorf("PATCH %s->active: got %d, want 409 (use /activate): %s", src, rec.Code, rec.Body)
+		}
 	}
 }
 
-func TestPatch_OtherTransitionsStillWork(t *testing.T) {
+// Staying active (field update) and leaving active (->degraded) are unaffected.
+func TestPatch_ActiveTransitionsUnaffected(t *testing.T) {
 	r := newTestRouter(t)
-	postNode(t, r, `{"id":"en-5","role":"entry","status":"active","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.5","ephemeral_entry_ip":false,"transports":[`+vlessTr+`,`+hy2Tr+`]}`)
-	// active -> degraded is a normal operational transition, still allowed.
-	body := `{"id":"en-5","role":"entry","status":"degraded","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.5","ephemeral_entry_ip":false,"transports":[` + vlessTr + `,` + hy2Tr + `]}`
-	if rec := do(t, r, http.MethodPatch, "/v1/nodes/en-5", orchTok, body); rec.Code != http.StatusOK {
+	postNode(t, r, nodeBody("act-1", "active"))
+	if rec := do(t, r, http.MethodPatch, "/v1/nodes/act-1", orchTok, nodeBody("act-1", "active")); rec.Code != http.StatusOK {
+		t.Errorf("PATCH active->active: got %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, r, http.MethodPatch, "/v1/nodes/act-1", orchTok, nodeBody("act-1", "degraded")); rec.Code != http.StatusOK {
 		t.Errorf("PATCH active->degraded: got %d, want 200: %s", rec.Code, rec.Body)
 	}
 }

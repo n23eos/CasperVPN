@@ -102,11 +102,15 @@ func (s *NodeService) Update(ctx context.Context, id string, n contracts.Node, a
 	}
 	n.ID = existing.ID
 	n.CreatedAt = existing.CreatedAt
-	// provisioning->active is NOT a plain PATCH: it must go through the guarded
-	// /activate path (allow-list synced, >=2 transports, exit active). Allowing it
-	// here would let a caller bypass every activation gate with one PATCH.
-	if existing.Status == contracts.NodeStatusProvisioning && n.Status == contracts.NodeStatusActive {
-		return contracts.Node{}, fmt.Errorf("%w: provisioning->active requires POST /v1/nodes/{id}/activate", domain.ErrConflict)
+	// Reaching active is ONLY via the guarded /activate path (allow-list synced,
+	// >=2 transports, exit active, revision-checked). A plain PATCH into active from
+	// ANY non-active state bypasses every gate — and for a decommissioned
+	// draining/retired node it is a resurrection stronger than Demote forbids. So
+	// reject every non-active->active PATCH. Staying active (field updates) and
+	// leaving active (e.g. ->degraded) are unaffected; field-signal recovery uses
+	// setStatusIfChanged, not this path.
+	if n.Status == contracts.NodeStatusActive && existing.Status != contracts.NodeStatusActive {
+		return contracts.Node{}, fmt.Errorf("%w: %s->active requires POST /v1/nodes/{id}/activate", domain.ErrConflict, existing.Status)
 	}
 	if err := n.Validate(); err != nil {
 		return contracts.Node{}, fmt.Errorf("%w: %s", domain.ErrValidation, err)
