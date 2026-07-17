@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/caspervpn/billing/internal/model"
+	"github.com/caspervpn/billing/internal/plan"
 	"github.com/caspervpn/billing/internal/store"
+	"github.com/caspervpn/billing/internal/subscription"
+	"github.com/caspervpn/contracts"
 )
 
 func TestRecoveryReport_ShouldLog(t *testing.T) {
@@ -180,5 +183,63 @@ func TestReconcile_ContextCanceledStopsAndReports(t *testing.T) {
 	}
 	if got := statusOf(t, h.repo, "inv-1"); got != model.StatusPending {
 		t.Fatalf("inv-1 = %q, want still pending (no work done)", got)
+	}
+}
+
+// cancelAfterFirstStore cancels the context right after the first invoice's final
+// status flip, so the NEXT loop iteration sees a canceled context.
+type cancelAfterFirstStore struct {
+	*store.Memory
+	cancel context.CancelFunc
+	n      int
+}
+
+func (s *cancelAfterFirstStore) SetInvoiceStatus(ctx context.Context, id string, st model.Status) error {
+	err := s.Memory.SetInvoiceStatus(ctx, id, st)
+	if s.n++; s.n == 1 {
+		s.cancel()
+	}
+	return err
+}
+
+// The strong form of condition 5: a partial result committed BEFORE the cancel must
+// survive — one invoice settled, the cycle flagged Canceled, the rest untouched.
+func TestReconcile_CancelAfterFirstKeepsPartial(t *testing.T) {
+	fake := seededFakeCP(t, "acct-1", "acct-2")
+	clk := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clk }
+	catalog := plan.NewCatalog(plan.Plan{
+		ID: contracts.SubscriptionPlanBasic, Duration: 30 * day, Grace: 3 * day,
+		Prices: map[string]string{"BTC": "0.0001"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	base := store.NewMemoryWithClock(now)
+	repo := &cancelAfterFirstStore{Memory: base, cancel: cancel}
+	act := subscription.NewActivator(fake, catalog, repo, now)
+	proc := NewProcessor(repo, act, 0, now)
+
+	seedPending(t, base, "inv-1", "acct-1", clk.Add(time.Hour))
+	seedPending(t, base, "inv-2", "acct-2", clk.Add(time.Hour))
+	for _, id := range []string{"inv-1", "inv-2"} {
+		if _, err := base.ClaimSettlement(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rep, _ := proc.Reconcile(ctx, clk, leaseFor, batch)
+	if !rep.Canceled {
+		t.Fatal("want Canceled")
+	}
+	if rep.Recovered != 1 {
+		t.Fatalf("Recovered = %d, want 1 (partial result kept across cancel)", rep.Recovered)
+	}
+	settled := 0
+	for _, id := range []string{"inv-1", "inv-2"} {
+		if statusOf(t, base, id) == model.StatusSettled {
+			settled++
+		}
+	}
+	if settled != 1 {
+		t.Fatalf("settled = %d, want exactly 1 (the pre-cancel work survived)", settled)
 	}
 }
