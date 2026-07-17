@@ -27,6 +27,9 @@ type Memory struct {
 	settled   map[string]*memSettlement // invoiceID currently claimed/credited
 	schedules map[string]model.Schedule
 	now       func() time.Time
+
+	userLocksMu sync.Mutex
+	userLocks   map[string]*sync.Mutex // per-user lock (process-local; NOT cross-instance)
 }
 
 // NewMemory builds an empty in-memory store with the wall clock.
@@ -46,7 +49,26 @@ func NewMemoryWithClock(now func() time.Time) *Memory {
 		settled:   make(map[string]*memSettlement),
 		schedules: make(map[string]model.Schedule),
 		now:       now,
+		userLocks: make(map[string]*sync.Mutex),
 	}
+}
+
+// WithUserLock serializes fn per user with a process-local mutex. This is NOT
+// cross-instance safe (a second billing process has its own map) — the Postgres
+// store provides the real cross-instance guarantee; memory is for single-process
+// dev/tests only.
+func (m *Memory) WithUserLock(ctx context.Context, userID string, fn func(ctx context.Context) error) error {
+	m.userLocksMu.Lock()
+	mu, ok := m.userLocks[userID]
+	if !ok {
+		mu = &sync.Mutex{}
+		m.userLocks[userID] = mu
+	}
+	m.userLocksMu.Unlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+	return fn(ctx)
 }
 
 func (m *Memory) CreateInvoice(_ context.Context, inv model.Invoice) error {
