@@ -13,11 +13,63 @@ import (
 
 // SubscriptionStore persists entitlements. NO card/payment data — hashed token only.
 type SubscriptionStore struct {
-	q querier
+	q    querier
+	pool *pgxpool.Pool // for CreateAndLink's cross-table transaction
 }
 
 // NewSubscriptionStore builds a SubscriptionStore.
-func NewSubscriptionStore(pool *pgxpool.Pool) *SubscriptionStore { return &SubscriptionStore{q: pool} }
+func NewSubscriptionStore(pool *pgxpool.Pool) *SubscriptionStore {
+	return &SubscriptionStore{q: pool, pool: pool}
+}
+
+// CreateAndLink inserts the subscription and links it onto the user in ONE
+// transaction, locking the user row (FOR UPDATE) and rejecting with ErrConflict if
+// the user already has a subscription — closing the duplicate-create race and the
+// orphan window in one atomic step.
+func (s *SubscriptionStore) CreateAndLink(ctx context.Context, sub contracts.Subscription, tokenHash, tokenPrefix, userID string) error {
+	return withTx(ctx, s.pool, func(q querier) error {
+		return subscriptionCreateAndLink(ctx, q, sub, tokenHash, tokenPrefix, userID)
+	})
+}
+
+// subscriptionCreateAndLink runs the locked create+link on any querier (pool or tx).
+// Extracted so a fault-injection test can drive it against a wrapped tx and prove
+// that a failure between the two writes leaves neither (no orphan).
+func subscriptionCreateAndLink(ctx context.Context, q querier, sub contracts.Subscription, tokenHash, tokenPrefix, userID string) error {
+	var existing *string
+	err := q.QueryRow(ctx, `SELECT subscription_id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&existing)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("postgres: lock user: %w", err)
+	}
+	if existing != nil && *existing != "" {
+		return domain.ErrConflict
+	}
+	if _, err := q.Exec(ctx, `
+		INSERT INTO subscriptions
+			(id, user_id, plan, status, token_hash, token_prefix,
+			 traffic_limit_bytes, speed_limit_mbps, device_limit, starts_at, expires_at, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		sub.ID, sub.UserID, string(sub.Plan), string(sub.Status), tokenHash, tokenPrefix,
+		int64(sub.TrafficLimitBytes), sub.SpeedLimitMbps, sub.DeviceLimit,
+		sub.StartsAt, sub.ExpiresAt, sub.CreatedAt, sub.UpdatedAt); err != nil {
+		if isUniqueViolation(err) {
+			return domain.ErrConflict
+		}
+		return fmt.Errorf("postgres: insert subscription: %w", err)
+	}
+	ct, err := q.Exec(ctx, `UPDATE users SET subscription_id=$2, updated_at=$3 WHERE id=$1`,
+		userID, sub.ID, sub.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("postgres: link subscription: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
 
 // Create persists a subscription, storing only the token HASH.
 func (s *SubscriptionStore) Create(ctx context.Context, sub contracts.Subscription, tokenHash, tokenPrefix string) error {

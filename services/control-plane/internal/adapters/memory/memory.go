@@ -194,11 +194,50 @@ type Subscriptions struct {
 	mu     sync.Mutex
 	subs   map[string]contracts.Subscription
 	hashes map[string]string
+	users  *Users // for CreateAndLink's atomic create+link (wire with WithUsers)
 }
 
 // NewSubscriptions builds an empty subscription store.
 func NewSubscriptions() *Subscriptions {
 	return &Subscriptions{subs: map[string]contracts.Subscription{}, hashes: map[string]string{}}
+}
+
+// WithUsers wires the user store so CreateAndLink can link atomically. Returns the
+// store for chaining. Process-local only — NOT cross-instance safe (see docs/billing).
+func (r *Subscriptions) WithUsers(u *Users) *Subscriptions {
+	r.users = u
+	return r
+}
+
+// CreateAndLink mirrors the Postgres seam: insert the subscription and link it onto
+// the user atomically, rejecting with ErrConflict if the user already has one.
+// Holds the user lock then the subscription lock (a single, consistent order; no
+// other op takes both, so no deadlock).
+func (r *Subscriptions) CreateAndLink(_ context.Context, s contracts.Subscription, tokenHash, _, userID string) error {
+	if r.users == nil {
+		return domain.ErrValidation // misconfigured store; wire WithUsers
+	}
+	r.users.mu.Lock()
+	defer r.users.mu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	u, ok := r.users.users[userID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if u.SubscriptionID != nil && *u.SubscriptionID != "" {
+		return domain.ErrConflict
+	}
+	stored := s
+	stored.Token = ""
+	r.subs[s.ID] = stored
+	r.hashes[s.ID] = tokenHash
+	subID := s.ID
+	u.SubscriptionID = &subID
+	u.UpdatedAt = s.UpdatedAt
+	r.users.users[userID] = u
+	return nil
 }
 
 func (r *Subscriptions) Create(_ context.Context, s contracts.Subscription, tokenHash, _ string) error {
