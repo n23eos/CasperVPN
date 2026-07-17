@@ -17,6 +17,7 @@ type Handler struct {
 	subs    *usecase.SubscriptionService
 	bundles *usecase.BundleService
 	signals *usecase.SignalService
+	allow   *usecase.AllowListService
 	tokens  *authz.TokenStore
 }
 
@@ -27,9 +28,10 @@ func New(
 	subs *usecase.SubscriptionService,
 	bundles *usecase.BundleService,
 	signals *usecase.SignalService,
+	allow *usecase.AllowListService,
 	tokens *authz.TokenStore,
 ) *Handler {
-	return &Handler{nodes: nodes, users: users, subs: subs, bundles: bundles, signals: signals, tokens: tokens}
+	return &Handler{nodes: nodes, users: users, subs: subs, bundles: bundles, signals: signals, allow: allow, tokens: tokens}
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {

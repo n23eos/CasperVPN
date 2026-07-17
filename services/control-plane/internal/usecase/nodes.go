@@ -17,12 +17,37 @@ type NodeService struct {
 	nodes     domain.NodeRepo
 	rotations domain.RotationRepo
 	queue     domain.RebuildQueue
+	activator domain.NodeActivator
 	now       func() time.Time
 }
 
 // NewNodeService wires a NodeService.
 func NewNodeService(nodes domain.NodeRepo, rotations domain.RotationRepo, queue domain.RebuildQueue) *NodeService {
 	return &NodeService{nodes: nodes, rotations: rotations, queue: queue, now: time.Now}
+}
+
+// WithActivator attaches the guarded provisioning->active activator.
+func (s *NodeService) WithActivator(a domain.NodeActivator) *NodeService {
+	s.activator = a
+	return s
+}
+
+// Activate promotes a provisioning node to active through the guarded, atomic
+// activator (see domain.NodeActivator). Rotation history + rebuild enqueue happen
+// only after the status flip commits.
+func (s *NodeService) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence, actor string) (contracts.Node, error) {
+	if s.activator == nil {
+		return contracts.Node{}, errors.New("usecase: node activator not configured")
+	}
+	n, prev, err := s.activator.Activate(ctx, id, expectedRevision, evidence)
+	if err != nil {
+		return contracts.Node{}, err
+	}
+	// Post-commit, best-effort: the node is already active. A failed history write
+	// must not un-activate it, so the error is not propagated.
+	_ = s.recordRotation(ctx, id, &prev, n.Status, "activate", n.EntryIP, actor)
+	s.queue.EnqueueNode(id)
+	return n, nil
 }
 
 // Register adds a node to the registry (called by the orchestrator/infra).
@@ -83,6 +108,16 @@ func (s *NodeService) Update(ctx context.Context, id string, n contracts.Node, a
 	}
 	n.ID = existing.ID
 	n.CreatedAt = existing.CreatedAt
+	// Reaching active is ONLY via the guarded /activate path (allow-list synced,
+	// >=2 transports, exit active, revision-checked). A plain PATCH into active from
+	// ANY non-active state bypasses every gate — and for a decommissioned
+	// draining/retired node it is a resurrection stronger than Demote forbids. So
+	// reject every non-active->active PATCH. Staying active (field updates) and
+	// leaving active (e.g. ->degraded) are unaffected; field-signal recovery uses
+	// setStatusIfChanged, not this path.
+	if n.Status == contracts.NodeStatusActive && existing.Status != contracts.NodeStatusActive {
+		return contracts.Node{}, fmt.Errorf("%w: %s->active requires POST /v1/nodes/{id}/activate", domain.ErrConflict, existing.Status)
+	}
 	if err := n.Validate(); err != nil {
 		return contracts.Node{}, fmt.Errorf("%w: %s", domain.ErrValidation, err)
 	}
@@ -136,6 +171,23 @@ func (s *NodeService) Retire(ctx context.Context, id, actor string) error {
 	}
 	s.queue.EnqueueNode(id)
 	return nil
+}
+
+// Demote atomically sets a node's status to provisioning (SetStatus is a single
+// locked UPDATE, so it never clobbers a concurrent rotation's IP/keys/transports
+// the way a read-modify-write full-body PATCH would). Used by the reconciler as a
+// hard barrier before it converges a node. Returns the demoted node.
+func (s *NodeService) Demote(ctx context.Context, id, actor string) (contracts.Node, error) {
+	// Conditional atomic transition: draining/retired -> ErrConflict (409).
+	prev, err := s.nodes.Demote(ctx, id)
+	if err != nil {
+		return contracts.Node{}, err
+	}
+	// Post-commit, best-effort: the barrier is already applied. A failed history
+	// write must not turn a successful demote into a 500 (matches Activate).
+	_ = s.recordRotation(ctx, id, &prev, contracts.NodeStatusProvisioning, "demote", "", actor)
+	s.queue.EnqueueNode(id)
+	return s.nodes.Get(ctx, id)
 }
 
 // History returns recent rotation records for a node.

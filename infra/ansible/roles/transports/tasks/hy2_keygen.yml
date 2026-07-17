@@ -1,0 +1,66 @@
+---
+# Idempotent Hysteria2 password resolution — same shape as the REALITY keygen.
+# The password is a CLIENT secret (it must reach the client via /sub), but it is
+# still generated once and reused, never regenerated on a plain converge (or a
+# REALITY rotation, which only rewrites reality.key). Resolution order:
+#   1. explicit password (var/secret manager) -> use, persist
+#   2. existing state file 0600               -> reuse
+#   3. neither                                -> generate, persist
+# Every task carrying the password sets no_log.
+
+- name: Ensure the credential directory exists (private)
+  ansible.builtin.file:
+    path: "{{ hysteria2_cred_state_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Check for an existing hysteria2 credential
+  ansible.builtin.stat:
+    path: "{{ hysteria2_cred_state_file }}"
+  register: hy2_cred
+
+- name: Load the existing hysteria2 password
+  when:
+    - transports.hysteria2.password | length == 0
+    - hy2_cred.stat.exists
+  ansible.builtin.slurp:
+    src: "{{ hysteria2_cred_state_file }}"
+  register: hy2_cred_blob
+  no_log: true
+
+- name: Generate a hysteria2 password (none present)
+  when:
+    - transports.hysteria2.password | length == 0
+    - not hy2_cred.stat.exists
+  ansible.builtin.command: openssl rand -hex 24
+  register: hy2_pw_gen
+  changed_when: true
+  no_log: true
+
+- name: Resolve the effective hysteria2 password
+  ansible.builtin.set_fact:
+    hysteria2_password: >-
+      {{ transports.hysteria2.password if transports.hysteria2.password | length > 0
+         else (hy2_cred_blob.content | b64decode | regex_search('password=(\S+)', '\1') | first)
+              if hy2_cred.stat.exists
+         else hy2_pw_gen.stdout | trim }}
+  no_log: true
+
+- name: Persist the hysteria2 password (0600)
+  ansible.builtin.copy:
+    dest: "{{ hysteria2_cred_state_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: "password={{ hysteria2_password }}\n"
+  no_log: true
+
+- name: Inject the resolved password into the transport matrix
+  ansible.builtin.set_fact:
+    transports: >-
+      {{ transports | combine({'hysteria2':
+         transports.hysteria2 | combine({'password': hysteria2_password})},
+         recursive=True) }}
+  no_log: true

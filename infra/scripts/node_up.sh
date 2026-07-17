@@ -14,11 +14,16 @@ source "${HERE}/lib.sh"
 source "${HERE}/control_plane.sh"
 # shellcheck source=reality_sync.sh
 source "${HERE}/reality_sync.sh"
+# shellcheck source=hy2_lifecycle.sh
+source "${HERE}/hy2_lifecycle.sh"
 
-require_cmd terraform ansible-playbook ansible jq curl
+require_cmd terraform ansible-playbook ansible jq curl openssl
 # REALITY mimicry is DATA, never hardcoded — the operator supplies it (see
 # docs/mimicry-domains.md). REALITY_DEST is the handshake upstream host:port.
 require_env REGION CLOUD SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
+# Preflight the entry<->exit PAIR PSK BEFORE any terraform apply: production
+# requires it from the secret manager (node_up cannot persist a generated one).
+PAIR_PSK="$(resolve_pair_psk)"
 ROOT="$(repo_root)"
 TF_DIR="${ROOT}/${TF_ENV_DIR_DEFAULT}"
 ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
@@ -52,21 +57,38 @@ entry
 exit
 EOF
 
-# Mimicry passed as extra-vars (data, not code). NOTE: entry->exit SS chaining is
-# NOT wired here — it needs a matching Shadowsocks inbound (enabled, password,
-# port 8388) on the exit and credentials shared with the entry's outbound. That
-# is a separate, unproven task (see docs/FIRST-WORKING-USER.md); half-wiring a
-# passwordless exit_endpoint on port 443 would only produce a broken chain. For
-# now the entry terminates traffic directly (entry==exit egress).
+# Mimicry passed as extra-vars (data, not code). entry->exit SS-2022 chaining is
+# wired below (shared PAIR PSK) so the entry forwards to the exit (entry != exit).
 REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
+# hy2_sni enables + configures hysteria2 in the role (entry only; the exit gate is
+# in node-up.yml). Password is empty on the first node-up so keygen generates it;
+# a rotation supplies the durable one. Trusted TLS cert/key come from the operator
+# secret manager (HY2_TLS_CERT/HY2_TLS_KEY) — a private key is never in the CP.
 EXTRA_VARS="$(jq -n \
   --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
   --arg handshake "$REALITY_HANDSHAKE" \
   '{reality_server_names: $names, reality_handshake_server: $handshake}')"
+if [ -n "${HY2_SNI:-}" ]; then
+  EXTRA_VARS="$(jq -s '.[0] * .[1]' \
+    <(printf '%s' "$EXTRA_VARS") \
+    <(hy2_extra_vars "$HY2_SNI" "" "${HY2_TLS_CERT:-}" "${HY2_TLS_KEY:-}"))"
+fi
+
+# entry->exit data plane: the entry forwards decrypted traffic to the exit over
+# Shadowsocks-2022 (entry != exit). PAIR_PSK was resolved in preflight (required
+# in production; it is an INTERNAL secret — never in the control-plane or a client).
+EXTRA_VARS="$(jq -s '.[0] * .[1]' \
+  <(printf '%s' "$EXTRA_VARS") \
+  <(exit_link_extra_vars "$EXIT_IP" "${EXIT_LINK_PORT:-8388}" "$PAIR_PSK"))"
+
+# Pass extra-vars through a 0600 file (-e @file), never on argv: pair_psk /
+# hy2_tls_key / hy2_password would otherwise be visible in the process list.
+VARS_FILE="$(write_secure_vars_file "$EXTRA_VARS")"
+trap 'rm -f "${INV}" "${VARS_FILE}"' EXIT
 
 log "ansible node-up (wait for cloud-init, then converge)"
 retry 10 ansible -i "${INV}" nodes -m ping >/dev/null
-ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml" -e "${EXTRA_VARS}"
+ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml" -e "@${VARS_FILE}"
 
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   log "registering nodes in control-plane"
@@ -80,6 +102,18 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   ENTRY_PUB="$(printf '%s' "$ENTRY_BLOB" | awk -F= '/^public_key/{print $2}')"
   ENTRY_SIDS="$(printf '%s' "$ENTRY_BLOB" | awk -F= '/^short_ids/{print $2}')"
   [ -n "$ENTRY_PUB" ] || die "no public_key artifact from entry ${ENTRY_ID}"
+
+  # Optional 2nd client transport. When the operator enabled hysteria2 (HY2_SNI
+  # set), slurp its generated password so the node registers with vless-reality +
+  # hysteria2 (the >=2 distinct types the activation gate requires). Production
+  # runs a trusted cert => insecure=false; the self-signed/insecure path is e2e
+  # only (real-node.sh), never node-up.
+  HY2_PASSWORD=""; HY2_INSECURE="false"
+  if [ -n "${HY2_SNI:-}" ]; then
+    HY2_PASSWORD="$(ansible -i "${INV}" "${ENTRY_ID}" -b -m slurp -a src="${HY2_CRED_STATE_FILE:-/etc/caspervpn/hysteria2.cred}" \
+                     | awk '/"content":/ {gsub(/[",]/,""); print $2}' | base64 -d | awk -F= '/^password/{print $2}')"
+    [ -n "$HY2_PASSWORD" ] || die "HY2_SNI set but no hysteria2 credential on entry ${ENTRY_ID}"
+  fi
 
   # Register as PROVISIONING, not active. Subscription serves only status='active'
   # nodes (control-plane ListActive: WHERE status='active'), so a fresh node stays
@@ -96,6 +130,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
     ENTRY_IP="${ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
     REALITY_PUBLIC_KEY="$ENTRY_PUB" REALITY_SHORT_IDS="$ENTRY_SIDS" \
     REALITY_SERVER_NAMES="$REALITY_SERVER_NAMES" REALITY_DEST="$REALITY_DEST" \
+    HY2_PASSWORD="$HY2_PASSWORD" HY2_SNI="${HY2_SNI:-}" HY2_INSECURE="$HY2_INSECURE" \
     reality_sync_node
 
   # Exit: plain inventory node, no client transport (see comment above), also

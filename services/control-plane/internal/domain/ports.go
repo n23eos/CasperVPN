@@ -14,6 +14,10 @@ type NodeRepo interface {
 	Update(ctx context.Context, n contracts.Node) error
 	// SetStatus transitions status atomically and returns the previous status.
 	SetStatus(ctx context.Context, id string, status contracts.NodeStatus) (prev contracts.NodeStatus, err error)
+	// Demote atomically sets status=provisioning ONLY from a non-terminal state
+	// (active/degraded/blocked/provisioning). draining/retired -> ErrConflict, so a
+	// stale reconciler cannot resurrect an operator-retired/draining node.
+	Demote(ctx context.Context, id string) (prev contracts.NodeStatus, err error)
 	// SetEntryIP updates the advertised ingress address.
 	SetEntryIP(ctx context.Context, id, entryIP string) error
 	// ListActive returns nodes serving traffic (status = active), with transports.
@@ -29,6 +33,22 @@ type UserRepo interface {
 	RotateSecrets(ctx context.Context, id, shortID, uuid, privKey string) (contracts.User, error)
 	// AllActiveIDs lists ids of users whose sets should be (re)built.
 	AllActiveIDs(ctx context.Context) ([]string, error)
+}
+
+// AllowListRepo answers the node REALITY allow-list: the (uuid, short_id) of
+// every user whose account is active AND whose subscription is servable and not
+// expired — matching the subscription service's eligibility exactly.
+type AllowListRepo interface {
+	EligibleRealityUsers(ctx context.Context) ([]contracts.RealityUser, error)
+}
+
+// NodeActivator atomically promotes a provisioning node to active, gating on
+// structure (>=2 distinct enabled client transport types, paired exit active) and
+// an unchanged allow-list revision. Returns the activated node and its previous
+// status. ErrNotFound if absent; ErrConflict for any failed guard or a concurrent
+// activation.
+type NodeActivator interface {
+	Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error)
 }
 
 // SubscriptionRepo persists subscriptions. NO card/payment data — hashed token only.

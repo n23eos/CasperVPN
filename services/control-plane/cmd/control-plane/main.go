@@ -86,6 +86,10 @@ func main() {
 	userSvc := usecase.NewUserService(userStore, rotStore, queue).WithRevoker(revoker)
 	subSvc := usecase.NewSubscriptionService(subStore, userStore).WithRevoker(revoker)
 	signalSvc := usecase.NewSignalService(nodeStore, signalStore, nodeSvc)
+	// UserStore's EligibleRealityUsers does the eligibility join in one query.
+	allowSvc := usecase.NewAllowListService(nodeStore, userStore)
+	// NodeStore.Activate does the guarded promotion in one locked transaction.
+	nodeSvc = nodeSvc.WithActivator(nodeStore)
 
 	if os.Getenv("SEED") == "true" {
 		if err := seed.Run(ctx, seed.Services{Nodes: nodeSvc, NodesRepo: nodeStore, Users: userSvc, Subs: subSvc, Bundles: bundleSvc}); err != nil {
@@ -99,7 +103,7 @@ func main() {
 	if cfg.Env == "dev" {
 		logger.Printf("WARNING: dev env; ensure CONTROL_PLANE_TOKENS is set for non-local use")
 	}
-	handler := httpapi.New(nodeSvc, userSvc, subSvc, bundleSvc, signalSvc, tokens)
+	handler := httpapi.New(nodeSvc, userSvc, subSvc, bundleSvc, signalSvc, allowSvc, tokens)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

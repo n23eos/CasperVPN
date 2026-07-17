@@ -87,6 +87,58 @@ func (s *UserStore) AllActiveIDs(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// EligibleRealityUsers returns the (uuid, short_id) of every user a node must
+// admit: account active AND its current subscription servable (active/trialing/
+// past_due) AND not past expires_at. This mirrors the subscription service's
+// resolve eligibility exactly, so a client that gets a working config is always
+// present in the node allow-list. Ordered by uuid for a stable digest upstream.
+func (s *UserStore) EligibleRealityUsers(ctx context.Context) ([]contracts.RealityUser, error) {
+	return queryEligibleRealityUsers(ctx, s.q)
+}
+
+const eligibleRealityUsersSQL = `
+SELECT u.vless_uuid, u.reality_short_id
+FROM users u
+JOIN subscriptions sub ON sub.id = u.subscription_id
+WHERE u.status = 'active'
+  AND sub.status IN ('active', 'trialing', 'past_due')
+  AND (sub.expires_at IS NULL OR sub.expires_at > now())
+ORDER BY u.vless_uuid`
+
+// forUpdate locks the eligible users' and subscriptions' rows. Activation uses
+// this variant so a concurrent ban/rotation (UPDATE users / UPDATE subscriptions)
+// blocks until activation commits — SERIALIZABLE alone does not protect a read
+// against a READ COMMITTED writer, so the explicit row lock is what actually
+// prevents activating with an allow-list that changed mid-transaction.
+const eligibleRealityUsersForUpdateSQL = eligibleRealityUsersSQL + `
+FOR UPDATE OF u, sub`
+
+// queryEligibleRealityUsers runs the eligibility join on any querier (pool or tx).
+func queryEligibleRealityUsers(ctx context.Context, q querier) ([]contracts.RealityUser, error) {
+	return scanRealityUsers(q.Query(ctx, eligibleRealityUsersSQL))
+}
+
+// queryEligibleRealityUsersForUpdate is the row-locking variant for activation.
+func queryEligibleRealityUsersForUpdate(ctx context.Context, q querier) ([]contracts.RealityUser, error) {
+	return scanRealityUsers(q.Query(ctx, eligibleRealityUsersForUpdateSQL))
+}
+
+func scanRealityUsers(rows pgx.Rows, err error) ([]contracts.RealityUser, error) {
+	if err != nil {
+		return nil, fmt.Errorf("postgres: eligible reality users: %w", err)
+	}
+	defer rows.Close()
+	var out []contracts.RealityUser
+	for rows.Next() {
+		var ru contracts.RealityUser
+		if err := rows.Scan(&ru.UUID, &ru.ShortID); err != nil {
+			return nil, err
+		}
+		out = append(out, ru)
+	}
+	return out, rows.Err()
+}
+
 func scanUser(row pgx.Row) (contracts.User, error) {
 	var (
 		u           contracts.User
