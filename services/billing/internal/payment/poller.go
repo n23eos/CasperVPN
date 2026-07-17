@@ -14,7 +14,12 @@ type Recovery struct {
 	// pre-empted; it only affects recovery latency, never correctness.
 	StaleThreshold time.Duration
 	// LeaseFor is how long a reconciler owns a stuck invoice before the lease can be
-	// retaken (a crashed reconciler's rows become recoverable again after this).
+	// retaken (a crashed reconciler's rows become recoverable again after this). It
+	// MUST exceed the worst-case finishSettlement wall time — GetUser +
+	// CreateSubscription + SetSubscriptionPeriod + UpsertSchedule, each up to the
+	// control-plane HTTP timeout (~10s, so ≈40s worst case) — or a second reconciler
+	// could re-lease and double-activate mid-finish. Default 1m clears that; raise it
+	// in lockstep if the control-plane timeout is ever raised.
 	LeaseFor time.Duration
 	// Batch caps how many stuck settlements one cycle recovers.
 	Batch int

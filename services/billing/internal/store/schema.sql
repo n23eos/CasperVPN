@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS settlements (
 );
 
 -- Additive migration for an existing settlements table (idempotent).
+-- NOTE: on a table that already holds rows, claimed_at back-stamps them with the
+-- migration time and leaves activated_at NULL. Any pre-fix settlement that crashed
+-- AFTER activating would then look "stuck, not activated" and be re-activated
+-- ~SETTLEMENT_STALE_THRESHOLD later (a one-time double-period for those legacy rows).
+-- The durable store is new (no such rows yet); if applying to a populated table,
+-- back-fill activated_at for already-settled invoices first, or audit once at deploy.
 ALTER TABLE settlements ADD COLUMN IF NOT EXISTS claimed_at             TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE settlements ADD COLUMN IF NOT EXISTS activated_at           TIMESTAMPTZ;
 ALTER TABLE settlements ADD COLUMN IF NOT EXISTS reconcile_leased_until TIMESTAMPTZ;
