@@ -27,6 +27,11 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
+		// In the integration job REQUIRE_INTEGRATION_DB=true makes a missing DB a hard
+		// failure — so a silently-skipped integration suite can never pass as green.
+		if os.Getenv("REQUIRE_INTEGRATION_DB") == "true" {
+			t.Fatal("REQUIRE_INTEGRATION_DB=true but TEST_DATABASE_URL is empty — the integration DB is mandatory here")
+		}
 		t.Skip("TEST_DATABASE_URL not set; skipping Postgres integration tests")
 	}
 	ctx := context.Background()
@@ -137,10 +142,11 @@ func TestIntegration_BlockTriggersRebuild(t *testing.T) {
 	userSvc := usecase.NewUserService(users, rot, queue)
 	sigSvc := usecase.NewSignalService(nodes, sigs, nodeSvc)
 
-	// Two active nodes.
+	// Two active nodes. Seeded via the store (Register refuses status:active — a
+	// serving node is reached only through the guarded activation flow).
 	for _, id := range []string{"na", "nb"} {
-		if _, err := nodeSvc.Register(ctx, activeNode(id), "seed"); err != nil {
-			t.Fatalf("register %s: %v", id, err)
+		if err := nodes.Create(ctx, activeNode(id)); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
 	u, err := userSvc.Create(ctx, nil, nil)

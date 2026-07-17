@@ -20,6 +20,11 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
+		// In the integration job REQUIRE_INTEGRATION_DB=true makes a missing DB a hard
+		// failure — so a silently-skipped integration suite can never pass as green.
+		if os.Getenv("REQUIRE_INTEGRATION_DB") == "true" {
+			t.Fatal("REQUIRE_INTEGRATION_DB=true but DATABASE_URL is empty — the integration DB is mandatory here")
+		}
 		t.Skip("DATABASE_URL not set; skipping Postgres integration test")
 	}
 	pool, err := pgxpool.New(context.Background(), url)
@@ -29,6 +34,15 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.Ping(context.Background()); err != nil {
 		pool.Close()
 		t.Fatalf("ping: %v", err)
+	}
+	// Isolate each test: several store queries (LeaseStuckSettlements, ExpireOverdue)
+	// are global scans, so leftover rows from another test — or a previous run against
+	// the same DB — would pollute results and make the suite order-dependent. Start
+	// every test from a clean slate.
+	if _, err := pool.Exec(context.Background(),
+		`TRUNCATE settlements, invoices, seen_events, schedules RESTART IDENTITY CASCADE`); err != nil {
+		pool.Close()
+		t.Fatalf("truncate: %v", err)
 	}
 	return pool
 }

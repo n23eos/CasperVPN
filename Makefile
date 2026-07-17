@@ -36,6 +36,17 @@ test:
 		( cd $$m && go test -race ./... ) || exit 1; \
 	done
 
+## test-integration: Postgres-backed integration tests. Needs two DBs in one server:
+## BILLING_DATABASE_URL (billing; schema.sql applied out of band) and TEST_DATABASE_URL
+## (control-plane; migrate.Up runs in-test). REQUIRE_INTEGRATION_DB=true turns a missing
+## DB into a hard failure so a skipped suite can never pass green. Billing reads
+## DATABASE_URL, so map it explicitly from BILLING_DATABASE_URL.
+test-integration:
+	@echo ">> integration billing"; \
+		( cd services/billing && REQUIRE_INTEGRATION_DB=true DATABASE_URL="$(BILLING_DATABASE_URL)" go test -count=1 ./... ) || exit 1
+	@echo ">> integration control-plane"; \
+		( cd services/control-plane && REQUIRE_INTEGRATION_DB=true TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -count=1 -tags integration ./... ) || exit 1
+
 ## vet: go vet across the workspace
 vet:
 	@for m in $(MODULES); do \
