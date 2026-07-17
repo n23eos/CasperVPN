@@ -82,20 +82,27 @@ func (r Recovery) withDefaults() Recovery {
 // through the same Processor as webhooks — so idempotency holds regardless of
 // whether a payment arrives by webhook or by poll.
 type Poller struct {
-	store     store.Repository
-	registry  *Registry
-	processor *Processor
-	recovery  Recovery
-	onchain   OnChain
-	now       func() time.Time
+	store       store.Repository
+	registry    *Registry
+	processor   *Processor
+	recovery    Recovery
+	onchain     OnChain
+	recoveryLog RecoveryLogger
+	now         func() time.Time
 }
 
-// NewPoller wires the poller. now is injectable for deterministic tests.
-func NewPoller(repo store.Repository, registry *Registry, processor *Processor, recovery Recovery, onchain OnChain, now func() time.Time) *Poller {
+// NewPoller wires the poller. now is injectable for deterministic tests. recoveryLog
+// is REQUIRED and must not be nil: a nil logger would silently drop recovery signal,
+// which is exactly what this observability work exists to prevent, so it panics rather
+// than degrade to a no-op.
+func NewPoller(repo store.Repository, registry *Registry, processor *Processor, recovery Recovery, onchain OnChain, recoveryLog RecoveryLogger, now func() time.Time) *Poller {
+	if recoveryLog == nil {
+		panic("payment: NewPoller requires a non-nil RecoveryLogger")
+	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Poller{store: repo, registry: registry, processor: processor, recovery: recovery.withDefaults(), onchain: onchain.withDefaults(), now: now}
+	return &Poller{store: repo, registry: registry, processor: processor, recovery: recovery.withDefaults(), onchain: onchain.withDefaults(), recoveryLog: recoveryLog, now: now}
 }
 
 // RunOnce performs a single poll cycle. Order matters:
@@ -107,8 +114,16 @@ func NewPoller(repo store.Repository, registry *Registry, processor *Processor, 
 //     once a post-deadline negative check exists and there is no live lease/claim.
 //
 // Per-invoice/per-gateway errors are swallowed so one bad invoice can't stall the rest.
+// The recovery pass, however, is GUARANTEED observed: its structured report is logged
+// here (when it has anything to say) BEFORE poll/expire proceed, so a stuck-settlement
+// failure can never silently vanish. The raw aggregate error is intentionally dropped
+// after logging — only the safe report is emitted (a raw error may carry a response
+// body); callers that need the cause use Reconcile directly.
 func (p *Poller) RunOnce(ctx context.Context) error {
-	_ = p.processor.Reconcile(ctx, p.now().Add(-p.recovery.StaleThreshold), p.recovery.LeaseFor, p.recovery.Batch)
+	report, _ := p.processor.Reconcile(ctx, p.now().Add(-p.recovery.StaleThreshold), p.recovery.LeaseFor, p.recovery.Batch)
+	if report.ShouldLog() {
+		p.recoveryLog(report)
+	}
 
 	open, err := p.store.OpenInvoices(ctx)
 	if err != nil {
