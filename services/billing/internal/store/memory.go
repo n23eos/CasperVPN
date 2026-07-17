@@ -56,7 +56,9 @@ func NewMemoryWithClock(now func() time.Time) *Memory {
 // WithUserLock serializes fn per user with a process-local mutex. This is NOT
 // cross-instance safe (a second billing process has its own map) — the Postgres
 // store provides the real cross-instance guarantee; memory is for single-process
-// dev/tests only.
+// dev/tests only. The userLocks map keeps one tiny mutex per distinct user and is
+// never pruned; that unbounded growth is acceptable only because this store is
+// dev/test-only (production uses Postgres).
 func (m *Memory) WithUserLock(ctx context.Context, userID string, fn func(ctx context.Context) error) error {
 	m.userLocksMu.Lock()
 	mu, ok := m.userLocks[userID]
