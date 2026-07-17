@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/caspervpn/billing/internal/idgen"
 	"github.com/caspervpn/billing/internal/model"
 )
 
@@ -212,12 +213,76 @@ func (p *Postgres) LeaseStuckSettlements(ctx context.Context, olderThan time.Tim
 // ExpireOverdue transitions overdue pending invoices to expired in one statement,
 // excluding any invoice that carries a settlement claim (NOT EXISTS) so a paid
 // invoice mid-recovery is never buried — no per-invoice race, no N+1.
-func (p *Postgres) ExpireOverdue(ctx context.Context, now time.Time) error {
+func (p *Postgres) ExpireOverdue(ctx context.Context, now time.Time, onchainProviders []string, grace time.Duration) error {
+	if onchainProviders == nil {
+		onchainProviders = []string{} // nil would encode as SQL NULL → provider = ANY(NULL) is NULL, not false
+	}
 	_, err := p.pool.Exec(ctx, `
-		UPDATE invoices SET status = 'expired'
-		WHERE status = 'pending' AND expires_at <= $1
-		  AND NOT EXISTS (SELECT 1 FROM settlements s WHERE s.invoice_id = invoices.id)`,
-		now)
+		UPDATE invoices i SET status = 'expired'
+		WHERE i.status = 'pending'
+		  AND (
+		        ( NOT (i.provider = ANY($2)) AND $1 > i.expires_at )
+		     OR ( i.provider = ANY($2)
+		          AND $1 > i.expires_at + make_interval(secs => $3)
+		          AND i.last_negative_check_at IS NOT NULL
+		          AND i.last_negative_check_at >= i.expires_at + make_interval(secs => $3) )
+		      )
+		  AND NOT EXISTS (SELECT 1 FROM settlements s WHERE s.invoice_id = i.id)
+		  AND NOT EXISTS (SELECT 1 FROM poll_leases pl WHERE pl.invoice_id = i.id AND pl.lease_until > $1)`,
+		now, onchainProviders, grace.Seconds())
+	return err
+}
+
+// AcquirePollLease mints a fresh token and takes the invoice's poll lease, reclaiming
+// an existing lease only if it has lapsed (lease_until <= now). No row returned means
+// an active lease is held by someone else.
+func (p *Postgres) AcquirePollLease(ctx context.Context, invoiceID, owner string, leaseFor time.Duration) (string, bool, error) {
+	token := idgen.New()
+	var got string
+	err := p.pool.QueryRow(ctx, `
+		INSERT INTO poll_leases (invoice_id, lease_token, owner, lease_until)
+		VALUES ($1, $2, $3, now() + make_interval(secs => $4))
+		ON CONFLICT (invoice_id) DO UPDATE
+		   SET lease_token = EXCLUDED.lease_token, owner = EXCLUDED.owner, lease_until = EXCLUDED.lease_until
+		   WHERE poll_leases.lease_until <= now()
+		RETURNING lease_token`,
+		invoiceID, token, owner, leaseFor.Seconds()).Scan(&got)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("billing: acquire poll lease: %w", err)
+	}
+	return got, true, nil
+}
+
+// RenewPollLease extends the lease only if token still owns it (CAS).
+func (p *Postgres) RenewPollLease(ctx context.Context, invoiceID, token string, leaseFor time.Duration) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE poll_leases SET lease_until = now() + make_interval(secs => $3)
+		WHERE invoice_id = $1 AND lease_token = $2`,
+		invoiceID, token, leaseFor.Seconds())
+	if err != nil {
+		return false, fmt.Errorf("billing: renew poll lease: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ReleasePollLease drops the lease only if token still owns it (CAS).
+func (p *Postgres) ReleasePollLease(ctx context.Context, invoiceID, token string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM poll_leases WHERE invoice_id = $1 AND lease_token = $2`, invoiceID, token)
+	return err
+}
+
+// RecordNegativeCheck stamps the invoice's last definitive negative on-chain check.
+func (p *Postgres) RecordNegativeCheck(ctx context.Context, invoiceID string, checkAt time.Time) error {
+	_, err := p.pool.Exec(ctx, `UPDATE invoices SET last_negative_check_at = $2 WHERE id = $1 AND status = 'pending'`, invoiceID, checkAt)
+	return err
+}
+
+// ClearNegativeCheck wipes the negative marker once the chain shows the invoice paid.
+func (p *Postgres) ClearNegativeCheck(ctx context.Context, invoiceID string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE invoices SET last_negative_check_at = NULL WHERE id = $1 AND status = 'pending'`, invoiceID)
 	return err
 }
 

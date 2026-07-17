@@ -3,6 +3,14 @@
 --
 -- Apply once at deploy time (out of band, not on app start — concurrent instances
 -- would otherwise race on migration). All statements are idempotent.
+--
+-- DEPLOYMENT ORDER: apply this DDL FIRST, then roll out the new binary. The new
+-- predicates (last_negative_check_at, poll_leases) and columns are additive and the
+-- old binary ignores them, so DDL-before-binary is safe.
+-- ROLLBACK ORDER (reverse): roll back to the old binary FIRST, then optionally drop
+-- the additions (DROP TABLE poll_leases; ALTER TABLE invoices DROP COLUMN
+-- last_negative_check_at). The old binary tolerates the extra column/table, so the
+-- drop is optional and never required for a rollback.
 
 -- Crypto payment requests bound to an anonymous account.
 CREATE TABLE IF NOT EXISTS invoices (
@@ -21,6 +29,27 @@ CREATE TABLE IF NOT EXISTS invoices (
 
 -- Open invoices are polled every cycle; index the hot predicate.
 CREATE INDEX IF NOT EXISTS invoices_status_idx ON invoices (status);
+
+-- last_negative_check_at records the time of the most recent DEFINITIVE negative
+-- on-chain check (chain reachable, payment absent/insufficient) — NOT a chain API
+-- error. An on-chain invoice may be expired only once a negative check taken at or
+-- after its effective deadline exists, so a payment confirmed in the grace window is
+-- never buried by a sweep that raced ahead of the poll.
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS last_negative_check_at TIMESTAMPTZ;
+
+-- poll_leases: a durable per-invoice lease held by the poller across the whole
+-- chain-check-through-durable-handoff window, so a concurrent sweep on another
+-- instance cannot expire an invoice whose payment is being checked/credited. Each
+-- acquire mints a fresh opaque lease_token; renew/release are CAS on that token so a
+-- stale owner can never touch a lease that was reclaimed after its lease_until
+-- lapsed. owner is observability only, never an ownership mechanism.
+CREATE TABLE IF NOT EXISTS poll_leases (
+    invoice_id  TEXT PRIMARY KEY REFERENCES invoices (id) ON DELETE CASCADE,
+    lease_token TEXT        NOT NULL,
+    owner       TEXT        NOT NULL,
+    lease_until TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS poll_leases_until_idx ON poll_leases (lease_until);
 
 -- Webhook-delivery dedup: a (provider, external_id) processed to completion.
 CREATE TABLE IF NOT EXISTS seen_events (
