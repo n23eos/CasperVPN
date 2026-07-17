@@ -1,13 +1,30 @@
 package httpapi_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/control-plane/internal/adapters/memory"
 )
+
+// seedActive writes an ACTIVE node straight to the repo. Registration refuses
+// status:active (a fresh node must be promoted via the guarded activation flow),
+// so tests that need a serving node as a fixture use this internal seam instead of
+// the HTTP path — never a production bypass.
+func seedActive(t *testing.T, nodes *memory.Nodes, body string) {
+	t.Helper()
+	var n contracts.Node
+	if err := json.Unmarshal([]byte(body), &n); err != nil {
+		t.Fatalf("seed active node: %v", err)
+	}
+	if err := nodes.Create(context.Background(), n); err != nil {
+		t.Fatalf("seed active node %s: %v", n.ID, err)
+	}
+}
 
 const (
 	vlessTr = `{"tag":"v","type":"vless-reality","version":"v1","port":443,"enabled":true,"priority":0,"vless_reality":{"server_names":["x"],"dest":"x:443","public_key":"p","short_ids":["aa11"],"flow":"xtls-rprx-vision"}}`
@@ -25,7 +42,7 @@ func postNode(t *testing.T, r http.Handler, body string) {
 // seedActivatable sets up an eligible user, an ACTIVE paired exit, and a
 // PROVISIONING entry with two distinct enabled client transports. Returns the
 // entry id and the current allow-list revision.
-func seedActivatable(t *testing.T, r http.Handler, entryTransports string) (entryID, revision string) {
+func seedActivatable(t *testing.T, r http.Handler, nodes *memory.Nodes, entryTransports string) (entryID, revision string) {
 	t.Helper()
 	// eligible user (active account + active subscription)
 	rec := do(t, r, http.MethodPost, "/v1/users", adminTok, `{"telegram_id":7}`)
@@ -33,7 +50,9 @@ func seedActivatable(t *testing.T, r http.Handler, entryTransports string) (entr
 	_ = json.Unmarshal(rec.Body.Bytes(), &u)
 	do(t, r, http.MethodPost, "/v1/subscriptions", adminTok, `{"user_id":"`+u.ID+`","plan":"basic"}`)
 
-	postNode(t, r, `{"id":"ex-1","role":"exit","status":"active","entry_node_id":"en-1","provider":"l","cloud":"l","region":"eu","ephemeral_entry_ip":false,"transports":[]}`)
+	// The paired exit must already be active — seed it via the repo (Register refuses
+	// active); the entry is provisioning, so it still goes through the HTTP path.
+	seedActive(t, nodes, `{"id":"ex-1","role":"exit","status":"active","entry_node_id":"en-1","provider":"l","cloud":"l","region":"eu","ephemeral_entry_ip":false,"transports":[]}`)
 	postNode(t, r, `{"id":"en-1","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.1","ephemeral_entry_ip":false,"transports":[`+entryTransports+`]}`)
 
 	rec = do(t, r, http.MethodGet, "/v1/nodes/en-1/reality-users", orchTok, "")
@@ -53,8 +72,8 @@ func activateExit(t *testing.T, r http.Handler, id, token, evidence string) *htt
 }
 
 func TestActivate_HappyPath(t *testing.T) {
-	r := newTestRouter(t)
-	id, rev := seedActivatable(t, r, vlessTr+","+hy2Tr)
+	r, nodes := newTestRouterWithNodes(t)
+	id, rev := seedActivatable(t, r, nodes, vlessTr+","+hy2Tr)
 
 	rec := activate(t, r, id, orchTok, rev)
 	if rec.Code != http.StatusOK {
@@ -73,8 +92,8 @@ func TestActivate_HappyPath(t *testing.T) {
 }
 
 func TestActivate_StaleRevision(t *testing.T) {
-	r := newTestRouter(t)
-	id, _ := seedActivatable(t, r, vlessTr+","+hy2Tr)
+	r, nodes := newTestRouterWithNodes(t)
+	id, _ := seedActivatable(t, r, nodes, vlessTr+","+hy2Tr)
 	rec := activate(t, r, id, orchTok, "stale-revision")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", rec.Code, rec.Body)
@@ -85,8 +104,8 @@ func TestActivate_StaleRevision(t *testing.T) {
 }
 
 func TestActivate_NotProvisioning(t *testing.T) {
-	r := newTestRouter(t)
-	id, rev := seedActivatable(t, r, vlessTr+","+hy2Tr)
+	r, nodes := newTestRouterWithNodes(t)
+	id, rev := seedActivatable(t, r, nodes, vlessTr+","+hy2Tr)
 	if rec := activate(t, r, id, orchTok, rev); rec.Code != http.StatusOK {
 		t.Fatalf("first activate: %d", rec.Code)
 	}
@@ -96,17 +115,17 @@ func TestActivate_NotProvisioning(t *testing.T) {
 }
 
 func TestActivate_TooFewTransportTypes(t *testing.T) {
-	r := newTestRouter(t)
-	id, rev := seedActivatable(t, r, vlessTr) // single type
+	r, nodes := newTestRouterWithNodes(t)
+	id, rev := seedActivatable(t, r, nodes, vlessTr) // single type
 	if rec := activate(t, r, id, orchTok, rev); rec.Code != http.StatusConflict {
 		t.Errorf("one transport type: got %d, want 409", rec.Code)
 	}
 }
 
 func TestActivate_SameTypeIsNotDiversity(t *testing.T) {
-	r := newTestRouter(t)
+	r, nodes := newTestRouterWithNodes(t)
 	vless2 := `{"tag":"v2","type":"vless-reality","version":"v1","port":444,"enabled":true,"priority":2,"vless_reality":{"server_names":["y"],"dest":"y:443","public_key":"q","short_ids":["bb22"],"flow":"xtls-rprx-vision"}}`
-	id, rev := seedActivatable(t, r, vlessTr+","+vless2) // two records, one type
+	id, rev := seedActivatable(t, r, nodes, vlessTr+","+vless2) // two records, one type
 	if rec := activate(t, r, id, orchTok, rev); rec.Code != http.StatusConflict {
 		t.Errorf("two same-type transports: got %d, want 409", rec.Code)
 	}
@@ -136,8 +155,8 @@ func TestActivate_ExitMissing(t *testing.T) {
 }
 
 func TestActivate_RBAC(t *testing.T) {
-	r := newTestRouter(t)
-	id, rev := seedActivatable(t, r, vlessTr+","+hy2Tr)
+	r, nodes := newTestRouterWithNodes(t)
+	id, rev := seedActivatable(t, r, nodes, vlessTr+","+hy2Tr)
 	if rec := activate(t, r, id, subTok, rev); rec.Code != http.StatusForbidden {
 		t.Errorf("subscription role: got %d, want 403", rec.Code)
 	}
@@ -218,8 +237,8 @@ func TestPatch_NonActiveToActiveForbidden(t *testing.T) {
 
 // Staying active (field update) and leaving active (->degraded) are unaffected.
 func TestPatch_ActiveTransitionsUnaffected(t *testing.T) {
-	r := newTestRouter(t)
-	postNode(t, r, nodeBody("act-1", "active"))
+	r, nodes := newTestRouterWithNodes(t)
+	seedActive(t, nodes, nodeBody("act-1", "active"))
 	if rec := do(t, r, http.MethodPatch, "/v1/nodes/act-1", orchTok, nodeBody("act-1", "active")); rec.Code != http.StatusOK {
 		t.Errorf("PATCH active->active: got %d, want 200: %s", rec.Code, rec.Body)
 	}
