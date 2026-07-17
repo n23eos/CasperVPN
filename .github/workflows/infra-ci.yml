@@ -5,10 +5,12 @@ on:
   push:
     paths:
       - "infra/**"
+      - "test/infra/**"
       - ".github/workflows/infra-ci.yml"
   pull_request:
     paths:
       - "infra/**"
+      - "test/infra/**"
       - ".github/workflows/infra-ci.yml"
 
 permissions:
@@ -89,6 +91,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: no hardcoded mimicry domain / IP
         run: infra/ci/no-hardcode.sh
+
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: pure-shell live-lifecycle guards (no cloud/docker)
+        run: |
+          set -e
+          for g in test/infra/*.sh; do echo "== $g =="; bash "$g"; done
 
   molecule:
     runs-on: ubuntu-latest

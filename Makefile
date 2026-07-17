@@ -14,7 +14,7 @@ MODULES := packages/contracts $(SERVICES)
 BIN := bin
 
 .PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-reconcile-signal e2e-user-removal e2e-reconcile \
-	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode
+	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode infra-guards
 
 INFRA := infra
 
@@ -137,17 +137,21 @@ help:
 # infra/ — fleet lifecycle (Terraform + Ansible). See docs/infra.md.
 # ---------------------------------------------------------------------------
 
-## node-up: provision an entry+exit pair  (REGION=.. CLOUD=..)
+## node-up: provision an entry+exit pair  (RUN_ID=.. TF_WORKSPACE=.. REGION=.. CLOUD=..)
 node-up:
-	@REGION=$(REGION) CLOUD=$(CLOUD) SSH_PUBKEY="$(SSH_PUBKEY)" $(INFRA)/scripts/node_up.sh
+	@RUN_ID=$(RUN_ID) TF_WORKSPACE=$(TF_WORKSPACE) REGION=$(REGION) CLOUD=$(CLOUD) SSH_PUBKEY="$(SSH_PUBKEY)" $(INFRA)/scripts/node_up.sh
 
 ## node-rotate: rotate a node — fresh ephemeral IP + REALITY rekey  (NODE=..)
 node-rotate:
 	@NODE=$(NODE) SSH_PUBKEY="$(SSH_PUBKEY)" $(INFRA)/scripts/node_rotate.sh
 
-## node-down: drain + retire + destroy a node  (NODE=..)
+## node-down: drain + retire + destroy a run's pair  (RUN_ID=..)
 node-down:
-	@NODE=$(NODE) $(INFRA)/scripts/node_down.sh
+	@RUN_ID=$(RUN_ID) $(INFRA)/scripts/node_down.sh
+
+## infra-guards: pure-shell P0 live-lifecycle guards (no cloud/docker)
+infra-guards:
+	@set -e; for g in test/infra/*.sh; do echo ">> $$g"; bash "$$g"; done
 
 ## infra-fmt: terraform fmt check across all modules/envs
 infra-fmt:
