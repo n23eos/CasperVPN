@@ -53,6 +53,10 @@ type NodeActivator interface {
 
 // SubscriptionRepo persists subscriptions. NO card/payment data — hashed token only.
 type SubscriptionRepo interface {
+	// Create inserts a subscription WITHOUT linking it to a user. Prefer CreateAndLink
+	// for the create-a-new-subscription flow: raw Create is the non-atomic path and
+	// wiring it back into that flow would reintroduce the duplicate-create race (#4)
+	// and the orphan window (#6). Kept for narrow store-level use and tests.
 	Create(ctx context.Context, s contracts.Subscription, tokenHash, tokenPrefix string) error
 	// CreateAndLink inserts the subscription AND links it onto the user in ONE atomic
 	// step: the user row is locked (SELECT ... FOR UPDATE), and if it already has a
