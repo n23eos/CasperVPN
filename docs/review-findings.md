@@ -39,3 +39,19 @@ Independent re-review of `7a3783b..b3d1241` confirmed the original crash window 
 - **MED [#9]:** recovery failures are silent — a permanently-stuck claimed invoice is invisible (no log/alert). Ticketed.
 - **MED [#10]:** the real `FOR UPDATE SKIP LOCKED` exclusivity is only proven against a live Postgres; CI's store tests skip without a DB. Ticketed (add a Postgres service to build-test).
 - **LOW (documented inline):** `LeaseFor` must exceed worst-case `finishSettlement` wall time (comment in `poller.go`); the migration back-stamps legacy `claimed_at` (note in `schema.sql`).
+
+---
+
+# Pre-merge review — PR #2 (`feat/node-reconciler`, CP→node reconciler)
+
+Independent final review before merging PR #2, 2026-07-17. **No CRITICAL; contracts (Go/Schema/OpenAPI) consistent.** Core machinery verified: guarded `/activate` is the only provisioning→active path, SERIALIZABLE+`FOR UPDATE` allow-list gate with a 25-iteration eligibility-race test, exit-first/entry-last rollback, signal traps terminate (130/143), fail-closed probe (≥2 distinct types), secrets (REALITY key / PAIR_PSK / hy2 TLS) kept out of CP/client/logs, and a capstone e2e that drives the real state machine (a banned user's VLESS actually dies).
+
+| Sev | Finding | Status |
+|-----|---------|--------|
+| HIGH | `NodeService.Update` guarded only `provisioning→active`; plain PATCH `retired/draining/degraded/blocked→active` bypassed all gates (resurrection stronger than `Demote` forbids) | **FIXED** — reject every non-active→active PATCH; table-driven tests |
+| MED | reconciler `_cp` had no HTTP timeout → hung CP wedges the run holding the pair lock | **FIXED** — bounded connect/total timeout; timeout→rollback→lock release; new state-guard case |
+| MED | node-up hy2 `set_fact` folded the durable password without `no_log` | **FIXED** — `no_log: true` (matches keygen tasks) |
+| LOW | mkdir-lock not released on SIGKILL (dev/macOS) | **Ticket [#11]** — deferred to avoid pre-merge scope creep |
+| LOW | exit `evidence` is a static string, not crypto proof | **Documented** — trusted-attestation comment in `reality_users.go` |
+
+**Static/molecule check for hy2 `no_log` (considered, not added):** `no_log` hides task output, so a molecule assertion can't observe it, and a YAML-unaware grep over task bodies is false-positive/negative-prone. Coverage rests on review + the now-consistent `no_log` across all hy2-password tasks; revisit if a robust ansible-lint rule becomes available.
