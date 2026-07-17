@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,14 @@ const (
 )
 
 func newTestRouter(t *testing.T) http.Handler {
+	r, _ := newTestRouterWithNodes(t)
+	return r
+}
+
+// newTestRouterWithNodes also returns the node repo, so a test can seed an ACTIVE
+// node via explicit internal setup (nodes.Create) — registration itself refuses
+// status:active, so the HTTP path can no longer be used to seed serving nodes.
+func newTestRouterWithNodes(t *testing.T) (http.Handler, *memory.Nodes) {
 	t.Helper()
 	nodes := memory.NewNodes()
 	users := memory.NewUsers()
@@ -51,7 +60,7 @@ func newTestRouter(t *testing.T) http.Handler {
 		subTok:   authz.RoleSubscription,
 		billTok:  authz.RoleBilling,
 	})
-	return httpapi.New(nodeSvc, userSvc, subSvc, bundle, sigSvc, tokens).Router()
+	return httpapi.New(nodeSvc, userSvc, subSvc, bundle, sigSvc, tokens).Router(), nodes
 }
 
 type openAPISpec struct {
@@ -118,7 +127,7 @@ func TestContract_RBAC(t *testing.T) {
 
 // TestContract_HappyPath exercises the core create/read flows end to end.
 func TestContract_HappyPath(t *testing.T) {
-	router := newTestRouter(t)
+	router, nodes := newTestRouterWithNodes(t)
 
 	// Create a user (admin).
 	var user contracts.User
@@ -143,19 +152,18 @@ func TestContract_HappyPath(t *testing.T) {
 		t.Fatal("GET subscription leaked the token")
 	}
 
-	// Register a node (orchestrator).
+	// Seed an ACTIVE node via internal setup — registration refuses status:active,
+	// so a serving node is created directly through the repo, not the HTTP path.
 	node := contracts.Node{
-		Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive, Region: "eu",
+		ID: "n-happy", Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive, Region: "eu",
 		Transports: []contracts.Transport{{
 			Tag: "r0", Type: contracts.TransportVlessReality, Version: contracts.TransportVersionV1,
 			Port: 443, Enabled: true,
 			VlessReality: &contracts.VlessRealityParams{ServerNames: []string{"e.com"}, Dest: "e.com:443", PublicKey: "pk", ShortIDs: []string{"aa"}, Flow: "v"},
 		}},
 	}
-	var created contracts.Node
-	doJSON(t, router, http.MethodPost, "/v1/nodes", orchTok, node, http.StatusCreated, &created)
-	if created.ID == "" {
-		t.Fatal("node create did not return an id")
+	if err := nodes.Create(context.Background(), node); err != nil {
+		t.Fatalf("seed active node: %v", err)
 	}
 
 	// Agent C fetches the structured set (subscription role).
@@ -169,8 +177,8 @@ func TestContract_HappyPath(t *testing.T) {
 
 // TestContract_SignalIngestWired checks the additive telemetry endpoint.
 func TestContract_SignalIngestWired(t *testing.T) {
-	router := newTestRouter(t)
-	// Register an active node first.
+	router, nodes := newTestRouterWithNodes(t)
+	// Seed an active node directly (registration refuses status:active).
 	node := contracts.Node{
 		ID: "n-sig", Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive,
 		Transports: []contracts.Transport{{
@@ -179,7 +187,9 @@ func TestContract_SignalIngestWired(t *testing.T) {
 			VlessReality: &contracts.VlessRealityParams{ServerNames: []string{"e.com"}, Dest: "e.com:443", PublicKey: "pk", ShortIDs: []string{"aa"}, Flow: "v"},
 		}},
 	}
-	doJSON(t, router, http.MethodPost, "/v1/nodes", orchTok, node, http.StatusCreated, nil)
+	if err := nodes.Create(context.Background(), node); err != nil {
+		t.Fatalf("seed active node: %v", err)
+	}
 
 	body := map[string]any{"aggregates": []map[string]any{{
 		"node_id": "n-sig", "region": "RU-MOW", "total": 100,
