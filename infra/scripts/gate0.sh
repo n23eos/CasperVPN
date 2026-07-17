@@ -53,32 +53,50 @@ gate_cp_auth() {
 gate_sub_health() {
   curl -fsS --connect-timeout 5 --max-time 15 "${SUBSCRIPTION_URL%/}/healthz" >/dev/null
 }
-# The public tunnel must serve subscription's health but NOT expose the CP admin
-# API. A 2xx on a CP admin path through the tunnel is a FAIL (surface leak).
+# The public tunnel must be routed to SUBSCRIPTION, not the control-plane. Two
+# decisive checks, because CP and subscription both expose a public /healthz:
+#   POSITIVE — a real /sub/<token> (from the token file gate_make_tokens wrote)
+#     resolves; only subscription has /sub, so a tunnel misrouted to the CP 404s.
+#   NEGATIVE — the CP admin API is NOT reachable through the tunnel EVEN WITH a
+#     valid admin bearer (a 2xx on /v1/nodes with the admin token means the public
+#     hostname is pointed at the control-plane — the exact leak this gate catches;
+#     an auth-protected CP returns 401 to an unauthenticated probe, so the probe
+#     must carry the token to be decisive).
+# It reads the probe URL from the token FILE, not a variable, because each check
+# runs in a subshell (a variable set in gate_make_tokens would not survive).
 gate_tunnel() {
   curl -fsS --connect-timeout 5 --max-time 15 "${TUNNEL_SUB_URL%/}/healthz" >/dev/null || return 1
+  local sub
+  sub="$(jq -r '.[0].sub_url // empty' "$(run_dir)/${RUN_ID}.tokens.json" 2>/dev/null)"
+  [ -n "$sub" ] || return 1
+  curl -fsS --connect-timeout 5 --max-time 15 "$sub" >/dev/null || return 1
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 "${TUNNEL_SUB_URL%/}/v1/nodes" 2>/dev/null || echo 000)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${CONTROL_PLANE_TOKEN:?}" \
+    --connect-timeout 5 --max-time 15 "${TUNNEL_SUB_URL%/}/v1/nodes" 2>/dev/null || echo 000)"
   case "$code" in 2??) return 1 ;; *) return 0 ;; esac
 }
 # Read-only cloud credential + config check via terraform plan (NO apply) in the
-# isolated workspace. Saves the plan to a file for the summary.
+# isolated workspace. The plan can carry sensitive attributes, so it is written
+# 0600 like every other run artifact.
 gate_plan() {
   require_env HCLOUD_TOKEN VULTR_API_KEY SSH_PUBKEY REGION
   terraform -chdir="${TF_DIR}" init -input=false >/dev/null 2>&1 || return 1
   tf_select_workspace "${TF_DIR}" >/dev/null 2>&1 || return 1
-  terraform -chdir="${TF_DIR}" plan -input=false \
-    -var "ssh_pubkey=${SSH_PUBKEY}" -var "entry_region=${REGION}" \
-    >"$(run_dir)/${RUN_ID}.plan.txt" 2>&1
+  local pf; pf="$(run_dir)/${RUN_ID}.plan.txt"
+  ( umask 077; terraform -chdir="${TF_DIR}" plan -input=false \
+      -var "ssh_pubkey=${SSH_PUBKEY}" -var "entry_region=${REGION}" >"$pf" 2>&1 )
+  local rc=$?; chmod 600 "$pf" 2>/dev/null; return "$rc"
 }
 # Create two test users + subscriptions; save tokens to a 0600 file. Tokens are
-# NEVER echoed — only the file path is reported.
+# NEVER echoed — only the file path is reported. Telegram ids are unique PER RUN so
+# a fix-a-row-and-re-run never collides on the UNIQUE(telegram_id) constraint.
 gate_make_tokens() {
   require_env CONTROL_PLANE_URL CONTROL_PLANE_TOKEN TUNNEL_SUB_URL
   mkdir -p "$(run_dir)"; local out; out="$(run_dir)/${RUN_ID}.tokens.json"
-  local acc="[]" i uid sub tok tg
+  local base; base="$(date -u +%s 2>/dev/null || echo 0)"
+  local acc="[]" i uid sub tok tg url
   for i in 1 2; do
-    tg="$(( 700000 + i ))"
+    tg="$(( base * 10 + i ))"
     uid="$(curl -fsS -X POST "${CONTROL_PLANE_URL%/}/v1/users" \
       -H "Authorization: Bearer ${CONTROL_PLANE_TOKEN}" -H 'Content-Type: application/json' \
       -d "{\"telegram_id\":${tg}}" | jq -re .id)" || return 1
@@ -88,7 +106,8 @@ gate_make_tokens() {
       -d "{\"user_id\":\"${uid}\",\"plan\":\"basic\"}")" || return 1
     sub="$(jq -re .id <<<"$subjson")" || return 1
     tok="$(jq -re .token <<<"$subjson")" || return 1
-    acc="$(jq -c --arg u "$uid" --arg s "$sub" --arg url "${TUNNEL_SUB_URL%/}/sub/${tok}" \
+    url="${TUNNEL_SUB_URL%/}/sub/${tok}"
+    acc="$(jq -c --arg u "$uid" --arg s "$sub" --arg url "$url" \
       '. += [{user_id:$u, subscription_id:$s, sub_url:$url}]' <<<"$acc")"
   done
   ( umask 077; printf '%s\n' "$acc" >"$out" ); chmod 600 "$out"
@@ -97,9 +116,14 @@ gate_make_tokens() {
 # --- run identity -------------------------------------------------------------
 : "${RUN_ID:=run-$(date -u +%Y%m%d-%H%M%S 2>/dev/null || echo manual)}"
 export RUN_ID
+# Validate RUN_ID before it is used in any artifact path (a '/' or '..' would
+# redirect writes outside .runs/).
+case "$RUN_ID" in
+  *[!A-Za-z0-9._-]*) echo "RUN_ID must match [A-Za-z0-9._-]" >&2; exit 2 ;;
+esac
 : "${TF_WORKSPACE:=}"
 : "${RUN_MAX_MINUTES:=120}"
-mkdir -p "$(run_dir)"
+mkdir -p "$(run_dir)"; chmod 700 "$(run_dir)" 2>/dev/null
 
 echo "GATE-0 preflight — run ${RUN_ID}"
 
@@ -115,9 +139,11 @@ else
   row SKIP "HY2 disabled (HY2_SNI unset)"
 fi
 
-# 2. staging services + tunnel surface
+# 2. staging services. Tokens are created BEFORE the tunnel check, which uses a
+#    real /sub/<token> to prove the tunnel is routed to subscription (not the CP).
 check "control-plane health + auth" gate_cp_auth
 check "subscription health" gate_sub_health
+check "2 test users + subscriptions created; tokens saved 0600" gate_make_tokens
 check "public tunnel serves /sub, hides CP admin API" gate_tunnel
 
 # 3. run identity: isolated workspace + deadline (written 0600, no secrets)
@@ -142,10 +168,7 @@ else
   row FAIL "provider budget alerts NOT confirmed — set BUDGET_ALERTS_CONFIRMED=1 after enabling them"
 fi
 
-# 6. two test users + subscriptions; tokens saved 0600
-check "2 test users + subscriptions created; tokens saved 0600" gate_make_tokens
-
-# 7. docker/REALITY e2e — operator attestation (need docker + REALITY_DEST)
+# 6. docker/REALITY e2e — operator attestation (need docker + REALITY_DEST)
 if [ "${E2E_CONFIRMED:-0}" = "1" ]; then
   row PASS "Docker/REALITY e2e green (operator-attested)"
 else

@@ -28,13 +28,24 @@ SH
 for t in ansible ansible-playbook; do printf '#!/usr/bin/env bash\nexit 0\n' >"$BIN/$t"; done
 cat >"$BIN/curl" <<'SH'
 #!/usr/bin/env bash
-args="$*"
+# Models a tunnel routed to SUBSCRIPTION (default) or MISROUTED to the CP admin
+# plane (FAKE_TUNNEL_TARGET=cp). CP and subscription both expose public /healthz;
+# only subscription serves /sub/<token>; only CP serves /v1/nodes.
+args="$*"; mode="${FAKE_TUNNEL_TARGET:-subscription}"
 if [[ "$args" == *"%{http_code}"* ]]; then
-  if [[ "$args" == *"tunnel.local/v1/nodes"* ]]; then echo "${FAKE_TUNNEL_ADMIN_CODE:-403}"; else echo 200; fi
+  if [[ "$args" == *"tunnel.local/v1/nodes"* ]]; then
+    [ "$mode" = cp ] && echo 200 || echo 404   # admin reachable through tunnel only if misrouted to CP
+  else echo 200; fi
   exit 0
 fi
-if [[ "$args" == *"/v1/users"* ]]; then echo '{"id":"u-1"}'; exit 0; fi
+if [[ "$args" == *'"telegram_id":'* ]]; then
+  echo "$args" | grep -oE '"telegram_id":[0-9]+' >>"${TG_LOG:-/dev/null}"
+  echo '{"id":"u-1"}'; exit 0
+fi
 if [[ "$args" == *"/v1/subscriptions"* ]]; then echo '{"id":"s-1","token":"SECRET-TOKEN-XYZ"}'; exit 0; fi
+if [[ "$args" == *"tunnel.local/sub/"* ]]; then
+  [ "$mode" = cp ] && exit 22 || { echo "sub-config"; exit 0; }   # /sub 404s if tunnel points at CP
+fi
 exit 0    # healthz / authed cp /v1/nodes
 SH
 chmod +x "$BIN"/*
@@ -72,9 +83,16 @@ else
   bad "token file not found ($rd)"
 fi
 
-# --- D. tunnel surface leak: CP admin reachable via tunnel => FAIL, exit 1 ---
-out="$(run_gate0 FAKE_TUNNEL_ADMIN_CODE=200)"; rc=$?
-if [ "$rc" -ne 0 ] && grep -qi 'FAIL.*hides CP admin' <<<"$out"; then ok "tunnel exposing CP admin => GATE-0 FAIL"; else bad "tunnel leak not caught (rc=$rc)"; fi
+# --- D. tunnel MISROUTED to the CP admin plane => FAIL, exit 1 ---
+# Realistic leak: /healthz still 200 (CP public), but /sub 404s and the admin API
+# answers a bearer request — either must fail the gate.
+out="$(run_gate0 FAKE_TUNNEL_TARGET=cp)"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qi 'FAIL.*hides CP admin' <<<"$out"; then ok "tunnel misrouted to CP => GATE-0 FAIL"; else bad "tunnel misroute not caught (rc=$rc)"; fi
+
+# --- D2. telegram ids are unique per run (no fixed 700001/700002 => no 409 on re-run) ---
+TG_LOG="$(mktemp)"; run_gate0 TG_LOG="$TG_LOG" >/dev/null 2>&1
+if grep -qE '"telegram_id":(700001|700002)$' "$TG_LOG"; then bad "fixed telegram ids (would 409 on re-run)"; else ok "telegram ids are unique per run"; fi
+rm -f "$TG_LOG"
 
 # --- E. default workspace => FAIL ---
 out="$(env "${GOODENV[@]}" TF_WORKSPACE=default bash infra/scripts/gate0.sh 2>&1)"; rc=$?
