@@ -88,7 +88,7 @@ func main() {
 	signalSvc := usecase.NewSignalService(nodeStore, signalStore, nodeSvc)
 
 	if os.Getenv("SEED") == "true" {
-		if err := seed.Run(ctx, seed.Services{Nodes: nodeSvc, Users: userSvc, Subs: subSvc, Bundles: bundleSvc}); err != nil {
+		if err := seed.Run(ctx, seed.Services{Nodes: nodeSvc, NodesRepo: nodeStore, Users: userSvc, Subs: subSvc, Bundles: bundleSvc}); err != nil {
 			logger.Printf("seed: %v", err)
 		} else {
 			logger.Printf("seed: dev data loaded")

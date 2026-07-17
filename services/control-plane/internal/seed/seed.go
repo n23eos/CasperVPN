@@ -1,6 +1,9 @@
 // Package seed loads a small, idempotent dev dataset so the stack is usable
-// right after `make up`. It runs the real usecases (not raw SQL) so seeded data
-// takes the same path as production writes. Dev only.
+// right after `make up`. Users and subscriptions go through the real usecases so
+// they take the production write path; the demo NODES are written straight to the
+// repository because production registration refuses to create an already-active
+// node (active is reached only via the guarded activation path, not Register), and
+// the dev fleet must come up serving. Dev only.
 package seed
 
 import (
@@ -19,6 +22,9 @@ type Services struct {
 	Users   *usecase.UserService
 	Subs    *usecase.SubscriptionService
 	Bundles *usecase.BundleService
+	// NodesRepo seeds the demo fleet directly: Register refuses status:active, so the
+	// dev seeder writes active nodes to the store (dev-only, trusted setup).
+	NodesRepo domain.NodeRepo
 }
 
 // Run seeds a demo fleet + user + subscription if the fleet is empty.
@@ -32,8 +38,11 @@ func Run(ctx context.Context, s Services) error {
 	}
 
 	for _, n := range demoNodes() {
-		if _, err := s.Nodes.Register(ctx, n, "seed"); err != nil {
-			return fmt.Errorf("seed: register node %s: %w", n.ID, err)
+		if err := n.Validate(); err != nil {
+			return fmt.Errorf("seed: invalid demo node %s: %w", n.ID, err)
+		}
+		if err := s.NodesRepo.Create(ctx, n); err != nil {
+			return fmt.Errorf("seed: create node %s: %w", n.ID, err)
 		}
 	}
 
