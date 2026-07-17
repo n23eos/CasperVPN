@@ -30,3 +30,12 @@ Issue map: finding #2 → [#3](../../issues/3), #3 → [#4](../../issues/4), #4 
 **Tests:** heal-before-activate, settled-noop, age-gate, transient-retry, concurrent-single-term, crash-after-activate-no-double-period, expire-skips-claimed, one-failure-doesn't-block-batch (memory + Postgres integration incl. real `SKIP LOCKED` exclusivity under concurrency).
 
 **Residual (documented):** the exactly-once boundary across the remote `Activate` call is inherent — a crash between the control-plane period-commit and the local `activated_at` mark could re-extend on retry. Fully closing it needs a control-plane idempotency key (frozen-contract change); tracked with #3/#4 as a pre-real-payment hardening.
+
+## Re-review of the fix (2026-07-17)
+
+Independent re-review of `7a3783b..b3d1241` confirmed the original crash window is closed (recovery + never-buried), no CRITICAL, SQL/lease/mirroring sound. It surfaced one **residual HIGH** and further items:
+
+- **HIGH (fixed, follow-up commit):** in the live `settle` path a `MarkSettlementActivated` write error returned before the status flip, leaving `pending`+`activated_at=NULL` → recovery re-activated → **double period**. Reachable by a single transient DB error, not only a crash. Fix: marker is now best-effort and `status=settled` is the durable guard (both `settle` and `finishSettlement`); regression test `TestSettle_MarkFailureStillSettlesNoDoublePeriod`.
+- **MED [#9]:** recovery failures are silent — a permanently-stuck claimed invoice is invisible (no log/alert). Ticketed.
+- **MED [#10]:** the real `FOR UPDATE SKIP LOCKED` exclusivity is only proven against a live Postgres; CI's store tests skip without a DB. Ticketed (add a Postgres service to build-test).
+- **LOW (documented inline):** `LeaseFor` must exceed worst-case `finishSettlement` wall time (comment in `poller.go`); the migration back-stamps legacy `claimed_at` (note in `schema.sql`).
