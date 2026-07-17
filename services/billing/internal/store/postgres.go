@@ -120,6 +120,61 @@ func (p *Postgres) ReleaseSettlement(ctx context.Context, invoiceID string) erro
 	return err
 }
 
+// MarkSettlementActivated stamps activated_at so recovery finishes without re-activating.
+func (p *Postgres) MarkSettlementActivated(ctx context.Context, invoiceID string) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE settlements SET activated_at = now()
+		WHERE invoice_id = $1 AND activated_at IS NULL`, invoiceID)
+	return err
+}
+
+// LeaseStuckSettlements atomically leases up to limit claimed-but-unsettled invoices
+// older than olderThan and not currently leased. FOR UPDATE SKIP LOCKED means two
+// reconcilers lease disjoint sets and never process the same invoice concurrently; a
+// crashed lease expires (reconcile_leased_until <= now) and is retaken.
+func (p *Postgres) LeaseStuckSettlements(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) ([]StuckSettlement, error) {
+	rows, err := p.pool.Query(ctx, `
+		UPDATE settlements SET reconcile_leased_until = now() + make_interval(secs => $2)
+		WHERE invoice_id IN (
+			SELECT s.invoice_id FROM settlements s
+			JOIN invoices i ON i.id = s.invoice_id
+			WHERE i.status = 'pending'
+			  AND s.claimed_at <= $1
+			  AND (s.reconcile_leased_until IS NULL OR s.reconcile_leased_until <= now())
+			ORDER BY s.claimed_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT $3
+		)
+		RETURNING invoice_id, (activated_at IS NOT NULL)`,
+		olderThan, leaseFor.Seconds(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StuckSettlement
+	for rows.Next() {
+		var s StuckSettlement
+		if err := rows.Scan(&s.InvoiceID, &s.Activated); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ExpireOverdue transitions overdue pending invoices to expired in one statement,
+// excluding any invoice that carries a settlement claim (NOT EXISTS) so a paid
+// invoice mid-recovery is never buried — no per-invoice race, no N+1.
+func (p *Postgres) ExpireOverdue(ctx context.Context, now time.Time) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE invoices SET status = 'expired'
+		WHERE status = 'pending' AND expires_at <= $1
+		  AND NOT EXISTS (SELECT 1 FROM settlements s WHERE s.invoice_id = invoices.id)`,
+		now)
+	return err
+}
+
 // UpsertSchedule inserts or replaces a subscription's expiry schedule.
 func (p *Postgres) UpsertSchedule(ctx context.Context, s model.Schedule) error {
 	_, err := p.pool.Exec(ctx, `
