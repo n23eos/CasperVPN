@@ -179,6 +179,12 @@ func (p *Poller) checkLeased(ctx context.Context, oc OnChainGateway, inv model.I
 	case cerr != nil:
 		return // chain API error — not a definitive negative, do not enable expiry
 	case ev != nil:
+		// The chain now shows this invoice paid, so any earlier negative marker is
+		// stale — disarm the sweep FIRST. Otherwise a positive whose Process fails
+		// before it claims (e.g. a transient DB error) would leave the stale
+		// post-deadline negative in place, and the same-cycle sweep would bury a
+		// confirmed payment.
+		_ = p.store.ClearNegativeCheck(ctx, inv.ID)
 		_ = p.processor.Process(ctx, *ev) // durable handoff: ClaimSettlement runs inside
 	case negative:
 		if deadline := inv.ExpiresAt.Add(p.onchain.Grace); !p.now().Before(deadline) {

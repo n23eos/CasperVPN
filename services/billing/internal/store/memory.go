@@ -287,6 +287,16 @@ func (m *Memory) RecordNegativeCheck(_ context.Context, invoiceID string, checkA
 	return nil
 }
 
+// ClearNegativeCheck wipes the negative marker once the chain shows the invoice paid.
+func (m *Memory) ClearNegativeCheck(_ context.Context, invoiceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if inv, ok := m.invoices[invoiceID]; ok && inv.Status == model.StatusPending {
+		delete(m.negativeCheck, invoiceID)
+	}
+	return nil
+}
+
 func (m *Memory) UpsertSchedule(_ context.Context, s model.Schedule) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
