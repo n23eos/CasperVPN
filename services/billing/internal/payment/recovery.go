@@ -86,8 +86,8 @@ func (r *RecoveryReport) note(rerr error) {
 // error text or a response body.
 func (r RecoveryReport) String() string {
 	ids := strings.Join(r.FailedIDs, ",")
-	if len(ids) > maxIDsStrLen {
-		ids = ids[:maxIDsStrLen] + "~"
+	if rs := []rune(ids); len(rs) > maxIDsStrLen {
+		ids = string(rs[:maxIDsStrLen]) + "~" // rune-safe: never split a multibyte rune
 	}
 	return fmt.Sprintf("leased=%d recovered=%d failed=%d canceled=%t ids=[%s] stages=[%s]",
 		r.Leased, r.Recovered, r.Failed, r.Canceled, ids, renderStages(r.Stages))
