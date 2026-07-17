@@ -44,6 +44,16 @@ type Repository interface {
 	SeenEvent(ctx context.Context, provider, externalID string) (bool, error)
 	RecordEvent(ctx context.Context, provider, externalID string) error
 
+	// WithUserLock runs fn while holding a per-user exclusive lock, serializing the
+	// WHOLE activation of one user across instances so two distinct settlements for
+	// the same user apply their periods one after another instead of racing (lost
+	// update). Postgres uses a session-scoped advisory lock on a dedicated connection,
+	// guaranteed released (and the connection destroyed rather than returned to the
+	// pool if unlock ever fails; a crashed process drops the connection, which frees
+	// the lock). The memory backend uses a process-local mutex and is explicitly NOT
+	// cross-instance safe — horizontal production billing requires Postgres.
+	WithUserLock(ctx context.Context, userID string, fn func(ctx context.Context) error) error
+
 	// ClaimSettlement atomically claims the right to credit invoiceID. It returns
 	// true only for the first caller; every later caller gets false until released.
 	// The claim is stamped with a creation time so a crashed-mid-settle claim can be
