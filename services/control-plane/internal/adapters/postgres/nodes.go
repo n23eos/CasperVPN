@@ -148,6 +148,113 @@ func (s *NodeStore) SetStatus(ctx context.Context, id string, status contracts.N
 	return prev, err
 }
 
+// Activate atomically promotes a provisioning node to active. It runs in a
+// SERIALIZABLE transaction and locks the node row (FOR UPDATE): a concurrent
+// activation blocks then sees the changed status and 409s, and — crucially — a
+// concurrent ban/rotation that changes the eligibility this transaction read
+// forces a serialization failure at commit, which maps to a conflict. So a node
+// never activates against a stale allow-list.
+//
+// Guards are ROLE-AWARE, enabling the reconciler's "exit first, entry last"
+// sequence (an entry requires its exit already active, which would be impossible
+// if the exit itself demanded two client transports + an active exit):
+//   - exit:  provisioning + a paired entry (entry_node_id set). No client
+//     transport / revision checks — an exit carries no client-facing transport.
+//   - entry: provisioning + >=2 DISTINCT enabled client transport types + its
+//     paired exit already active + revision == expectedRevision.
+//
+// Any failed check rolls back with domain.ErrConflict (node stays provisioning).
+func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
+	var activated contracts.Node
+	var prev contracts.NodeStatus
+	err := withSerializableTx(ctx, s.pool, func(q querier) error {
+		n, err := scanNode(q.QueryRow(ctx, `SELECT `+nodeColumns+` FROM nodes WHERE id=$1 FOR UPDATE`, id))
+		if err != nil {
+			return err // domain.ErrNotFound on no rows
+		}
+		prev = n.Status
+		if n.Status != contracts.NodeStatusProvisioning {
+			return fmt.Errorf("%w: node %s is %s, not provisioning", domain.ErrConflict, id, n.Status)
+		}
+
+		if n.Role == contracts.NodeRoleExit {
+			if n.EntryNodeID == nil || *n.EntryNodeID == "" {
+				return fmt.Errorf("%w: exit %s has no paired entry", domain.ErrConflict, id)
+			}
+			// Structural presence is not readiness: require the reconciler's
+			// authenticated entry->exit probe attestation.
+			if evidence != contracts.ExitDataPlaneVerified {
+				return fmt.Errorf("%w: exit %s activation requires valid data-plane evidence", domain.ErrConflict, id)
+			}
+		} else {
+			tr, err := loadTransports(ctx, q, []string{id})
+			if err != nil {
+				return err
+			}
+			n.Transports = tr[id]
+			if contracts.DistinctEnabledTransportTypes(n.Transports) < 2 {
+				return fmt.Errorf("%w: node %s has fewer than 2 distinct enabled client transports", domain.ErrConflict, id)
+			}
+
+			var exitStatus string
+			err = q.QueryRow(ctx, `SELECT status FROM nodes WHERE entry_node_id=$1 AND role='exit' LIMIT 1`, id).Scan(&exitStatus)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: node %s has no paired exit", domain.ErrConflict, id)
+			}
+			if err != nil {
+				return err
+			}
+			if contracts.NodeStatus(exitStatus) != contracts.NodeStatusActive {
+				return fmt.Errorf("%w: paired exit of %s is %s, not active", domain.ErrConflict, id, exitStatus)
+			}
+
+			users, err := queryEligibleRealityUsersForUpdate(ctx, q)
+			if err != nil {
+				return err
+			}
+			if rev := contracts.RealityUsersRevision(users); rev != expectedRevision {
+				return fmt.Errorf("%w: allow-list revision changed (have %s, expected %s)", domain.ErrConflict, rev, expectedRevision)
+			}
+		}
+
+		if _, err := q.Exec(ctx, `UPDATE nodes SET status='active' WHERE id=$1`, id); err != nil {
+			return err
+		}
+		n.Status = contracts.NodeStatusActive
+		activated = n
+		return nil
+	})
+	if isSerializationFailure(err) {
+		return contracts.Node{}, prev, fmt.Errorf("%w: activation lost a serialization race (eligibility changed concurrently)", domain.ErrConflict)
+	}
+	return activated, prev, err
+}
+
+// Demote atomically sets status=provisioning, but ONLY from a non-terminal state.
+// Under one row lock it reads the current status and rejects draining/retired
+// (operator-controlled terminal states) with ErrConflict — a stale reconciler
+// task must not pull a decommissioned node back into the lifecycle.
+func (s *NodeStore) Demote(ctx context.Context, id string) (contracts.NodeStatus, error) {
+	var prev contracts.NodeStatus
+	err := withTx(ctx, s.pool, func(q querier) error {
+		var cur string
+		if err := q.QueryRow(ctx, `SELECT status FROM nodes WHERE id=$1 FOR UPDATE`, id).Scan(&cur); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		prev = contracts.NodeStatus(cur)
+		switch prev {
+		case contracts.NodeStatusDraining, contracts.NodeStatusRetired:
+			return fmt.Errorf("%w: node %s is %s — refusing to demote a terminal/operator-controlled state", domain.ErrConflict, id, prev)
+		}
+		_, err := q.Exec(ctx, `UPDATE nodes SET status='provisioning' WHERE id=$1`, id)
+		return err
+	})
+	return prev, err
+}
+
 // SetEntryIP updates the advertised ingress address.
 func (s *NodeStore) SetEntryIP(ctx context.Context, id, entryIP string) error {
 	ct, err := s.q.Exec(ctx, `UPDATE nodes SET entry_ip=$2 WHERE id=$1`, id, entryIP)

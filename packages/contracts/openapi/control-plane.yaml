@@ -91,6 +91,74 @@ paths:
         "204": { description: Retired }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/nodes/{id}/activate:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [nodes]
+      summary: Activate a provisioning node (guarded, reconciler-only)
+      description: >
+        Atomically promote a node provisioning->active. The control-plane locks
+        the node row and, in one transaction, checks: the node is provisioning;
+        for an entry it carries at least two DISTINCT enabled client transport
+        types (anti-block) and its paired exit is already active; for an exit it
+        carries valid reconciler evidence (an authenticated entry->exit data-plane
+        probe); and the current allow-list revision equals expected_revision. Any
+        mismatch, a concurrent activation, or missing/invalid exit evidence returns
+        409 (the node stays provisioning). The plain PATCH provisioning->active
+        transition is rejected — this is the only activation path. Restricted to
+        orchestrator/admin. Responses set Cache-Control: no-store.
+      operationId: activateNode
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/NodeActivation" } } }
+      responses:
+        "200":
+          description: Activated
+          headers: { Cache-Control: { schema: { type: string }, description: "no-store" } }
+          content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/nodes/{id}/demote:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [nodes]
+      summary: Atomically set a node's status to provisioning (reconciler barrier)
+      description: >
+        Status-only, single locked update — unlike the full-body PATCH it cannot
+        clobber a concurrent rotation's IP/keys/transports. Used by the reconciler
+        to demote a node before converging it. Restricted to orchestrator/admin.
+      operationId: demoteNode
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Node" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/nodes/{id}/reality-users:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      tags: [nodes]
+      summary: REALITY allow-list for a node (eligible users + revision)
+      description: >
+        The exact (uuid, short_id) set a node must admit — every user whose
+        account is active AND whose subscription is servable (status in
+        active/trialing/past_due) AND not past expires_at, matching the
+        subscription service's eligibility. Includes a revision (SHA-256 digest of
+        the set) used to gate provisioning->active against a stale snapshot.
+        Restricted to the orchestrator/admin roles. Responses set
+        Cache-Control: no-store and MUST NOT be logged: the body carries live
+        admission credentials (uuid/short_id). No private key or PII is returned.
+      operationId: getNodeRealityUsers
+      responses:
+        "200":
+          description: OK
+          headers:
+            Cache-Control: { schema: { type: string }, description: "no-store" }
+          content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/NodeRealityUsers" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/users:
     post:
       tags: [users]

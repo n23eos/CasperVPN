@@ -1,0 +1,13 @@
+# Override for the full reconcile e2e (test/e2e/reconcile-e2e.sh). Own host ports
+# + SEED off so only the nodes this test registers exist.
+services:
+  postgres:
+    ports: !override ["55432:5432"]
+  control-plane:
+    ports: !override ["58081:8081"]
+    environment:
+      SEED: "false"
+  subscription:
+    ports: !override ["58082:8082"]
+  billing:
+    ports: !override ["58084:8084"]

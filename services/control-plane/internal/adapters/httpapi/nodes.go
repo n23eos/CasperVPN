@@ -78,6 +78,18 @@ func (h *Handler) deleteNode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// demoteNode is an additive endpoint: atomically set status=provisioning. Unlike
+// a full-body PATCH it is a single status-only update, so it cannot clobber a
+// concurrent rotation's IP/keys/transports. The reconciler's hard barrier.
+func (h *Handler) demoteNode(w http.ResponseWriter, r *http.Request) {
+	n, err := h.nodes.Demote(r.Context(), chi.URLParam(r, "id"), actorFromContext(r.Context()))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
 // rotateNode is an additive endpoint: advertise a new ingress IP for a node.
 func (h *Handler) rotateNode(w http.ResponseWriter, r *http.Request) {
 	var req rotateNodeRequest

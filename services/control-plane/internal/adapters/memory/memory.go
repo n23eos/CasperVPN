@@ -6,6 +6,7 @@ package memory
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/domain"
@@ -78,6 +79,23 @@ func (r *Nodes) SetStatus(_ context.Context, id string, status contracts.NodeSta
 	}
 	prev := n.Status
 	n.Status = status
+	r.nodes[id] = n
+	return prev, nil
+}
+
+func (r *Nodes) Demote(_ context.Context, id string) (contracts.NodeStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.nodes[id]
+	if !ok {
+		return "", domain.ErrNotFound
+	}
+	prev := n.Status
+	switch prev {
+	case contracts.NodeStatusDraining, contracts.NodeStatusRetired:
+		return prev, domain.ErrConflict
+	}
+	n.Status = contracts.NodeStatusProvisioning
 	r.nodes[id] = n
 	return prev, nil
 }
@@ -345,3 +363,116 @@ func NewNoopQueue() *NoopQueue { return &NoopQueue{} }
 
 func (q *NoopQueue) EnqueueNode(id string) { q.mu.Lock(); q.Nodes = append(q.Nodes, id); q.mu.Unlock() }
 func (q *NoopQueue) EnqueueUser(id string) { q.mu.Lock(); q.Users = append(q.Users, id); q.mu.Unlock() }
+
+// AllowList is an in-memory AllowListRepo. It joins Users and Subscriptions the
+// same way the Postgres query does, applying the exact eligibility predicate.
+type AllowList struct {
+	users *Users
+	subs  *Subscriptions
+	now   func() time.Time
+}
+
+// NewAllowList builds an AllowList over the given user + subscription stores.
+func NewAllowList(users *Users, subs *Subscriptions) *AllowList {
+	return &AllowList{users: users, subs: subs, now: time.Now}
+}
+
+func (a *AllowList) EligibleRealityUsers(_ context.Context) ([]contracts.RealityUser, error) {
+	a.users.mu.Lock()
+	usersCopy := make([]contracts.User, 0, len(a.users.users))
+	for _, u := range a.users.users {
+		usersCopy = append(usersCopy, u)
+	}
+	a.users.mu.Unlock()
+
+	now := a.now()
+	var out []contracts.RealityUser
+	for _, u := range usersCopy {
+		if u.Status != contracts.UserStatusActive || u.SubscriptionID == nil {
+			continue
+		}
+		a.subs.mu.Lock()
+		sub, ok := a.subs.subs[*u.SubscriptionID]
+		a.subs.mu.Unlock()
+		if !ok || !servable(sub.Status) {
+			continue
+		}
+		if sub.ExpiresAt != nil && !sub.ExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, contracts.RealityUser{UUID: u.UUID, ShortID: u.RealityShortID})
+	}
+	return out, nil
+}
+
+func servable(s contracts.SubscriptionStatus) bool {
+	switch s {
+	case contracts.SubscriptionStatusActive, contracts.SubscriptionStatusTrialing, contracts.SubscriptionStatusPastDue:
+		return true
+	default:
+		return false
+	}
+}
+
+// NodeActivator is an in-memory NodeActivator combining the node + allow-list
+// stores. It mirrors the Postgres guard set: provisioning, >=2 distinct enabled
+// client transport types, paired exit active, and an unchanged allow-list
+// revision. The nodes mutex serializes concurrent activations.
+type NodeActivator struct {
+	nodes *Nodes
+	allow *AllowList
+}
+
+// NewNodeActivator wires the in-memory activator.
+func NewNodeActivator(nodes *Nodes, allow *AllowList) *NodeActivator {
+	return &NodeActivator{nodes: nodes, allow: allow}
+}
+
+func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
+	a.nodes.mu.Lock()
+	defer a.nodes.mu.Unlock()
+	n, ok := a.nodes.nodes[id]
+	if !ok {
+		return contracts.Node{}, "", domain.ErrNotFound
+	}
+	prev := n.Status
+	if n.Status != contracts.NodeStatusProvisioning {
+		return contracts.Node{}, prev, domain.ErrConflict
+	}
+	if n.Role == contracts.NodeRoleExit {
+		// Exit: provisioning + paired entry + reconciler data-plane evidence.
+		if n.EntryNodeID == nil || *n.EntryNodeID == "" {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+		if evidence != contracts.ExitDataPlaneVerified {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+	} else {
+		if contracts.DistinctEnabledTransportTypes(n.Transports) < 2 {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+		exitActive := false
+		for _, other := range a.nodes.nodes {
+			if other.Role == contracts.NodeRoleExit && other.EntryNodeID != nil && *other.EntryNodeID == id {
+				exitActive = other.Status == contracts.NodeStatusActive
+				break
+			}
+		}
+		if !exitActive {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+		users, err := a.allow.EligibleRealityUsers(ctx)
+		if err != nil {
+			return contracts.Node{}, prev, err
+		}
+		if users == nil {
+			users = []contracts.RealityUser{}
+		}
+		if contracts.RealityUsersRevision(users) != expectedRevision {
+			return contracts.Node{}, prev, domain.ErrConflict
+		}
+	}
+	n.Status = contracts.NodeStatusActive
+	a.nodes.nodes[id] = n
+	return n, prev, nil
+}

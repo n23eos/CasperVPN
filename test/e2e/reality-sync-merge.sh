@@ -39,11 +39,12 @@ source infra/scripts/lib.sh; source infra/scripts/control_plane.sh; source infra
 export CONTROL_PLANE_URL="$CP" CONTROL_PLANE_TOKEN="$ADMIN_TOKEN"
 
 NID=nd-merge-1
-step "create node: entry_ip=1.1.1.1, pub=PUB_OLD, short-id S_OLD"
+step "create node: entry_ip=1.1.1.1, pub=PUB_OLD, short-id S_OLD, + hysteria2"
 NODE_ID="$NID" NODE_ROLE=entry NODE_STATUS=active PROVIDER=local CLOUD=local REGION=RU-MOW \
   ENTRY_IP=1.1.1.1 EPHEMERAL_ENTRY_IP=false \
   REALITY_PUBLIC_KEY=PUB_OLD REALITY_SHORT_IDS=1111111111111111 \
   REALITY_SERVER_NAMES=www.example.test REALITY_DEST=www.example.test:443 \
+  HY2_PASSWORD=hy2-secret-pw HY2_SNI=cdn.example.test HY2_INSECURE=false \
   reality_sync_node
 
 step "add a second transport (shadowsocks-2022) to simulate other transports"
@@ -52,11 +53,12 @@ WITH_SS="$(jq '.transports += [{tag:"ss-in", type:"shadowsocks-2022", version:"v
   enabled:true, priority:1, shadowsocks_2022:{method:"2022-blake3-aes-256-gcm", psk:"dGVzdHBzaw=="}}]' <<<"$CUR")"
 cp_patch_node "$NID" "$WITH_SS"
 
-step "merge (rotation): entry_ip=2.2.2.2, pub=PUB_NEW, short-id S_NEW"
+step "merge (rotation): entry_ip=2.2.2.2, pub=PUB_NEW, short-id S_NEW (hy2 password stable)"
 NODE_ID="$NID" NODE_ROLE=entry NODE_STATUS=active PROVIDER=local CLOUD=local REGION=RU-MOW \
   ENTRY_IP=2.2.2.2 EPHEMERAL_ENTRY_IP=true \
   REALITY_PUBLIC_KEY=PUB_NEW REALITY_SHORT_IDS=2222222222222222 \
   REALITY_SERVER_NAMES=www.example.test REALITY_DEST=www.example.test:443 \
+  HY2_PASSWORD=hy2-secret-pw HY2_SNI=cdn.example.test HY2_INSECURE=false \
   reality_sync_node
 
 step "assert the merge result"
@@ -68,6 +70,12 @@ check '[.transports[]|select(.type=="vless-reality")][0].vless_reality.public_ke
 check '[.transports[]|select(.type=="vless-reality")][0].vless_reality.short_ids | (index("1111111111111111") and index("2222222222222222"))' "short-id pool not unioned (old+new)"
 check 'any(.transports[]; .type=="shadowsocks-2022")'                            "other transport (shadowsocks-2022) was dropped"
 check '([.transports[]|select(.type=="vless-reality")] | length) == 1'          "vless-reality duplicated instead of merged in place"
+# hysteria2 registered with its password (client secret flows to CP -> /sub) and
+# survives the merge; >=2 distinct client transport types present for activation.
+check '[.transports[]|select(.type=="hysteria2")][0].hysteria2.password == "hy2-secret-pw"' "hysteria2 password not carried into control-plane"
+check '([.transports[]|select(.type=="hysteria2")][0].hysteria2.insecure // false) == false' "hysteria2 insecure flag wrong (prod must be secure; absent==false)"
+check '([.transports[]|select(.type=="hysteria2")] | length) == 1'              "hysteria2 duplicated instead of merged in place"
+check '([.transports[]|select(.enabled and (.type=="vless-reality" or .type=="hysteria2"))]|length) >= 2' "fewer than 2 distinct client transports"
 
 echo
 echo "PASS: reality_sync merge updates entry_ip/pub, unions short-ids, preserves other transports"

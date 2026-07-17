@@ -18,6 +18,78 @@
                'server_names': reality_server_names,
                'handshake_server': reality_handshake_server | default(reality_server_names[0]),
              })}, recursive=True) }}
+    # Hysteria2 is CLIENT-facing and belongs ONLY on the entry (clients connect to
+    # the entry; the exit is egress with no client inbound). Gate on node_role so
+    # global extra-vars can't enable a client hysteria2 inbound on the exit too.
+    # Passing hy2_password here (read back from the control-plane on a rotation)
+    # makes keygen's explicit branch reuse it, so a replacement VM serves the SAME
+    # password the control-plane already advertises.
+    - name: Merge hysteria2 desired state into the transport matrix (entry only)
+      when:
+        - hy2_sni is defined
+        - node_role | default('') == 'entry'
+      # no_log — this folds the durable hy2 password (read back from the CP on a
+      # rotation) into the fact; matches the no_log discipline on every other
+      # hy2-password task (see roles/transports/tasks/hy2_keygen.yml).
+      no_log: true
+      ansible.builtin.set_fact:
+        transports: >-
+          {{ transports | combine({'hysteria2':
+             transports.hysteria2 | combine({
+               'enabled': true,
+               'tls_sni': hy2_sni,
+               'password': hy2_password | default(''),
+             })}, recursive=True) }}
+    # Install the trusted TLS cert+key supplied by the secret manager BEFORE the
+    # transports role's fail-closed TLS assert. A VM replacement wipes on-disk
+    # material, so rotation must re-supply it here (the private key is a server
+    # secret and is never held by the control-plane). no_log — the key is secret.
+    - name: Install hysteria2 TLS material from the secret manager (entry only)
+      when:
+        - hy2_sni is defined
+        - node_role | default('') == 'entry'
+        - hy2_tls_cert is defined
+        - hy2_tls_key is defined
+      ansible.builtin.copy:
+        dest: "{{ item.path }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - { path: "{{ transports.hysteria2.tls_cert_path }}", content: "{{ hy2_tls_cert }}" }
+        - { path: "{{ transports.hysteria2.tls_key_path }}", content: "{{ hy2_tls_key }}" }
+      no_log: true
+    # entry->exit data plane (Shadowsocks-2022). The PAIR PSK is an INTERNAL
+    # secret: it configures the exit's SS inbound and the entry's exit_endpoint
+    # outbound, and is NEVER registered in the control-plane or sent to a client.
+    # Gated by role so each side gets only its half.
+    - name: Configure entry->exit outbound on the ENTRY
+      when:
+        - pair_psk is defined
+        - node_role | default('') == 'entry'
+        - exit_link_server is defined
+      ansible.builtin.set_fact:
+        exit_endpoint:
+          type: shadowsocks
+          server: "{{ exit_link_server }}"
+          server_port: "{{ exit_link_port | default(8388) | int }}"
+          method: "2022-blake3-aes-256-gcm"
+          password: "{{ pair_psk }}"
+      no_log: true
+    - name: Enable the entry->exit inbound on the EXIT
+      when:
+        - pair_psk is defined
+        - node_role | default('') == 'exit'
+      ansible.builtin.set_fact:
+        transports: >-
+          {{ transports | combine({'shadowsocks_2022':
+             transports.shadowsocks_2022 | combine({
+               'enabled': true,
+               'port': exit_link_port | default(8388) | int,
+               'psk': pair_psk,
+             })}, recursive=True) }}
+      no_log: true
   roles:
     - role: singbox
     - role: transports
