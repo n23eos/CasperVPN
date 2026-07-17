@@ -45,7 +45,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 func truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
-		TRUNCATE node_signal_aggregates, subscription_sets, user_secret_rotations,
+		TRUNCATE rebuild_jobs, node_signal_aggregates, subscription_sets, user_secret_rotations,
 			node_rotation_history, transports, nodes, subscriptions, users RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)

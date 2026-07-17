@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,21 @@ type Config struct {
 	StoreID       string   // BTCPay store id
 	WebhookSecret string   // shared secret for webhook HMAC
 	Currencies    []string // currencies this store settles
+}
+
+// ErrNoWebhookSecret means the gateway is configured (BaseURL set) but has no
+// webhook secret. Without it the HMAC key is empty and any attacker can forge a
+// "settled" webhook, so the gateway MUST NOT run in this state.
+var ErrNoWebhookSecret = errors.New("btcpay: BTCPAY_WEBHOOK_SECRET must be set when BTCPAY_BASE_URL is configured")
+
+// Validate reports a fatal misconfiguration: a configured gateway with an empty
+// webhook secret. main calls this at startup so the service fails fast instead of
+// silently accepting forged webhooks (empty HMAC key).
+func (c Config) Validate() error {
+	if c.BaseURL != "" && c.WebhookSecret == "" {
+		return ErrNoWebhookSecret
+	}
+	return nil
 }
 
 // Gateway is the BTCPay adapter.
@@ -130,6 +146,7 @@ type webhookBody struct {
 	DeliveryID string `json:"deliveryId"`
 	InvoiceID  string `json:"invoiceId"`
 	Type       string `json:"type"`
+	Timestamp  int64  `json:"timestamp"` // BTCPay delivery time, Unix seconds
 	Metadata   struct {
 		OrderID string `json:"orderId"`
 	} `json:"metadata"`
@@ -139,6 +156,11 @@ type webhookBody struct {
 // and maps the event type into a normalized Event. ExternalID = deliveryId gives
 // replay dedup; InvoiceID = the billing order id gives settlement dedup.
 func (g *Gateway) ParseWebhook(signature string, body []byte) (model.Event, error) {
+	// Defense in depth: an empty secret means the HMAC key is empty and every
+	// signature is forgeable. Refuse to verify rather than accept forged events.
+	if g.cfg.WebhookSecret == "" {
+		return model.Event{}, ErrNoWebhookSecret
+	}
 	sig := strings.TrimPrefix(signature, "sha256=")
 	mac := hmac.New(sha256.New, []byte(g.cfg.WebhookSecret))
 	mac.Write(body)
@@ -152,7 +174,8 @@ func (g *Gateway) ParseWebhook(signature string, body []byte) (model.Event, erro
 	}
 	status := mapType(wb.Type)
 	if status == "" {
-		// Not a settlement-relevant event (e.g. InvoiceCreated) — surface as pending.
+		// Not a settlement-relevant event (e.g. InvoiceCreated or a partial
+		// InvoicePaymentSettled) — surface as pending, don't activate.
 		status = model.StatusPending
 	}
 	// The billing invoice id is the orderId we set at creation time.
@@ -163,13 +186,24 @@ func (g *Gateway) ParseWebhook(signature string, body []byte) (model.Event, erro
 		InvoiceID:     invoiceID,
 		Status:        status,
 		Confirmations: 0,
-		Timestamp:     g.now(),
+		Timestamp:     g.eventTime(wb.Timestamp),
 	}, nil
+}
+
+// eventTime prefers the provider's own delivery timestamp so the replay-window
+// guard measures real event age; it falls back to now when BTCPay omits it.
+func (g *Gateway) eventTime(unixSeconds int64) time.Time {
+	if unixSeconds > 0 {
+		return time.Unix(unixSeconds, 0).UTC()
+	}
+	return g.now()
 }
 
 func mapType(t string) model.Status {
 	switch t {
-	case "InvoiceSettled", "InvoicePaymentSettled":
+	case "InvoiceSettled":
+		// Only a fully settled invoice activates. InvoicePaymentSettled is a
+		// single (possibly partial) payment and must NOT grant a full term.
 		return model.StatusSettled
 	case "InvoiceExpired":
 		return model.StatusExpired

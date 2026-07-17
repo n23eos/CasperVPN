@@ -111,7 +111,12 @@ curl -s -H "Authorization: Bearer dev-admin-token" localhost:8081/v1/nodes | jq
 
 Config (env): `PORT` (8081), `DATABASE_URL`, `ENV` (dev/prod),
 `CONTROL_PLANE_TOKENS` (`token:role,...`; required outside dev), `SEED`,
-`REBUILD_WORKERS`, `REBUILD_BUFFER`.
+`REBUILD_WORKERS`, `REBUILD_BUFFER`, `REBUILD_DURABLE`.
+
+Rebuild queue: `REBUILD_DURABLE=true` uses the durable Postgres-backed queue
+(`rebuild_jobs` table, claimed with `FOR UPDATE SKIP LOCKED`) — pending rebuilds
+survive restarts and several instances can drain one queue. Default (`false`) is
+the in-memory channel queue: fast, but single-instance and lost on restart.
 
 ## Testing
 

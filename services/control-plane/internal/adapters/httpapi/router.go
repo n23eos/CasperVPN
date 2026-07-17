@@ -50,6 +50,11 @@ func (h *Handler) Router() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.With(requireRole(accountWriters...)).Post("/subscriptions", h.createSubscription)
 			r.With(requireRole(accountReaders...)).Get("/subscriptions/{id}", h.getSubscription)
+			// Additive Wave-2 endpoints (TZ-contract-changes §1–2): billing
+			// activation/renewal + leaked-link revocation.
+			r.With(requireRole(accountWriters...)).Patch("/subscriptions/{id}", h.patchSubscription)
+			r.With(requireRole(accountWriters...)).Post("/subscriptions/{id}/rotate-token", h.rotateSubscriptionToken)
+			r.With(requireRole(accountWriters...)).Post("/subscriptions/{id}/cancel", h.cancelSubscription)
 		})
 
 		// Telemetry feedback loop: FieldSignal aggregates → degraded/blocked.

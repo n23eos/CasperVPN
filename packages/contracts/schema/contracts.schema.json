@@ -197,6 +197,16 @@
       }
     },
 
+    "SubscriptionPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "PATCH /v1/subscriptions/{id} body. True partial update: absent fields are left untouched. Additive Wave-2 extension.",
+      "properties": {
+        "status": { "$ref": "#/$defs/SubscriptionStatus" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
     "FieldSignal": {
       "type": "object",
       "additionalProperties": false,
@@ -233,6 +243,82 @@
         "latency_ms": { "type": "integer" },
         "detail": { "type": "string" },
         "observed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "RecommendationAction": {
+      "type": "string",
+      "enum": ["mark_node_blocked", "prioritize_transport"],
+      "description": "Control-plane instruction produced by the telemetry feedback loop."
+    },
+    "RecommendationConfidence": {
+      "type": "string",
+      "enum": ["authoritative", "corroborated"],
+      "description": "authoritative = orchestrator probe (HealthEvent); corroborated = independent anonymous field sources agree."
+    },
+    "NodeBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Mark a node blocked in specific regions so the orchestrator can rotate/replace it.",
+      "required": ["action", "node_id", "regions", "confidence"],
+      "properties": {
+        "action": { "$ref": "#/$defs/RecommendationAction" },
+        "node_id": { "type": "string" },
+        "regions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "confidence": { "$ref": "#/$defs/RecommendationConfidence" },
+        "reason": { "type": "string" }
+      }
+    },
+    "TransportRank": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One transport's health score in a region (1 = best, 0 = dead).",
+      "required": ["transport", "score", "dead", "sources"],
+      "properties": {
+        "transport": { "$ref": "#/$defs/TransportType" },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "dead": { "type": "boolean" },
+        "sources": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "RegionPriority": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Which transport to prefer in a region. recommended_transport is empty when every observed transport is impaired.",
+      "required": ["action", "region"],
+      "properties": {
+        "action": { "$ref": "#/$defs/RecommendationAction" },
+        "region": { "type": "string" },
+        "recommended_transport": {
+          "anyOf": [
+            { "$ref": "#/$defs/TransportType" },
+            { "const": "" }
+          ]
+        },
+        "ranked": { "type": "array", "items": { "$ref": "#/$defs/TransportRank" } },
+        "reason": { "type": "string" }
+      }
+    },
+    "Recommendations": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Full telemetry feedback payload for one evaluation window — the orchestrator's input for node rotation and transport prioritization (GET /v1/recommendations).",
+      "required": ["generated_at", "window_seconds"],
+      "properties": {
+        "generated_at": { "type": "string", "format": "date-time" },
+        "window_seconds": { "type": "integer", "minimum": 0 },
+        "node_blocks": {
+          "anyOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/NodeBlock" } },
+            { "type": "null" }
+          ]
+        },
+        "region_priorities": {
+          "anyOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/RegionPriority" } },
+            { "type": "null" }
+          ]
+        }
       }
     },
 

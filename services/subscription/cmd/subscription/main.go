@@ -7,12 +7,16 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
 	"github.com/caspervpn/subscription/internal/cache"
 	"github.com/caspervpn/subscription/internal/config"
@@ -30,9 +34,8 @@ func main() {
 		log.Fatalf("%s: config: %v", serviceName, err)
 	}
 
-	// The in-memory store always backs the subscription-owned token index. In
-	// dev (no CONTROL_PLANE_URL) it also serves users/subscriptions/nodes from an
-	// optional fixtures file.
+	// The in-memory store serves the Provider role in dev (no CONTROL_PLANE_URL),
+	// reading users/subscriptions/nodes from an optional fixtures file.
 	memStore := controlplane.NewMemory()
 	var provider controlplane.Provider = memStore
 	if cfg.ControlPlaneURL != "" {
@@ -45,10 +48,17 @@ func main() {
 		log.Printf("%s: loaded dev fixtures from %s", serviceName, path)
 	}
 
-	resolver := resolve.New(memStore, provider, time.Now)
+	// The token index is durable (Postgres) when DATABASE_URL is set, so revoked
+	// or banned tokens survive a restart; otherwise it shares the in-memory store.
+	tokenIndex, err := newTokenIndex(cfg, memStore)
+	if err != nil {
+		log.Fatalf("%s: token index: %v", serviceName, err)
+	}
+
+	resolver := resolve.New(tokenIndex, provider, time.Now)
 	renderer := render.New(cfg.Routing)
 	payloadCache := cache.New(cfg.CacheTTL, time.Now)
-	srv := httpapi.New(cfg, resolver, renderer, payloadCache, memStore, time.Now)
+	srv := httpapi.New(cfg, resolver, renderer, payloadCache, tokenIndex, time.Now)
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -77,4 +87,28 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("%s: shutdown: %v", serviceName, err)
 	}
+}
+
+// newTokenIndex selects the token-index backend: Postgres when DATABASE_URL is
+// set (durable — banned/revoked tokens survive restart, TZ-token-revocation), or
+// the in-memory store (dev default, state lost on restart). Schema/migrations are
+// applied out of band (not on startup) to avoid inter-instance migrate races;
+// startup only opens the pool and pings for readiness.
+func newTokenIndex(cfg config.Config, mem *controlplane.Memory) (controlplane.TokenIndex, error) {
+	if cfg.DatabaseURL == "" {
+		log.Printf("%s: DATABASE_URL unset; token index in-memory (state lost on restart)", serviceName)
+		return mem, nil
+	}
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("postgres unreachable (readiness ping): %w", err)
+	}
+	log.Printf("%s: token index on Postgres (DATABASE_URL set)", serviceName)
+	return controlplane.NewPostgres(db), nil
 }

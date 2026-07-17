@@ -1,0 +1,13 @@
+# Real-node e2e override: its own host ports so the realnode stack
+# (-p caspervpn-realnode) never collides with the dev stack or the first-user
+# e2e stack. The node + client sing-box containers attach to this project's
+# default network by name (see real-node.sh).
+services:
+  postgres:
+    ports: !override ["25432:5432"]
+  control-plane:
+    ports: !override ["28081:8081"]
+  subscription:
+    ports: !override ["28082:8082"]
+  billing:
+    ports: !override ["28084:8084"]

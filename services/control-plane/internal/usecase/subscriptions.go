@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/caspervpn/contracts"
@@ -23,14 +24,25 @@ const (
 // SubscriptionService owns entitlements. It never stores the subscription token
 // in the clear — only its hash — and returns the plaintext once at creation.
 type SubscriptionService struct {
-	subs  domain.SubscriptionRepo
-	users domain.UserRepo
-	now   func() time.Time
+	subs    domain.SubscriptionRepo
+	users   domain.UserRepo
+	revoker domain.SubscriptionRevoker // optional; nil => no propagation
+	now     func() time.Time
 }
 
 // NewSubscriptionService wires a SubscriptionService.
 func NewSubscriptionService(subs domain.SubscriptionRepo, users domain.UserRepo) *SubscriptionService {
 	return &SubscriptionService{subs: subs, users: users, now: time.Now}
+}
+
+// WithRevoker attaches the subscription-service notifier (TZ-token-revocation).
+// Revocation/registration calls are best-effort: the local state change is
+// authoritative and a notify failure is logged, not returned — the subscription
+// service still converges via its cache TTL and status re-check on cache miss.
+// Retries/circuit-breaking belong to TZ-hardening.
+func (s *SubscriptionService) WithRevoker(r domain.SubscriptionRevoker) *SubscriptionService {
+	s.revoker = r
+	return s
 }
 
 // Create issues a subscription for an existing user and returns the one-time
@@ -68,13 +80,116 @@ func (s *SubscriptionService) Create(ctx context.Context, userID string, plan co
 	if err := s.subs.Create(ctx, sub, secret.HashToken(token), secret.Prefix(token, tokenPrefixLen)); err != nil {
 		return domain.SubscriptionWithToken{}, err
 	}
-	// Link the subscription onto the user.
-	if u, err := s.users.Get(ctx, userID); err == nil {
-		u.SubscriptionID = &sub.ID
-		u.UpdatedAt = now
-		_ = s.users.Update(ctx, u)
+	// Link the subscription onto the user. This link MUST hold: billing's renewal
+	// path reuses an existing user.SubscriptionID to avoid creating a duplicate
+	// (orphan) subscription on retry. Swallowing a failure here would leave the sub
+	// created but unlinked, so a later renewal would create a second one.
+	u, err := s.users.Get(ctx, userID)
+	if err != nil {
+		return domain.SubscriptionWithToken{}, fmt.Errorf("link subscription to user: %w", err)
+	}
+	u.SubscriptionID = &sub.ID
+	u.UpdatedAt = now
+	if err := s.users.Update(ctx, u); err != nil {
+		return domain.SubscriptionWithToken{}, fmt.Errorf("link subscription to user: %w", err)
+	}
+	// Push the fresh token into the subscription service's index so /sub/{token}
+	// resolves without waiting for an out-of-band sync (TZ-token-revocation §2).
+	if s.revoker != nil {
+		if err := s.revoker.RegisterToken(ctx, token, userID, sub.ID); err != nil {
+			log.Printf("subscriptions: register token for sub %s: %v", sub.ID, err)
+		}
 	}
 	return domain.SubscriptionWithToken{Subscription: sub, PlainToken: token}, nil
+}
+
+// Patch applies a true partial update (status/expires_at). Transitions into a
+// non-servable status (canceled/expired) revoke the token downstream so the
+// link dies immediately, not at cache TTL.
+func (s *SubscriptionService) Patch(ctx context.Context, id string, patch contracts.SubscriptionPatch) (contracts.Subscription, error) {
+	if err := patch.Validate(); err != nil {
+		return contracts.Subscription{}, fmt.Errorf("%w: %s", domain.ErrValidation, err)
+	}
+	existing, err := s.subs.Get(ctx, id)
+	if err != nil {
+		return contracts.Subscription{}, err
+	}
+	if patch.IsZero() {
+		existing.Token = ""
+		return existing, nil
+	}
+	if patch.Status != nil {
+		existing.Status = *patch.Status
+	}
+	if patch.ExpiresAt != nil {
+		existing.ExpiresAt = patch.ExpiresAt
+	}
+	existing.UpdatedAt = s.now()
+	if err := s.subs.Update(ctx, existing); err != nil {
+		return contracts.Subscription{}, err
+	}
+	if patch.Status != nil && !servable(*patch.Status) {
+		s.revokeSubscription(ctx, id)
+	}
+	existing.Token = ""
+	return existing, nil
+}
+
+// Cancel sets status=canceled and revokes the token downstream.
+func (s *SubscriptionService) Cancel(ctx context.Context, id string) (contracts.Subscription, error) {
+	canceled := contracts.SubscriptionStatusCanceled
+	return s.Patch(ctx, id, contracts.SubscriptionPatch{Status: &canceled})
+}
+
+// RotateToken issues a fresh token, stores only its hash, revokes the old one
+// downstream and registers the new one. The plaintext rides in the returned
+// Subscription.Token exactly once (leaked-link revocation without touching the
+// account).
+func (s *SubscriptionService) RotateToken(ctx context.Context, id string) (domain.SubscriptionWithToken, error) {
+	existing, err := s.subs.Get(ctx, id)
+	if err != nil {
+		return domain.SubscriptionWithToken{}, err
+	}
+	token, err := secret.Token()
+	if err != nil {
+		return domain.SubscriptionWithToken{}, err
+	}
+	if err := s.subs.UpdateTokenHash(ctx, id, secret.HashToken(token), secret.Prefix(token, tokenPrefixLen)); err != nil {
+		return domain.SubscriptionWithToken{}, err
+	}
+	existing.UpdatedAt = s.now()
+	if err := s.subs.Update(ctx, existing); err != nil {
+		return domain.SubscriptionWithToken{}, err
+	}
+	// Old link dies immediately; the new one starts resolving right away.
+	s.revokeSubscription(ctx, id)
+	if s.revoker != nil {
+		if err := s.revoker.RegisterToken(ctx, token, existing.UserID, id); err != nil {
+			log.Printf("subscriptions: register rotated token for sub %s: %v", id, err)
+		}
+	}
+	existing.Token = token
+	return domain.SubscriptionWithToken{Subscription: existing, PlainToken: token}, nil
+}
+
+// revokeSubscription best-effort pushes a revoke downstream (see WithRevoker).
+func (s *SubscriptionService) revokeSubscription(ctx context.Context, id string) {
+	if s.revoker == nil {
+		return
+	}
+	if err := s.revoker.RevokeSubscription(ctx, id); err != nil {
+		log.Printf("subscriptions: revoke sub %s downstream: %v", id, err)
+	}
+}
+
+// servable mirrors the subscription service's resolve gate: these statuses
+// still serve configs (past_due kept in grace).
+func servable(st contracts.SubscriptionStatus) bool {
+	switch st {
+	case contracts.SubscriptionStatusActive, contracts.SubscriptionStatusTrialing, contracts.SubscriptionStatusPastDue:
+		return true
+	}
+	return false
 }
 
 // Get returns a subscription by id. The token is never exposed on read.

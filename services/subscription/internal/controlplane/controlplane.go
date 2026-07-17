@@ -6,6 +6,8 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 
 	"github.com/caspervpn/contracts"
@@ -35,6 +37,11 @@ type Provider interface {
 // URL to the user and subscription it belongs to. Owning this mapping is the
 // subscription service's bounded context (per-user subscription URL); it is fed
 // out-of-band by billing/control-plane via Register.
+//
+// Implementations MUST store tokens hashed (SHA-256, hex — same as the
+// control-plane's secret.HashToken), never in plaintext: the index is exactly
+// the kind of at-rest data a seized/leaked instance would expose
+// (TZ-token-revocation §3). Plaintext exists only in flight (URL, Register).
 type TokenIndex interface {
 	// Lookup returns the userID and subscriptionID for a token, or ErrNotFound.
 	Lookup(ctx context.Context, token string) (userID, subID string, err error)
@@ -42,4 +49,18 @@ type TokenIndex interface {
 	Register(ctx context.Context, token, userID, subID string) error
 	// Revoke removes a token mapping (leaked-link revocation).
 	Revoke(ctx context.Context, token string) error
+	// RevokeByUser removes every mapping of a user (ban/suspend). Returns how
+	// many mappings were removed.
+	RevokeByUser(ctx context.Context, userID string) (int, error)
+	// RevokeBySubscription removes the mapping(s) of one subscription
+	// (cancel/expire/rotate). Returns how many mappings were removed.
+	RevokeBySubscription(ctx context.Context, subID string) (int, error)
+}
+
+// HashToken is the canonical at-rest form of a subscription token in the index:
+// hex SHA-256, matching the control-plane's secret.HashToken. Tokens are high
+// entropy, so a fast unsalted hash is sufficient.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

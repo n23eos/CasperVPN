@@ -68,21 +68,54 @@ func (s *Server) internalRegisterToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// revokeReq selects what to revoke. Exactly one selector must be set:
+//
+//	token           — one leaked link
+//	user_id         — every link of a user (ban/suspend)
+//	subscription_id — the link(s) of one subscription (cancel/expire/rotate)
+//
+// user_id/subscription_id are additive Wave-2 extensions (TZ-token-revocation):
+// the control-plane stores only token hashes, so at ban time it cannot present
+// the plaintext token — it revokes by owner instead.
 type revokeReq struct {
-	Token string `json:"token"`
+	Token          string `json:"token,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	SubscriptionID string `json:"subscription_id,omitempty"`
 }
 
 func (s *Server) internalRevokeToken(w http.ResponseWriter, r *http.Request) {
 	var req revokeReq
-	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
-		writeError(w, http.StatusBadRequest, "token is required")
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if err := s.idx.Revoke(r.Context(), req.Token); err != nil {
+	set := 0
+	for _, v := range []string{req.Token, req.UserID, req.SubscriptionID} {
+		if v != "" {
+			set++
+		}
+	}
+	if set != 1 {
+		writeError(w, http.StatusBadRequest, "exactly one of token, user_id, subscription_id is required")
+		return
+	}
+
+	var err error
+	switch {
+	case req.Token != "":
+		err = s.idx.Revoke(r.Context(), req.Token)
+	case req.UserID != "":
+		_, err = s.idx.RevokeByUser(r.Context(), req.UserID)
+	default:
+		_, err = s.idx.RevokeBySubscription(r.Context(), req.SubscriptionID)
+	}
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "revoke failed")
 		return
 	}
-	// Bump all caches so a revoked token cannot be served from cache.
+	// Bump all caches so a revoked token cannot be served from cache until TTL
+	// (the acceptance criterion: ban is visible immediately). The cache is keyed
+	// by plaintext token, so owner-scoped revokes can only be enforced broadly.
 	s.cache.InvalidateAll()
 	w.WriteHeader(http.StatusNoContent)
 }

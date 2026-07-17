@@ -1,5 +1,11 @@
 # ТЗ — Координированные изменения замороженного контракта
 
+> **Статус 2026-07-07: реализовано** (§1–3, аддитивно, Go + JSON Schema +
+> OpenAPI + `docs/contracts.md`). Схема мета-провалидирована, `$ref`
+> резолвятся, сэмплы payload'ов проходят. Реализация endpoint'ов в
+> control-plane сделана заодно с `TZ-token-revocation.md`. На 2026-07-11 локально
+> зелёные `make build`, `make vet`, `make test`.
+
 **Агент:** contracts-steward (доверенный, право менять `packages/contracts`).
 **Зона:** `packages/contracts/` + затронутые OpenAPI + `docs/contracts.md`.
 **Особый режим:** это **единственное** ТЗ, которому разрешено трогать замороженный

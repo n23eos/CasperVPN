@@ -66,6 +66,78 @@ func signedBlob(t *testing.T, s *sign.Signer, payload string) []byte {
 	return b
 }
 
+func signedBlobAt(t *testing.T, s *sign.Signer, payload string, issuedAt time.Time) []byte {
+	t.Helper()
+	art := artifact.New(artifact.KindDirectory, issuedAt.UTC(), []byte(payload))
+	sg, err := artifact.Sign(art, s)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	b, err := sg.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+
+func TestResolverRejectsStaleArtifact(t *testing.T) {
+	s, v := newSignerVerifier(t)
+	issued := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	reg := NewRegistry()
+	ch := newMemChannel(KindTelegram)
+	ch.m["dir"] = signedBlobAt(t, s, "old-but-signed", issued) // valid signature, stale
+	reg.Add(ch, 1)
+
+	clockNow := func() time.Time { return issued.Add(2 * time.Hour) }
+
+	// With a 1h max age the signed-but-stale copy is rejected (anti-rollback).
+	stale := NewResolver(reg, v, WithMaxAge(time.Hour), WithClock(clockNow))
+	if _, err := stale.Resolve(context.Background(), "dir"); err == nil {
+		t.Fatalf("expected stale artifact to be rejected")
+	}
+
+	// Same copy is accepted when it is within the max age.
+	fresh := NewResolver(reg, v, WithMaxAge(6*time.Hour), WithClock(clockNow))
+	res, err := fresh.Resolve(context.Background(), "dir")
+	if err != nil {
+		t.Fatalf("within-max-age artifact should resolve: %v", err)
+	}
+	if string(res.Artifact.Payload) != "old-but-signed" {
+		t.Fatalf("wrong payload: %q", res.Artifact.Payload)
+	}
+
+	// Disabled check (maxAge=0) accepts any age — preserves prior behavior.
+	off := NewResolver(reg, v, WithClock(clockNow))
+	if _, err := off.Resolve(context.Background(), "dir"); err != nil {
+		t.Fatalf("with freshness disabled the artifact should resolve: %v", err)
+	}
+}
+
+func TestResolverFailsOverStaleToFreshChannel(t *testing.T) {
+	s, v := newSignerVerifier(t)
+	issued := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clockNow := func() time.Time { return issued.Add(2 * time.Hour) }
+
+	reg := NewRegistry()
+	// Highest priority holds a stale (but validly signed) copy — must be skipped.
+	old := newMemChannel(KindDoH)
+	old.m["dir"] = signedBlobAt(t, s, "stale", issued)
+	reg.Add(old, 1)
+	// Lower priority holds a fresh copy.
+	newer := newMemChannel(KindTelegram)
+	newer.m["dir"] = signedBlobAt(t, s, "fresh", issued.Add(90*time.Minute))
+	reg.Add(newer, 2)
+
+	res, err := NewResolver(reg, v, WithMaxAge(time.Hour), WithClock(clockNow)).Resolve(context.Background(), "dir")
+	if err != nil {
+		t.Fatalf("should fail over to the fresh channel: %v", err)
+	}
+	if res.Channel != KindTelegram || string(res.Artifact.Payload) != "fresh" {
+		t.Fatalf("expected fresh telegram copy, got %s %q", res.Channel, res.Artifact.Payload)
+	}
+}
+
 func TestRegistryOrdersByPriority(t *testing.T) {
 	reg := NewRegistry()
 	reg.Add(newMemChannel(KindGitHubRaw), 10)

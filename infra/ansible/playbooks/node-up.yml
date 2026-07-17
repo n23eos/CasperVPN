@@ -5,6 +5,19 @@
 - name: Provision CasperVPN node
   hosts: "{{ target | default('nodes') }}"
   become: true
+  pre_tasks:
+    # Mimicry target (server_names/handshake) is DATA supplied by the provisioner
+    # (node_up.sh), never hardcoded in the role. Deep-merge it into the transport
+    # matrix so the vless-reality role defaults keep their other keys.
+    - name: Merge REALITY mimicry into the transport matrix
+      when: reality_server_names is defined
+      ansible.builtin.set_fact:
+        transports: >-
+          {{ transports | combine({'vless_reality':
+             transports.vless_reality | combine({
+               'server_names': reality_server_names,
+               'handshake_server': reality_handshake_server | default(reality_server_names[0]),
+             })}, recursive=True) }}
   roles:
     - role: singbox
     - role: transports

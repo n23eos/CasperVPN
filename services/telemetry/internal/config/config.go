@@ -44,7 +44,7 @@ const (
 type Config struct {
 	Port          string
 	InternalToken string // bearer for /v1/health + query/recommendation endpoints
-	DatabaseURL   string // when set AND a driver is linked, use Postgres store
+	DatabaseURL   string // when set, use the durable Postgres store (else in-memory)
 
 	Window     time.Duration
 	Retention  time.Duration

@@ -1,0 +1,13 @@
+# E2E override: alternative host ports so the e2e stack (-p caspervpn-e2e) never
+# collides with a running dev stack (make up) or local Postgres. Volumes are
+# namespaced by the compose project name, so e2e data never touches dev data.
+# Used only by test/e2e/first-user.sh.
+services:
+  postgres:
+    ports: !override ["15432:5432"]
+  control-plane:
+    ports: !override ["18081:8081"]
+  subscription:
+    ports: !override ["18082:8082"]
+  billing:
+    ports: !override ["18084:8084"]

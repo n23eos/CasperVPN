@@ -10,6 +10,9 @@ output "ipv4" {
 }
 
 output "ipv6" {
-  description = "Public IPv6 (empty unless the subnet is IPv6-enabled)."
-  value       = try(oci_core_instance.this.ipv6private_ip_address, "")
+  # OCI exposes IPv6 on the VNIC, not the instance, and this module does not wire
+  # a VNIC data source, so IPv6 is reported empty here (matches the other clouds'
+  # "empty unless enabled" contract). Wire a data.oci_core_vnic lookup to populate.
+  description = "Public IPv6 (empty — OCI IPv6 lives on the VNIC, not wired here)."
+  value       = ""
 }

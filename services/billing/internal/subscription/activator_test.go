@@ -2,6 +2,8 @@ package subscription
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +94,74 @@ func TestActivate_RenewExtendsFromCurrentExpiry(t *testing.T) {
 	want := first.ExpiresAt.Add(30 * day)
 	if !second.ExpiresAt.Equal(want) {
 		t.Fatalf("renew expiry = %v, want %v (extend from current expiry)", second.ExpiresAt, want)
+	}
+}
+
+// B5: two concurrent settlements for the SAME user must not each create a
+// subscription. The per-user lock serializes them into one create + reuse. Run
+// under -race to catch the data race the lock closes.
+func TestActivate_ConcurrentSameUserCreatesOnce(t *testing.T) {
+	fake, acct := seededFake(t)
+	repo := store.NewMemory()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	act := NewActivator(fake, testCatalog(), repo, func() time.Time { return now })
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = act.Activate(context.Background(), acct, contracts.SubscriptionPlanBasic)
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent activate: %v", err)
+		}
+	}
+	if fake.CreateCalls != 1 {
+		t.Fatalf("create calls = %d, want 1 (no double subscription)", fake.CreateCalls)
+	}
+}
+
+// flakySetCP wraps a control-plane and fails the first SetSubscriptionPeriod call,
+// simulating "create ok → set-period fails → retry".
+type flakySetCP struct {
+	*controlplane.Fake
+	setCalls int
+}
+
+func (c *flakySetCP) SetSubscriptionPeriod(ctx context.Context, subID string, status contracts.SubscriptionStatus, expiresAt time.Time) (contracts.Subscription, error) {
+	c.setCalls++
+	if c.setCalls == 1 {
+		return contracts.Subscription{}, fmt.Errorf("simulated set-period failure")
+	}
+	return c.Fake.SetSubscriptionPeriod(ctx, subID, status, expiresAt)
+}
+
+// B6: after a create succeeds but set-period fails, a retry must reuse the existing
+// subscription (found via GetUser) rather than orphan-create a second one.
+func TestActivate_RetryAfterSetPeriodFailReusesSubscription(t *testing.T) {
+	base, acct := seededFake(t)
+	cp := &flakySetCP{Fake: base}
+	repo := store.NewMemory()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	act := NewActivator(cp, testCatalog(), repo, func() time.Time { return now })
+
+	// First attempt: create succeeds, set-period fails → error surfaces.
+	if _, err := act.Activate(context.Background(), acct, contracts.SubscriptionPlanBasic); err == nil {
+		t.Fatal("expected set-period failure on first attempt")
+	}
+	// Retry: must reuse the subscription created above, not make a new one.
+	if _, err := act.Activate(context.Background(), acct, contracts.SubscriptionPlanBasic); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+
+	if base.CreateCalls != 1 {
+		t.Fatalf("create calls = %d, want 1 (retry must not orphan a second subscription)", base.CreateCalls)
 	}
 }
 
