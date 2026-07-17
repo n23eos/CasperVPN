@@ -43,9 +43,9 @@ test:
 ## DATABASE_URL, so map it explicitly from BILLING_DATABASE_URL.
 test-integration:
 	@echo ">> integration billing"; \
-		( cd services/billing && REQUIRE_INTEGRATION_DB=true DATABASE_URL="$(BILLING_DATABASE_URL)" go test -count=1 ./... ) || exit 1
+		( cd services/billing && REQUIRE_INTEGRATION_DB=true DATABASE_URL="$(BILLING_DATABASE_URL)" go test -race -count=1 ./... ) || exit 1
 	@echo ">> integration control-plane"; \
-		( cd services/control-plane && REQUIRE_INTEGRATION_DB=true TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -count=1 -tags integration ./... ) || exit 1
+		( cd services/control-plane && REQUIRE_INTEGRATION_DB=true TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -race -count=1 -tags integration ./... ) || exit 1
 
 ## vet: go vet across the workspace
 vet:
