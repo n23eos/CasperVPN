@@ -311,7 +311,7 @@ func TestExpireOverdue_SkipsClaimed(t *testing.T) {
 	}
 
 	*h.clk = h.clk.Add(time.Hour)
-	if err := h.repo.ExpireOverdue(context.Background(), *h.clk); err != nil {
+	if err := h.repo.ExpireOverdue(context.Background(), *h.clk, nil, 0); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 

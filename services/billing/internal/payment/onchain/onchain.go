@@ -94,43 +94,55 @@ func (g *Gateway) ParseWebhook(string, []byte) (model.Event, error) {
 	return model.Event{}, payment.ErrUnsupportedWebhook
 }
 
-// Poll checks each of this gateway's open invoices against the chain and emits a
-// settled event once confirmations and amount both clear the thresholds. The
-// event's ExternalID is stable per invoice, so a repeated poll of an already-paid
-// address dedups at the store and never double-credits.
+// CheckInvoice checks one invoice against the chain. It returns a settled Event when
+// the payment is confirmed and sufficient; negative=true when the chain is reachable
+// but the payment is absent/insufficient (a DEFINITIVE negative); or an error for a
+// chain API failure (which is neither positive nor a definitive negative, so it must
+// not enable expiry). It does NOT apply any deadline — the poller decides, via the
+// durable poll lease and the effective deadline, whether to settle or record the
+// negative. The event ExternalID is stable per invoice, so a repeat dedups at the
+// store and never double-credits.
+func (g *Gateway) CheckInvoice(ctx context.Context, inv model.Invoice) (*model.Event, bool, error) {
+	if inv.Provider != name {
+		return nil, false, nil
+	}
+	received, confs, err := g.chain.AddressStatus(ctx, inv.Currency, inv.PayAddress)
+	if err != nil {
+		return nil, false, err // chain API error — NOT a definitive negative
+	}
+	if confs < g.minConf {
+		return nil, true, nil // reachable, not yet confirmed → definitive negative
+	}
+	enough, err := money.GTE(received, inv.Amount)
+	if err != nil {
+		return nil, false, fmt.Errorf("onchain: amount compare: %w", err)
+	}
+	if !enough {
+		return nil, true, nil // reachable, underpaid → definitive negative
+	}
+	return &model.Event{
+		Provider:      name,
+		ExternalID:    "onchain:" + inv.ID,
+		InvoiceID:     inv.ID,
+		Status:        model.StatusSettled,
+		Currency:      inv.Currency,
+		Amount:        received,
+		Confirmations: confs,
+		Timestamp:     g.now(),
+	}, false, nil
+}
+
+// Poll implements payment.Gateway by checking each of this gateway's open invoices
+// and returning the positive (settled) events; deadlines are enforced by the poller/
+// sweep, not here. The poller uses CheckInvoice directly (with a lease) instead.
 func (g *Gateway) Poll(ctx context.Context, open []model.Invoice) ([]model.Event, error) {
 	var events []model.Event
-	now := g.now()
 	for _, inv := range open {
-		if inv.Provider != name {
+		ev, _, err := g.CheckInvoice(ctx, inv)
+		if err != nil || ev == nil {
 			continue
 		}
-		// Never settle an invoice whose payment window has already elapsed — a late
-		// on-chain arrival must not silently activate an expired order.
-		if !inv.ExpiresAt.IsZero() && now.After(inv.ExpiresAt) {
-			continue
-		}
-		received, confs, err := g.chain.AddressStatus(ctx, inv.Currency, inv.PayAddress)
-		if err != nil {
-			continue // transient chain error; try again next poll
-		}
-		if confs < g.minConf {
-			continue
-		}
-		enough, err := money.GTE(received, inv.Amount)
-		if err != nil || !enough {
-			continue
-		}
-		events = append(events, model.Event{
-			Provider:      name,
-			ExternalID:    "onchain:" + inv.ID,
-			InvoiceID:     inv.ID,
-			Status:        model.StatusSettled,
-			Currency:      inv.Currency,
-			Amount:        received,
-			Confirmations: confs,
-			Timestamp:     g.now(),
-		})
+		events = append(events, *ev)
 	}
 	return events, nil
 }

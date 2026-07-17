@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/caspervpn/billing/internal/idgen"
 	"github.com/caspervpn/billing/internal/model"
 	"github.com/caspervpn/contracts"
 )
@@ -30,6 +31,17 @@ type Memory struct {
 
 	userLocksMu sync.Mutex
 	userLocks   map[string]*sync.Mutex // per-user lock (process-local; NOT cross-instance)
+
+	negativeCheck map[string]time.Time // invoiceID → last definitive negative on-chain check
+	pollLeases    map[string]*memLease // invoiceID → durable poll lease
+}
+
+// memLease mirrors a poll_leases row: an opaque token, an observability owner, and
+// the lease expiry.
+type memLease struct {
+	token string
+	owner string
+	until time.Time
 }
 
 // NewMemory builds an empty in-memory store with the wall clock.
@@ -44,12 +56,14 @@ func NewMemoryWithClock(now func() time.Time) *Memory {
 		now = time.Now
 	}
 	return &Memory{
-		invoices:  make(map[string]model.Invoice),
-		events:    make(map[string]struct{}),
-		settled:   make(map[string]*memSettlement),
-		schedules: make(map[string]model.Schedule),
-		now:       now,
-		userLocks: make(map[string]*sync.Mutex),
+		invoices:      make(map[string]model.Invoice),
+		events:        make(map[string]struct{}),
+		settled:       make(map[string]*memSettlement),
+		schedules:     make(map[string]model.Schedule),
+		now:           now,
+		userLocks:     make(map[string]*sync.Mutex),
+		negativeCheck: make(map[string]time.Time),
+		pollLeases:    make(map[string]*memLease),
 	}
 }
 
@@ -192,21 +206,83 @@ func (m *Memory) LeaseStuckSettlements(_ context.Context, olderThan time.Time, l
 	return out, nil
 }
 
-func (m *Memory) ExpireOverdue(_ context.Context, now time.Time) error {
+func (m *Memory) ExpireOverdue(_ context.Context, now time.Time, onchainProviders []string, grace time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	onchain := make(map[string]bool, len(onchainProviders))
+	for _, p := range onchainProviders {
+		onchain[p] = true
+	}
 	for id, inv := range m.invoices {
-		if inv.Status != model.StatusPending {
-			continue
-		}
-		if inv.ExpiresAt.IsZero() || !now.After(inv.ExpiresAt) {
+		if inv.Status != model.StatusPending || inv.ExpiresAt.IsZero() {
 			continue
 		}
 		if _, claimed := m.settled[id]; claimed {
-			continue // never bury an invoice that is being credited
+			continue // never bury an invoice being credited
+		}
+		if l, ok := m.pollLeases[id]; ok && l.until.After(now) {
+			continue // being polled/handed off
+		}
+		if onchain[inv.Provider] {
+			deadline := inv.ExpiresAt.Add(grace)
+			if !now.After(deadline) { // strict: expire only when now > deadline
+				continue
+			}
+			nc, ok := m.negativeCheck[id]
+			if !ok || nc.Before(deadline) { // need a negative check taken at/after the deadline
+				continue
+			}
+		} else if !now.After(inv.ExpiresAt) { // strict: now > expires_at
+			continue
 		}
 		inv.Status = model.StatusExpired
 		m.invoices[id] = inv
+	}
+	return nil
+}
+
+// AcquirePollLease takes the invoice's poll lease, reclaiming a lapsed lease. Returns
+// a fresh token on success, or acquired=false if a live lease is held.
+func (m *Memory) AcquirePollLease(_ context.Context, invoiceID, owner string, leaseFor time.Duration) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	if l, ok := m.pollLeases[invoiceID]; ok && l.until.After(now) {
+		return "", false, nil
+	}
+	token := idgen.New()
+	m.pollLeases[invoiceID] = &memLease{token: token, owner: owner, until: now.Add(leaseFor)}
+	return token, true, nil
+}
+
+// RenewPollLease extends the lease only if token still owns it.
+func (m *Memory) RenewPollLease(_ context.Context, invoiceID, token string, leaseFor time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.pollLeases[invoiceID]
+	if !ok || l.token != token {
+		return false, nil
+	}
+	l.until = m.now().Add(leaseFor)
+	return true, nil
+}
+
+// ReleasePollLease drops the lease only if token still owns it.
+func (m *Memory) ReleasePollLease(_ context.Context, invoiceID, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if l, ok := m.pollLeases[invoiceID]; ok && l.token == token {
+		delete(m.pollLeases, invoiceID)
+	}
+	return nil
+}
+
+// RecordNegativeCheck stamps the last definitive negative on-chain check.
+func (m *Memory) RecordNegativeCheck(_ context.Context, invoiceID string, checkAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if inv, ok := m.invoices[invoiceID]; ok && inv.Status == model.StatusPending {
+		m.negativeCheck[invoiceID] = checkAt
 	}
 	return nil
 }

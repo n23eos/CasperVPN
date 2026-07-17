@@ -19,6 +19,7 @@ import (
 	"github.com/caspervpn/billing/internal/controlplane"
 	"github.com/caspervpn/billing/internal/expiry"
 	"github.com/caspervpn/billing/internal/httpapi"
+	"github.com/caspervpn/billing/internal/idgen"
 	"github.com/caspervpn/billing/internal/payment"
 	"github.com/caspervpn/billing/internal/payment/btcpay"
 	"github.com/caspervpn/billing/internal/payment/mock"
@@ -45,11 +46,24 @@ func main() {
 	)
 	activator := subscription.NewActivator(cp, catalog, repo, time.Now)
 	processor := payment.NewProcessor(repo, activator, replayWindow(), time.Now)
+	// On-chain poll/expire policy (variant A). SETTLEMENT_GRACE has no default — it is
+	// a per-chain policy and is REQUIRED (fail-fast) when an on-chain gateway is live.
+	onchainCfg := payment.OnChain{
+		Grace:        interval("SETTLEMENT_GRACE", 0),
+		PollLease:    interval("POLL_LEASE", 30*time.Second),
+		ChainTimeout: interval("CHAIN_CHECK_TIMEOUT", 10*time.Second),
+		Owner:        getenv("BILLING_INSTANCE_ID", idgen.New()), // observability only; unique per process
+	}
+	if registryHasOnChain(registry) {
+		if err := onchainCfg.Validate(); err != nil {
+			log.Fatalf("on-chain config: %v", err)
+		}
+	}
 	poller := payment.NewPoller(repo, registry, processor, payment.Recovery{
 		// Must exceed the activation HTTP timeout (control-plane client is 10s, and an
 		// Activate makes up to a few calls) so recovery never pre-empts a live settle.
 		StaleThreshold: interval("SETTLEMENT_STALE_THRESHOLD", 2*time.Minute),
-	}, time.Now)
+	}, onchainCfg, time.Now)
 	sweeper := expiry.NewSweeper(repo, cp, time.Now)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -94,6 +108,17 @@ func main() {
 // register everything configured, so the failure or seizure of one never stops
 // sales. On-chain gateways need operator-provided ChainClient/AddressPool impls and
 // are wired by the operator (see docs/billing.md), not from env alone.
+// registryHasOnChain reports whether any registered gateway is poll-based on-chain —
+// used to require the on-chain config (SETTLEMENT_GRACE) only when it actually applies.
+func registryHasOnChain(reg *payment.Registry) bool {
+	for _, g := range reg.Gateways() {
+		if _, ok := g.(payment.OnChainGateway); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func buildRegistry() *payment.Registry {
 	reg := payment.NewRegistry()
 

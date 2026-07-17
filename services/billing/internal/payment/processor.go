@@ -167,8 +167,12 @@ func (p *Processor) settle(ctx context.Context, ev model.Event) error {
 	}
 
 	if _, err := p.activator.Activate(ctx, inv.AnonUserID, contracts.SubscriptionPlan(inv.Plan)); err != nil {
-		// Back out the claim so a subsequent retry can credit it.
-		_ = p.store.ReleaseSettlement(ctx, inv.ID)
+		// KEEP the claim on activation failure — do NOT release it. The claim (and
+		// activated_at=NULL) is exactly what the durable Reconcile pass finishes later.
+		// Releasing here would drop the invoice's "being credited" protection, and a
+		// concurrent sweep — once a post-deadline negative check exists — could then
+		// expire a payment that was already confirmed but not yet activated. Reconcile
+		// re-drives the activation idempotently.
 		return fmt.Errorf("payment: activate: %w", err)
 	}
 	// Activation succeeded. The marker is a best-effort optimization (it lets recovery

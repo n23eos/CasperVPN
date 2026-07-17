@@ -72,10 +72,30 @@ type Repository interface {
 	// reconcilers never process the same invoice at once; a crashed lease expires and
 	// is retaken. Returns the leased rows with their activation state.
 	LeaseStuckSettlements(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) ([]StuckSettlement, error)
-	// ExpireOverdue transitions pending invoices past now to expired in one atomic
-	// statement, EXCLUDING any invoice that carries a settlement claim — a paid
-	// invoice still being recovered must never be buried as expired.
-	ExpireOverdue(ctx context.Context, now time.Time) error
+	// ExpireOverdue expires pending invoices whose effective deadline has STRICTLY
+	// passed (now > deadline). For providers in onchainProviders the deadline is
+	// expires_at + grace AND expiry additionally requires a durable negative check
+	// taken at/after that deadline (last_negative_check_at >= deadline); every other
+	// provider expires at expires_at with no grace/check. An invoice is never expired
+	// while it carries a settlement claim OR a live poll lease. This is the sweep side
+	// of the "confirmed-before-deadline+grace" policy (variant A) — not proof of
+	// broadcast time.
+	ExpireOverdue(ctx context.Context, now time.Time, onchainProviders []string, grace time.Duration) error
+
+	// AcquirePollLease mints a fresh opaque lease token and takes the per-invoice
+	// poll lease for owner until now+leaseFor, reclaiming an existing lease only if it
+	// has lapsed (lease_until <= now). Returns the token and whether it was acquired.
+	AcquirePollLease(ctx context.Context, invoiceID, owner string, leaseFor time.Duration) (token string, acquired bool, err error)
+	// RenewPollLease extends the lease to now+leaseFor only if token still owns it
+	// (CAS on invoice_id+lease_token). Returns false if ownership was lost.
+	RenewPollLease(ctx context.Context, invoiceID, token string, leaseFor time.Duration) (bool, error)
+	// ReleasePollLease drops the lease only if token still owns it (CAS), so a stale
+	// owner can never release a lease reclaimed by someone else.
+	ReleasePollLease(ctx context.Context, invoiceID, token string) error
+	// RecordNegativeCheck stamps last_negative_check_at for a DEFINITIVE negative
+	// on-chain check (payment absent/insufficient with the chain reachable) — never
+	// for a chain API error.
+	RecordNegativeCheck(ctx context.Context, invoiceID string, checkAt time.Time) error
 
 	// Expiry schedule index (billing-owned; no PII).
 	UpsertSchedule(ctx context.Context, s model.Schedule) error
