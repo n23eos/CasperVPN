@@ -1,0 +1,107 @@
+---
+# Idempotent REALITY keypair resolution. Single source of truth for BOTH the
+# first `node-up` and `rotation` (rotation writes a fresh state file first, then
+# includes this role, so this file always reflects the current pair).
+#
+# Resolution order:
+#   1. explicit secret (both halves supplied)  -> use, persist to state file
+#   2. existing state file 0600                 -> reuse the stored pair
+#   3. neither                                  -> generate, persist
+#
+# A plain converge NEVER rotates: once the state file exists it is reused as-is.
+#
+# TRUST BOUNDARY: no_log keeps the private key out of ansible OUTPUT (even -v /
+# on failure), but slurp/set_fact still move it through the Ansible controller's
+# memory. The controller is therefore part of the trusted secret boundary. What
+# is guaranteed is narrower and is what matters for clients: the private key never
+# reaches a client config, an API response, or a persisted log — only its public
+# half (reality.pub) is published. Moving parsing/render fully onto the managed
+# node (so the key never transits the controller) is a possible hardening.
+
+- name: Ensure the REALITY key directory exists (private)
+  ansible.builtin.file:
+    path: "{{ reality_key_state_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Reject a half-supplied explicit keypair
+  ansible.builtin.assert:
+    that:
+      - (reality_explicit_private_key | length > 0) == (reality_explicit_public_key | length > 0)
+    fail_msg: >-
+      reality_explicit_private_key and reality_explicit_public_key must be set
+      together (a matching pair) or both left empty. A private key alone is
+      rejected: the role does not derive the public half.
+
+- name: Check for an existing keypair state file
+  ansible.builtin.stat:
+    path: "{{ reality_key_state_file }}"
+  register: reality_state
+
+- name: Load the existing keypair from the state file
+  when:
+    - reality_explicit_private_key | length == 0
+    - reality_state.stat.exists
+  ansible.builtin.slurp:
+    src: "{{ reality_key_state_file }}"
+  register: reality_state_blob
+  no_log: true
+
+- name: Generate a fresh keypair (no state file, no explicit secret)
+  when:
+    - reality_explicit_private_key | length == 0
+    - not reality_state.stat.exists
+  ansible.builtin.command: "{{ singbox_bin }} generate reality-keypair"
+  register: reality_keypair_gen
+  changed_when: true
+  no_log: true
+
+- name: Resolve the effective keypair
+  ansible.builtin.set_fact:
+    reality_private_key: >-
+      {{ reality_explicit_private_key if reality_explicit_private_key | length > 0
+         else (reality_state_blob.content | b64decode | regex_search('private_key=(\S+)', '\1') | first)
+              if reality_state.stat.exists
+         else (reality_keypair_gen.stdout | regex_search('PrivateKey:\s*(\S+)', '\1') | first) }}
+    reality_public_key: >-
+      {{ reality_explicit_public_key if reality_explicit_public_key | length > 0
+         else (reality_state_blob.content | b64decode | regex_search('public_key=(\S+)', '\1') | first)
+              if reality_state.stat.exists
+         else (reality_keypair_gen.stdout | regex_search('PublicKey:\s*(\S+)', '\1') | first) }}
+  no_log: true
+
+- name: Persist the keypair to the state file (atomic write, 0600)
+  # ansible.builtin.copy writes to a temp file and renames into place, so the
+  # 0600 mode is never briefly world-readable and a crash cannot leave a partial
+  # key. Reused on the next converge (step 2 above).
+  ansible.builtin.copy:
+    dest: "{{ reality_key_state_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      private_key={{ reality_private_key }}
+      public_key={{ reality_public_key }}
+  no_log: true
+
+- name: Inject the resolved private key into the transport matrix
+  ansible.builtin.set_fact:
+    transports: >-
+      {{ transports | combine({'vless_reality':
+         transports.vless_reality | combine({'private_key': reality_private_key})},
+         recursive=True) }}
+  no_log: true
+
+- name: Publish the public key + short-id pool for control-plane
+  # Only the PUBLIC half leaves the node. reality_sync.sh reads this to upsert the
+  # node's vless_reality.public_key into the control-plane.
+  ansible.builtin.copy:
+    dest: "{{ reality_pub_artifact }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      public_key={{ reality_public_key }}
+      short_ids={{ transports.vless_reality.short_ids | default([]) | join(',') }}

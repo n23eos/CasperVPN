@@ -25,6 +25,13 @@ func NewBundleService(users domain.UserRepo, nodes domain.NodeRepo, sets domain.
 	return &BundleService{users: users, nodes: nodes, sets: sets, now: time.Now}
 }
 
+// withoutPrivateKey returns a copy of u with the server-side PrivateKey cleared,
+// so the secret never leaves control-plane's own store (immutable: u is unchanged).
+func withoutPrivateKey(u contracts.User) contracts.User {
+	u.PrivateKey = ""
+	return u
+}
+
 // Build recomputes a user's active set from the current fleet and persists it
 // (revision bumped, cache marked fresh). Used on demand and by the rebuild queue.
 func (s *BundleService) Build(ctx context.Context, userID string) (domain.SubscriptionSet, error) {
@@ -53,7 +60,10 @@ func (s *BundleService) Build(ctx context.Context, userID string) (domain.Subscr
 		Revision: prevRev + 1,
 		NodeIDs:  nodeIDs,
 		Bundle: contracts.SubscriptionBundle{
-			User:        user,
+			// PrivateKey is the user's server-side transport secret; no renderer
+			// emits it, so it must not travel to (or be cached at-rest by) the
+			// subscription service. Its canonical home is the users table only.
+			User:        withoutPrivateKey(user),
 			Nodes:       nodes,
 			GeneratedAt: s.now(),
 		},

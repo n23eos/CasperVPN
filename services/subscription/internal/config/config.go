@@ -39,6 +39,11 @@ type Config struct {
 	// registration). Env INTERNAL_TOKEN. Empty => internal endpoints disabled.
 	InternalToken string
 
+	// DatabaseURL, when set, backs the subscription-owned token index with a
+	// durable Postgres store (survives restart); empty => in-memory (dev). Env
+	// DATABASE_URL. Never hardcoded.
+	DatabaseURL string
+
 	// ProfileUpdateHours is advertised to clients via Profile-Update-Interval so
 	// they self-refresh and blocked nodes wash out quickly. Env
 	// PROFILE_UPDATE_INTERVAL_HOURS.
@@ -68,6 +73,7 @@ func Load() (Config, error) {
 		ControlPlaneToken:   os.Getenv("CONTROL_PLANE_TOKEN"),
 		ControlPlaneTimeout: defaultControlPlaneTimeout,
 		InternalToken:       os.Getenv("INTERNAL_TOKEN"),
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
 		ProfileUpdateHours:  envIntOr("PROFILE_UPDATE_INTERVAL_HOURS", defaultProfileUpdateHours),
 		CacheTTL:            envDurationOr("CACHE_TTL", defaultCacheTTL),
 		ProfileTitle:        os.Getenv("SUBSCRIPTION_PROFILE_TITLE"),

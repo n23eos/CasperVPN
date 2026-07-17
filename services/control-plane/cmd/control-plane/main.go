@@ -16,8 +16,10 @@ import (
 	"github.com/caspervpn/control-plane/internal/adapters/httpapi"
 	"github.com/caspervpn/control-plane/internal/adapters/postgres"
 	"github.com/caspervpn/control-plane/internal/adapters/rebuild"
+	"github.com/caspervpn/control-plane/internal/adapters/subnotify"
 	"github.com/caspervpn/control-plane/internal/authz"
 	"github.com/caspervpn/control-plane/internal/config"
+	"github.com/caspervpn/control-plane/internal/domain"
 	"github.com/caspervpn/control-plane/internal/migrate"
 	"github.com/caspervpn/control-plane/internal/seed"
 	"github.com/caspervpn/control-plane/internal/usecase"
@@ -52,14 +54,37 @@ func main() {
 	setStore := postgres.NewSetStore(pool)
 	signalStore := postgres.NewSignalStore(pool)
 
-	// Usecases + async rebuild queue (the "issue a fresh config" loop).
+	// Usecases + async rebuild queue (the "issue a fresh config" loop). The
+	// durable queue (REBUILD_DURABLE=true) persists jobs in Postgres so pending
+	// rebuilds survive restarts and can be drained by several instances; the
+	// default in-memory queue is single-instance and loses pending work on exit.
 	bundleSvc := usecase.NewBundleService(userStore, nodeStore, setStore)
-	queue := rebuild.New(setStore, bundleSvc, cfg.RebuildBuffer, cfg.RebuildWorkers, logger)
-	queue.Start(ctx)
+	var queue domain.RebuildQueue
+	if cfg.RebuildDurable {
+		dq := rebuild.NewDurable(postgres.NewRebuildJobStore(pool), setStore, bundleSvc,
+			rebuild.DurableConfig{Workers: cfg.RebuildWorkers}, logger)
+		dq.Start(ctx)
+		queue = dq
+		logger.Printf("rebuild queue: durable (Postgres), workers=%d", cfg.RebuildWorkers)
+	} else {
+		q := rebuild.New(setStore, bundleSvc, cfg.RebuildBuffer, cfg.RebuildWorkers, logger)
+		q.Start(ctx)
+		queue = q
+		logger.Printf("rebuild queue: in-memory, workers=%d buffer=%d", cfg.RebuildWorkers, cfg.RebuildBuffer)
+	}
+
+	// Revocation propagation into the subscription service (TZ-token-revocation).
+	// No-op unless SUBSCRIPTION_INTERNAL_URL is configured, so dev doesn't break.
+	var revoker domain.SubscriptionRevoker = subnotify.Noop{}
+	if cfg.SubscriptionInternalURL != "" {
+		revoker = subnotify.New(cfg.SubscriptionInternalURL, cfg.SubscriptionInternalToken,
+			time.Duration(cfg.SubscriptionTimeoutSeconds)*time.Second)
+		logger.Printf("subscription revocation notifier enabled: %s", cfg.SubscriptionInternalURL)
+	}
 
 	nodeSvc := usecase.NewNodeService(nodeStore, rotStore, queue)
-	userSvc := usecase.NewUserService(userStore, rotStore, queue)
-	subSvc := usecase.NewSubscriptionService(subStore, userStore)
+	userSvc := usecase.NewUserService(userStore, rotStore, queue).WithRevoker(revoker)
+	subSvc := usecase.NewSubscriptionService(subStore, userStore).WithRevoker(revoker)
 	signalSvc := usecase.NewSignalService(nodeStore, signalStore, nodeSvc)
 
 	if os.Getenv("SEED") == "true" {

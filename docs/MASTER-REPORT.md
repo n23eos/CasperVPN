@@ -8,15 +8,23 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 подсистемами не сшиты, какие пробелы блокируют следующую волну и что переносится в
 руки оператора. Детальные отчёты каждой подсистемы — по ссылкам в таблице ниже.
 
+> **Обновление 2026-07-11:** `TZ-orchestrator` реализован в
+> `services/orchestrator/`; delivery получил auth/readiness и anti-rollback
+> freshness check; telemetry подключает Postgres runtime по `DATABASE_URL`;
+> subscription получил durable Postgres `TokenIndex`; control-plane получил durable
+> Postgres rebuild queue (`REBUILD_DURABLE=true`).
+> Локально зелёные `make build`, `make vet`, `make test`.
+
 ---
 
 ## 1. Итог одной строкой
 
 Заложен компилящийся монорепо с **замороженными контрактами**, и **6 подсистем
-доведены до функциональных скелетов с тестами**. Но система **ещё не собрана в
-единый организм**: сервисы построены как острова, связующий слой (оркестратор +
-интеграции между сервисами + рантайм-Postgres + прод-хардненинг) — не сделан.
-Оркестратор (keystone Волны 2) остался заглушкой. Ни одна подсистема не
+доведены до функциональных скелетов с тестами**. После обновления Волны 2
+orchestrator уже закрывает контур антихрупкости на моках и через реальные
+HTTP/infra-адаптеры, но система **ещё не собрана в продовый единый организм**:
+межсервисные e2e, рантайм-Postgres, operator secrets/cloud apply и полный
+prod-hardening остаются следующими блоками. Ни одна подсистема пока не
 «прод-готова», но у каждой чистые швы (интерфейсы) под доводку.
 
 ---
@@ -29,9 +37,9 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 | **subscription** | `agent/subscription` (worktree, uncommitted) | функц. завершён | golden+fuzz 1.9M+smoke | ❌ | [STATUS](../services/subscription/STATUS.md), [docs](./subscription.md) |
 | **delivery** | main-дерево (uncommitted) | ядро+4 канала | unit+e2e, покрытие ≥80% | ❌ | [STATUS](../services/delivery/docs/STATUS.md), [docs](../services/delivery/docs/delivery.md) |
 | **billing** | main-дерево (uncommitted) | MVP-скелет+логика | unit+integration | ❌ | [NOTES](../services/billing/NOTES.md), [docs](./billing.md) |
-| **telemetry** | `feat/telemetry-feedback-loop` (**закоммичен**) | функц. завершён | 79–93%, `-race` чист | ❌ (Postgres не в рантайме) | [HANDOFF](../services/telemetry/HANDOFF.md), [docs](./telemetry.md) |
+| **telemetry** | main | функц. завершён | 79–93%, `-race` чист | ❌ (нужны миграции/операторский Postgres/Redis для scale) | [HANDOFF](../services/telemetry/HANDOFF.md), [docs](./telemetry.md) |
 | **infra/node** | main-дерево (uncommitted) | завершён (без apply) | локальные гейты + CI | ❌ (без живого apply) | [status](./infra-status.md), [docs](./infra.md) |
-| **orchestrator** | — | **ЗАГЛУШКА (не построен)** | — | ❌ | — |
+| **orchestrator** | main | функц. завершён (dry-run safe default) | unit+httptest+mock e2e, `make test` | ❌ (без живого apply/проб РФ) | [docs](./orchestrator.md), [plan](../services/orchestrator/.plan.md) |
 
 Легенда «Prod-готов»: ни одна не закрыла Production Checklist из `CLAUDE.md`
 (rate-limit / alerting / durable-стейт / observability). Это осознанно отложено.
@@ -81,29 +89,30 @@ delivery, billing, telemetry, infra/node). Источник истины по а
    написан под этот endpoint, CP его не отдаёт.
 2. **Отзыв подписки / ротация sub-token / cancel** — control-plane отдаёт только
    create/get. Утёкшую ссылку сейчас не отозвать наружу.
-3. **Контракт рекомендаций telemetry** (`Recommendation`, `NodeBlock`,
-   `RegionPriority`) определён локально в telemetry. Когда оркестратор начнёт
-   потреблять — форму согласовать и, вероятно, вынести в `packages/contracts`.
+3. **Контракт рекомендаций telemetry** уже вынесен в `packages/contracts`
+   (`RecommendationAction`, `NodeBlock`, `RegionPriority`, `Recommendations`) и
+   потребляется orchestrator. Остался технический хвост: telemetry internals пока
+   держат локальные mirror-типы в `internal/aggregate`.
 
 → Всё это меняется **по протоколу заморозки** (`docs/contracts.md`): аддитивно,
 синхронно Go + JSON Schema + OpenAPI, через ревью, с bump версии где нужно.
 
 ### B. Postgres везде написан, но не подключён рантаймом
 
-`telemetry`, `billing`, `subscription` (TokenIndex), частично `control-plane`
-(durable-очередь) дефолтят в in-memory. Причина у всех одна: **оффлайн-окружение,
-нет `go.sum`, нельзя слинковать драйвер**. Данные не переживают рестарт. Лечится
-**одним сетевым проходом**: `go get` драйвера (pgx) → blank-import → `sql.Open` →
-применить `schema.sql`/миграции → заменить `NewMemory*` на `NewPostgres*`.
-`DATABASE_URL` уже прокинут в env/compose.
+`billing`, `control-plane`, `telemetry` и subscription `TokenIndex` уже имеют
+pgx/Postgres runtime path (по `DATABASE_URL`; миграции применяются out-of-band).
+Control-plane rebuild queue тоже закрыта durable pg-очередью (`rebuild_jobs`,
+`FOR UPDATE SKIP LOCKED`), но пока opt-in через `REBUILD_DURABLE=true`. Остаются
+миграционные джобы, операторский Postgres и решение сделать durable path дефолтом
+после обкатки.
 
 ### C. Прод-хардненинг отложен всеми (Production Checklist из `CLAUDE.md`)
 
 Универсально нет: **rate-limiting** (публичные `/sub/{token}`, `/v1/invoices`,
 вебхуки, `/d/`), **метрики/алертинг** (кроме telemetry `/metrics`),
 **readiness/health-детали** (везде только liveness), **durable-очереди/общий стейт**
-(control-plane rebuild-queue и telemetry dedup/rate-limit — in-memory, single-instance
-→ ломаются при горизонтальном масштабе; нужен Redis/pg LISTEN-NOTIFY),
+(control-plane rebuild-queue уже имеет opt-in Postgres path; telemetry
+dedup/rate-limit остаются in-memory single-instance и требуют Redis/общий state),
 **structured logs / отгрузка логов**.
 
 ### D. Межсервисная интеграция — главный несделанный слой
@@ -116,9 +125,11 @@ delivery, billing, telemetry, infra/node). Источник истины по а
 - **delivery** — не подключены: `SubProvider` (клиент к subscription), приёмный
   цикл бота (long-poll/webhook), шедулер пересборки `Directory` + `Broadcast` при
   ротации/блоке, потребление телеметрии (авто-снятие заблокированных каналов).
-- **orchestrator** — **не построен вообще.** Он keystone: потребляет рекомендации
-  telemetry, дёргает `infra/scripts/node_{up,rotate,down}.sh`, синхронизирует
-  `Node`/REALITY-ключи с control-plane, детектит блоки и автозаменяет ноды.
+- **orchestrator** — построен как keystone Волны 2: потребляет рекомендации
+  telemetry, подтверждает подозрения собственными пробами, планирует через
+  anti-poisoning policy, дёргает `infra/scripts/node_{up,rotate,down}.sh` и
+  синхронизирует `Node` с control-plane. Осталось операторское: живые облачные
+  креды/apply, vantage-пробы из РФ, калибровка порогов на реальном трафике.
 
 ### E. Реальный крипто-материал ключей
 
@@ -164,12 +175,12 @@ Postgres прод, юрлицо/юрисдикция. → всё в [OPERATOR-CH
 под замену без переделки архитектуры.
 
 **Волна 2 (см. ТЗ в [`docs/wave-2/`](./wave-2/)):**
-1. `TZ-orchestrator.md` — построить keystone (telemetry-рекомендации → infra-скрипты → CP).
+1. `TZ-orchestrator.md` — ✅ реализовано: telemetry-рекомендации → пробы/policy → infra-скрипты → CP.
 2. `TZ-contract-changes.md` — координированные аддитивные правки замороженного контракта (A).
 3. `TZ-integration.md` — сшить сервисы (D).
 4. `TZ-persistence.md` — рантайм-Postgres одним сетевым проходом (B).
 5. `TZ-hardening.md` — Production Checklist по всем сервисам (C).
 
-Порядок: сначала `TZ-contract-changes` (разблокирует billing и оркестратор),
-параллельно `TZ-orchestrator`; затем `TZ-integration` + `TZ-persistence`; в конце
-`TZ-hardening` перед прод-выкаткой. Действия оператора — [OPERATOR-CHECKLIST](./OPERATOR-CHECKLIST.md).
+Порядок после закрытия orchestrator: `TZ-integration` + `TZ-persistence`; затем
+оставшийся `TZ-hardening` перед прод-выкаткой. Действия оператора —
+[OPERATOR-CHECKLIST](./OPERATOR-CHECKLIST.md).

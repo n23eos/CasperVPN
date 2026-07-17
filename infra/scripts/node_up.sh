@@ -12,9 +12,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/lib.sh"
 # shellcheck source=control_plane.sh
 source "${HERE}/control_plane.sh"
+# shellcheck source=reality_sync.sh
+source "${HERE}/reality_sync.sh"
 
-require_cmd terraform ansible-playbook jq curl
-require_env REGION CLOUD SSH_PUBKEY
+require_cmd terraform ansible-playbook ansible jq curl
+# REALITY mimicry is DATA, never hardcoded — the operator supplies it (see
+# docs/mimicry-domains.md). REALITY_DEST is the handshake upstream host:port.
+require_env REGION CLOUD SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
 ROOT="$(repo_root)"
 TF_DIR="${ROOT}/${TF_ENV_DIR_DEFAULT}"
 ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
@@ -34,34 +38,72 @@ EXIT_ID="$(terraform -chdir="${TF_DIR}" output -raw exit_id)"
 log "building inventory (entry=${ENTRY_IP}, exit=${EXIT_IP})"
 INV="$(mktemp)"
 trap 'rm -f "${INV}"' EXIT
+# node_role is REQUIRED per host: without it the exit inherits the entry default
+# and both provision as entries. server_names[0] handshake if none given.
 cat >"${INV}" <<EOF
 [entry]
-${ENTRY_ID} ansible_host=${ENTRY_IP} node_id=${ENTRY_ID} health_region=${REGION}
+${ENTRY_ID} ansible_host=${ENTRY_IP} node_id=${ENTRY_ID} node_role=entry health_region=${REGION}
 
 [exit]
-${EXIT_ID} ansible_host=${EXIT_IP} node_id=${EXIT_ID} allowed_entry_ip=${ENTRY_IP}
+${EXIT_ID} ansible_host=${EXIT_IP} node_id=${EXIT_ID} node_role=exit allowed_entry_ip=${ENTRY_IP}
 
 [nodes:children]
 entry
 exit
 EOF
 
+# Mimicry passed as extra-vars (data, not code). NOTE: entry->exit SS chaining is
+# NOT wired here — it needs a matching Shadowsocks inbound (enabled, password,
+# port 8388) on the exit and credentials shared with the entry's outbound. That
+# is a separate, unproven task (see docs/FIRST-WORKING-USER.md); half-wiring a
+# passwordless exit_endpoint on port 443 would only produce a broken chain. For
+# now the entry terminates traffic directly (entry==exit egress).
+REALITY_HANDSHAKE="${REALITY_HANDSHAKE:-${REALITY_DEST%%:*}}"
+EXTRA_VARS="$(jq -n \
+  --argjson names "$(printf '%s' "$REALITY_SERVER_NAMES" | jq -R 'split(",")|map(select(length>0))')" \
+  --arg handshake "$REALITY_HANDSHAKE" \
+  '{reality_server_names: $names, reality_handshake_server: $handshake}')"
+
 log "ansible node-up (wait for cloud-init, then converge)"
 retry 10 ansible -i "${INV}" nodes -m ping >/dev/null
-ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"
+ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml" -e "${EXTRA_VARS}"
 
 if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   log "registering nodes in control-plane"
-  NODE_ID="${ENTRY_ID}" NODE_ROLE="entry" NODE_STATUS="active" \
+  # Clients connect ONLY to the entry, so only the entry carries a client-facing
+  # REALITY transport (real public key from its artifact). The exit is registered
+  # as inventory metadata with NO client transport — otherwise subscription, which
+  # renders every active node's transports, would emit an outbound with an empty
+  # server (the exit has no client entry_ip).
+  ENTRY_BLOB="$(ansible -i "${INV}" "${ENTRY_ID}" -b -m slurp -a src="${REALITY_PUB_ARTIFACT:-/etc/caspervpn/reality.pub}" \
+                 | awk '/"content":/ {gsub(/[",]/,""); print $2}' | base64 -d)"
+  ENTRY_PUB="$(printf '%s' "$ENTRY_BLOB" | awk -F= '/^public_key/{print $2}')"
+  ENTRY_SIDS="$(printf '%s' "$ENTRY_BLOB" | awk -F= '/^short_ids/{print $2}')"
+  [ -n "$ENTRY_PUB" ] || die "no public_key artifact from entry ${ENTRY_ID}"
+
+  # Register as PROVISIONING, not active. Subscription serves only status='active'
+  # nodes (control-plane ListActive: WHERE status='active'), so a fresh node stays
+  # out of every client bundle until a reconciler has (1) pushed each subscriber's
+  # UUID/short-id into the node's reality_users allow-list — the node converges
+  # with reality_users:[] and would authenticate nobody — and (2) ensured at least
+  # two client transports are up (anti-block: never a monoculture). Flipping to
+  # active is that reconciler's job (see docs/FIRST-WORKING-USER.md), NOT node-up's.
+  # Env-prefix vars are read by reality_sync_node as shell vars; bash passes them
+  # to the function (SC2097/2098 assume POSIX sh, where it differs).
+  # shellcheck disable=SC2097,SC2098
+  NODE_ID="${ENTRY_ID}" NODE_ROLE="entry" NODE_STATUS="provisioning" \
     PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" \
     ENTRY_IP="${ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
-    cp_register_node "$(NODE_ID="${ENTRY_ID}" NODE_ROLE="entry" NODE_STATUS="active" \
-      PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" \
-      ENTRY_IP="${ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" build_node_json)"
+    REALITY_PUBLIC_KEY="$ENTRY_PUB" REALITY_SHORT_IDS="$ENTRY_SIDS" \
+    REALITY_SERVER_NAMES="$REALITY_SERVER_NAMES" REALITY_DEST="$REALITY_DEST" \
+    reality_sync_node
 
-  NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="active" \
+  # Exit: plain inventory node, no client transport (see comment above), also
+  # provisioning until the reconciler blesses the pair.
+  # shellcheck disable=SC2097,SC2098
+  NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \
     PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
-    cp_register_node "$(NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="active" \
+    cp_register_node "$(NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \
       PROVIDER="${CLOUD}" CLOUD="${CLOUD}" REGION="${REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
       build_node_json)"
 else

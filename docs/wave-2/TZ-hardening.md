@@ -10,6 +10,10 @@
 [`MASTER-REPORT.md`](../MASTER-REPORT.md) §4.C и Production Checklist в
 [`CLAUDE.md`](../../CLAUDE.md)). Задача — закрыть чеклист системно, единым стилем.
 
+> **Статус 2026-07-11:** из этого ТЗ уже закрыты самодостаточные пункты delivery:
+> auth на `POST /v1/channels`, `/readyz`, anti-rollback max-age по `Artifact.IssuedAt`.
+> Остальные пункты ниже остаются актуальными.
+
 ## Задачи (сгруппировано)
 
 ### Resilience
@@ -20,6 +24,7 @@
   на внешние вызовы.
 - **Graceful shutdown** везде (у telemetry/billing есть — распространить).
 - **Health/readiness**: `/healthz` (liveness, есть) + `/readyz` (проверка БД/зависимостей).
+  Delivery уже имеет `/readyz`; остальные сервисы ещё требуют прохода.
 
 ### Observability
 - **Метрики** Prometheus/OpenMetrics по всем сервисам (у telemetry `/metrics` — есть,
@@ -30,18 +35,21 @@
   расхождение billing↔CP статуса, рост stale `subscription_sets`, падение инстанса.
 
 ### Architecture / State
-- **Общий стейт (Redis)** для того, что сейчас in-memory single-instance и ломает
-  горизонтальный масштаб: telemetry dedup/rate-limit, control-plane rebuild-queue
-  (или pg LISTEN/NOTIFY), subscription/delivery кеши по необходимости.
-- **Auth на админ-эндпоинтах**: `POST /v1/channels` (delivery) сейчас открыт —
-  закрыть bearer/mTLS. Ротация service-токенов (control-plane — статичные из env).
+- **Общий стейт (Redis/Postgres)** для того, что сейчас in-memory single-instance и
+  ломает горизонтальный масштаб: telemetry dedup/rate-limit, subscription/delivery
+  кеши по необходимости. Control-plane rebuild-queue уже имеет durable Postgres
+  path (`REBUILD_DURABLE=true`), но default ещё in-memory до обкатки.
+- **Auth на админ-эндпоинтах**: `POST /v1/channels` (delivery) уже закрыт
+  bearer-токеном; остаются ротация service-токенов и системный mTLS/bearer-подход
+  для остальных админских поверхностей.
 
 ### Security
 - **Ревью секретов at-rest**: `subscription_sets.bundle` дублирует
   `reality_short_id`/`uuid`/`private_key` (control-plane п.2) — строить bundle на
   чтении или шифровать.
-- **Anti-rollback на клиенте delivery**: проверка `Directory.Revision`/`IssuedAt`
-  (max-age) при приёме артефакта.
+- **Anti-rollback на клиенте delivery**: max-age по `Artifact.IssuedAt` закрыт;
+  монотонность `Directory.Revision` между рестартами требует persistent client state
+  и остаётся отдельным пунктом.
 - Проверить, что деплой не логирует секреты (env-токены).
 
 ### Infra

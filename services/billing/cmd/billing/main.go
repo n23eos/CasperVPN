@@ -26,6 +26,7 @@ import (
 	"github.com/caspervpn/billing/internal/store"
 	"github.com/caspervpn/billing/internal/subscription"
 	"github.com/caspervpn/contracts"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const serviceName = "billing"
@@ -34,7 +35,8 @@ func main() {
 	log.SetPrefix(serviceName + ": ")
 
 	catalog := loadCatalog()
-	repo := store.NewMemory()
+	repo, closeStore := newStore()
+	defer closeStore()
 	registry := buildRegistry()
 
 	cp := controlplane.NewHTTPClient(
@@ -43,7 +45,11 @@ func main() {
 	)
 	activator := subscription.NewActivator(cp, catalog, repo, time.Now)
 	processor := payment.NewProcessor(repo, activator, replayWindow(), time.Now)
-	poller := payment.NewPoller(repo, registry, processor)
+	poller := payment.NewPoller(repo, registry, processor, payment.Recovery{
+		// Must exceed the activation HTTP timeout (control-plane client is 10s, and an
+		// Activate makes up to a few calls) so recovery never pre-empts a live settle.
+		StaleThreshold: interval("SETTLEMENT_STALE_THRESHOLD", 2*time.Minute),
+	}, time.Now)
 	sweeper := expiry.NewSweeper(repo, cp, time.Now)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -92,13 +98,19 @@ func buildRegistry() *payment.Registry {
 	reg := payment.NewRegistry()
 
 	if base := os.Getenv("BTCPAY_BASE_URL"); base != "" {
-		reg.Register(btcpay.New(btcpay.Config{
+		cfg := btcpay.Config{
 			BaseURL:       base,
 			APIKey:        os.Getenv("BTCPAY_API_KEY"),
 			StoreID:       os.Getenv("BTCPAY_STORE_ID"),
 			WebhookSecret: os.Getenv("BTCPAY_WEBHOOK_SECRET"),
 			Currencies:    splitCSV(getenv("BTCPAY_CURRENCIES", "BTC")),
-		}))
+		}
+		// Fail fast: a configured gateway with no webhook secret would verify
+		// forged "settled" webhooks against an empty HMAC key.
+		if err := cfg.Validate(); err != nil {
+			log.Fatalf("btcpay config: %v", err)
+		}
+		reg.Register(btcpay.New(cfg))
 		log.Printf("registered gateway: btcpay")
 	}
 
@@ -111,6 +123,23 @@ func buildRegistry() *payment.Registry {
 		log.Printf("WARNING: no payment gateways configured; invoice creation will fail")
 	}
 	return reg
+}
+
+// newStore selects the persistence backend: Postgres when DATABASE_URL is set
+// (durable — invoices survive restarts), otherwise the in-memory store for
+// dev/offline. It returns a close func the caller defers to release the pool.
+func newStore() (store.Repository, func()) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		log.Printf("WARNING: DATABASE_URL unset; using in-memory store (state lost on restart)")
+		return store.NewMemory(), func() {}
+	}
+	pool, err := pgxpool.New(context.Background(), url)
+	if err != nil {
+		log.Fatalf("connect postgres: %v", err)
+	}
+	log.Printf("using postgres store")
+	return store.NewPostgres(pool), pool.Close
 }
 
 func loadCatalog() *plan.Catalog {

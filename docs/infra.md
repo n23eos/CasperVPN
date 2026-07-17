@@ -1,7 +1,11 @@
 # infra — флот нод CasperVPN (Terraform + Ansible)
 
 Слой, который поднимает, конфигурирует и ротирует ноды флота. Ядро ноды —
-**sing-box** ([ADR-002](./decisions/ADR-002-singbox-core.md)). Оркестрацией
+**sing-box** ([ADR-002](./decisions/ADR-002-singbox-core.md)). Канонический пин
+версии sing-box один на весь репозиторий:
+`infra/ansible/roles/singbox/defaults/main.yml` (`singbox_version`), и он обязан
+совпадать с `.github/workflows/subscription.yml` (`env.SINGBOX_VERSION`) —
+сейчас `1.11.11`. Оркестрацией
 жизненного цикла рулит `services/orchestrator` через контракты `Node` /
 `HealthEvent`; этот слой — исполнительные модули под ним.
 
@@ -145,7 +149,7 @@ make node-down NODE=<node-id>
 | Действие | Вызов | Где в скриптах |
 |----------|-------|----------------|
 | Зарегистрировать ноду | `POST /v1/nodes` (тело — `Node`) | `node_up.sh` → `cp_register_node` |
-| Обновить (ротация IP/статус) | `PATCH /v1/nodes/{id}` | `node_rotate.sh` → `cp_patch_node` |
+| Обновить (ротация IP + REALITY) | `GET` затем `PATCH /v1/nodes/{id}` | `node_rotate.sh` → `cp_get_node` → `cp_patch_node` |
 | Вывести ноду | `DELETE /v1/nodes/{id}` | `node_down.sh` → `cp_retire_node` |
 
 Персональные `reality_short_id`/`uuid` юзеров — забота control-plane
@@ -170,7 +174,15 @@ make node-down NODE=<node-id>
    `sing-box generate reality-keypair` → новый keypair + свежий `short_id`,
    пере-рендер конфига, рестарт;
 3. чтение артефакта `/etc/caspervpn/reality.pub` (новый pubkey/short_id);
-4. `PATCH /v1/nodes/{id}` — новый `entry_ip`.
+4. `PATCH /v1/nodes/{id}` — новый `entry_ip` **и** пропагация нового REALITY —
+   в схеме `Node` нет отдельного поля под pubkey/short-id, они живут внутри
+   `transports[].vless_reality` (`public_key` + пул `short_ids`). Поэтому
+   `node_rotate.sh` делает read-modify-write: `cp_get_node` → в jq патчит
+   vless-reality транспорт (bump `public_key`, **добавляет** новый short-id в
+   пул, не затирая пул) → `cp_patch_node` целым объектом (проходит
+   `additionalProperties:false` и tagged-union валидацию). Если у ноды ещё нет
+   vless-reality транспорта в control-plane — пишется WARN (pubkey некуда
+   положить, сперва нужен transports-sync).
 
 Асимметрия: регенерация ключа+IP дешевле, чем обнаружение ноды цензором.
 

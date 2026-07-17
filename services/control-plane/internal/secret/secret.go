@@ -21,10 +21,13 @@ func UUIDv4() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// RealityShortID returns a REALITY short-id: 8 lowercase hex chars (4 bytes).
-// Each user gets their own — this is the core of per-user isolation.
+// RealityShortID returns a REALITY short-id: 16 lowercase hex chars (8 bytes).
+// Each user gets their own — this is the core of per-user isolation. 8 bytes is
+// the maximum REALITY allows; using the full width keeps birthday collisions
+// negligible across the whole user base (4 bytes collides around ~65k users,
+// which would silently merge two users' isolation domains).
 func RealityShortID() (string, error) {
-	var b [4]byte
+	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("secret: short-id: %w", err)
 	}

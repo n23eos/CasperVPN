@@ -4,3 +4,6 @@
 # key + fresh IP (new ephemeral entry) costs less than the censor finding it.
 singbox_bin: "/usr/local/bin/sing-box"
 reality_pub_artifact: "/etc/caspervpn/reality.pub"
+# Must match roles/transports/defaults — rotation writes this before delegating
+# to the transports role, so the value has to be known during rotation's own tasks.
+reality_key_state_file: "/etc/caspervpn/reality.key"

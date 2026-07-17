@@ -203,6 +203,28 @@ func (r *Subscriptions) Get(_ context.Context, id string) (contracts.Subscriptio
 	return s, nil
 }
 
+func (r *Subscriptions) Update(_ context.Context, s contracts.Subscription) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.subs[s.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	stored := s
+	stored.Token = "" // never persist plaintext
+	r.subs[s.ID] = stored
+	return nil
+}
+
+func (r *Subscriptions) UpdateTokenHash(_ context.Context, id, tokenHash, _ string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.subs[id]; !ok {
+		return domain.ErrNotFound
+	}
+	r.hashes[id] = tokenHash
+	return nil
+}
+
 // Rotations is an in-memory RotationRepo.
 type Rotations struct {
 	mu       sync.Mutex

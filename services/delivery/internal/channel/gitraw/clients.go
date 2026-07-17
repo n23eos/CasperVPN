@@ -6,9 +6,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/caspervpn/delivery/internal/channel"
 )
+
+// defaultHTTPClient is the fallback when no client is injected: a bounded-timeout
+// client so a hung/slow mirror can never wedge a request indefinitely (the naked
+// http.DefaultClient has no timeout).
+var defaultHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // HTTPTransport is the real RawTransport: an HTTPS GET of base+"/"+path. Bases are
 // config-supplied raw hosts (github/gitlab raw, or any mirror); nothing is
@@ -29,7 +35,7 @@ func (t HTTPTransport) Get(ctx context.Context, base, path string) ([]byte, erro
 	doer := t.HTTP
 	var client interface {
 		Do(*http.Request) (*http.Response, error)
-	} = http.DefaultClient
+	} = defaultHTTPClient
 	if doer != nil {
 		client = doer
 	}

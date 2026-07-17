@@ -35,6 +35,12 @@ type UserRepo interface {
 type SubscriptionRepo interface {
 	Create(ctx context.Context, s contracts.Subscription, tokenHash, tokenPrefix string) error
 	Get(ctx context.Context, id string) (contracts.Subscription, error)
+	// Update persists mutable entitlement fields (status, expires_at, updated_at).
+	// The token hash is NOT touched here — see UpdateTokenHash.
+	Update(ctx context.Context, s contracts.Subscription) error
+	// UpdateTokenHash swaps the stored token hash/prefix (token rotation). The
+	// plaintext token never reaches the repository.
+	UpdateTokenHash(ctx context.Context, id, tokenHash, tokenPrefix string) error
 }
 
 // RotationRepo persists node and user-secret rotation history.
@@ -57,6 +63,24 @@ type SetRepo interface {
 // SignalRepo persists FieldSignal aggregates.
 type SignalRepo interface {
 	AddAggregate(ctx context.Context, a SignalAggregate, blockSignals int, verdict Verdict) error
+}
+
+// SubscriptionRevoker is the outbound port to the subscription service's
+// internal API (TZ-token-revocation). Ban/cancel/rotate must immediately kill
+// the token in the subscription service's index AND flush its render cache —
+// otherwise a revoked link keeps being served until the cache TTL expires.
+// Implementations are best-effort at this layer (resilience hardening — retries,
+// circuit breaker — is TZ-hardening); a no-op implementation is used in dev when
+// SUBSCRIPTION_INTERNAL_URL is unset.
+type SubscriptionRevoker interface {
+	// RevokeUser revokes every token belonging to a user (ban/suspend).
+	RevokeUser(ctx context.Context, userID string) error
+	// RevokeSubscription revokes the token(s) of one subscription
+	// (cancel/expire/rotate) without touching the user's other state.
+	RevokeSubscription(ctx context.Context, subscriptionID string) error
+	// RegisterToken registers a fresh plaintext token -> (user, subscription)
+	// mapping (creation/rotation). The subscription service stores only a hash.
+	RegisterToken(ctx context.Context, token, userID, subscriptionID string) error
 }
 
 // RebuildQueue asynchronously rebuilds affected users' active sets when the

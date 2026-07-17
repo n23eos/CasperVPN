@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/caspervpn/contracts"
@@ -20,12 +21,31 @@ type UserService struct {
 	users     domain.UserRepo
 	rotations domain.RotationRepo
 	queue     domain.RebuildQueue
+	revoker   domain.SubscriptionRevoker // optional; nil => no propagation
 	now       func() time.Time
 }
 
 // NewUserService wires a UserService.
 func NewUserService(users domain.UserRepo, rotations domain.RotationRepo, queue domain.RebuildQueue) *UserService {
 	return &UserService{users: users, rotations: rotations, queue: queue, now: time.Now}
+}
+
+// WithRevoker attaches the subscription-service notifier (TZ-token-revocation).
+// Best-effort: local state is authoritative; a notify failure is logged, and the
+// subscription service still converges via cache TTL + status re-check on miss.
+func (s *UserService) WithRevoker(r domain.SubscriptionRevoker) *UserService {
+	s.revoker = r
+	return s
+}
+
+// revokeUser best-effort kills every subscription token of a user downstream.
+func (s *UserService) revokeUser(ctx context.Context, id, cause string) {
+	if s.revoker == nil {
+		return
+	}
+	if err := s.revoker.RevokeUser(ctx, id); err != nil {
+		log.Printf("users: revoke tokens of user %s downstream (%s): %v", id, cause, err)
+	}
 }
 
 // Create issues a new account with freshly generated personal secrets.
@@ -97,6 +117,11 @@ func (s *UserService) Update(ctx context.Context, id string, patch contracts.Use
 	if err := s.users.Update(ctx, existing); err != nil {
 		return contracts.User{}, err
 	}
+	// Leaving the active state (ban/suspend/expire) must kill the user's
+	// subscription links immediately, not at cache TTL (TZ-token-revocation §2).
+	if existing.Status != contracts.UserStatusActive {
+		s.revokeUser(ctx, id, "status "+string(existing.Status))
+	}
 	return existing, nil
 }
 
@@ -141,6 +166,9 @@ func (s *UserService) RotateSecrets(ctx context.Context, id, reason, actor strin
 	if err := s.rotations.AddUserSecretRotation(ctx, rec); err != nil {
 		return contracts.User{}, err
 	}
+	// Abuse response: the old link must stop resolving now. The user gets a new
+	// link via subscription re-issue/rotation (TZ-token-revocation §2).
+	s.revokeUser(ctx, id, "rotate-secrets")
 	s.queue.EnqueueUser(id)
 	return updated, nil
 }

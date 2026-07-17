@@ -144,6 +144,7 @@ https://{host}/sub/dev-token-abc123?region=eu-central&platform=android
 | `CONTROL_PLANE_URL` | — | база control-plane API; пусто → in-memory (dev) |
 | `CONTROL_PLANE_TOKEN` | — | внутренний bearer к control-plane |
 | `INTERNAL_TOKEN` | — | bearer для `/internal/*` (пусто → отключены) |
+| `DATABASE_URL` | — | DSN Postgres для token index (durable); пусто → in-memory. Схему `internal/controlplane/schema.sql` применять вне старта |
 | `PROFILE_UPDATE_INTERVAL_HOURS` | `12` | значение `Profile-Update-Interval` |
 | `CACHE_TTL` | `5m` | TTL кеша выдачи |
 | `ROUTING_POLICY_FILE` | `config/routing.ru.json` | split-tunnel policy |

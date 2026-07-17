@@ -100,8 +100,14 @@ func (g *Gateway) ParseWebhook(string, []byte) (model.Event, error) {
 // address dedups at the store and never double-credits.
 func (g *Gateway) Poll(ctx context.Context, open []model.Invoice) ([]model.Event, error) {
 	var events []model.Event
+	now := g.now()
 	for _, inv := range open {
 		if inv.Provider != name {
+			continue
+		}
+		// Never settle an invoice whose payment window has already elapsed — a late
+		// on-chain arrival must not silently activate an expired order.
+		if !inv.ExpiresAt.IsZero() && now.After(inv.ExpiresAt) {
 			continue
 		}
 		received, confs, err := g.chain.AddressStatus(ctx, inv.Currency, inv.PayAddress)

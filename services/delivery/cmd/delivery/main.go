@@ -7,16 +7,24 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/delivery/internal/app"
 	"github.com/caspervpn/delivery/internal/config"
 )
 
-const serviceName = "delivery"
+const (
+	serviceName       = "delivery"
+	readHeaderTimeout = 10 * time.Second
+	shutdownTimeout   = 15 * time.Second
+)
 
 func main() {
 	cfg := config.Load()
@@ -33,9 +41,27 @@ func main() {
 		a.Signer.KeyID(), base64.StdEncoding.EncodeToString(a.Signer.PublicKey()))
 	log.Printf("%s: channels registered: %v", serviceName, a.Registry.Kinds())
 
-	addr := ":" + cfg.Port
-	log.Printf("%s listening on %s (contracts %s)", serviceName, addr, contracts.TransportVersionV1)
-	if err := http.ListenAndServe(addr, a.Handler); err != nil {
-		log.Fatalf("%s: %v", serviceName, err)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           a.Handler,
+		ReadHeaderTimeout: readHeaderTimeout, // slow-loris guard on a public endpoint
+	}
+
+	go func() {
+		log.Printf("%s listening on %s (contracts %s)", serviceName, srv.Addr, contracts.TransportVersionV1)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("%s: %v", serviceName, err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("%s: shutting down", serviceName)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("%s: graceful shutdown failed: %v", serviceName, err)
 	}
 }

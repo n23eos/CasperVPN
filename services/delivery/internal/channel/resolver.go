@@ -4,23 +4,53 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/caspervpn/delivery/internal/artifact"
 )
+
+// futureSkew tolerates modest clock skew before treating an artifact dated in
+// the future as suspect (anti-rollback also rejects implausibly future copies).
+const futureSkew = 5 * time.Minute
 
 // Resolver fetches a signed artifact by trying channels in priority order until
 // one returns bytes that VERIFY. Verification is the gate: a channel that returns
 // a corrupt, truncated or spoofed blob is treated exactly like a channel that
 // returned nothing — the resolver moves on. This is the failover that makes any
 // single channel's failure (or capture) survivable.
+//
+// A valid signature proves authenticity but NOT freshness: a captured, genuinely
+// signed but stale artifact could be replayed to pin a client to an old (perhaps
+// since-blocked) directory. When maxAge > 0 the resolver enforces anti-rollback,
+// rejecting artifacts whose IssuedAt is older than maxAge (or implausibly future)
+// and failing over to a fresher copy on another channel.
 type Resolver struct {
-	reg *Registry
-	v   artifact.Verifier
+	reg    *Registry
+	v      artifact.Verifier
+	maxAge time.Duration
+	now    func() time.Time
 }
 
+// ResolverOption tunes a Resolver.
+type ResolverOption func(*Resolver)
+
+// WithMaxAge enables anti-rollback: artifacts older than d are rejected. Zero
+// (the default) disables the freshness check.
+func WithMaxAge(d time.Duration) ResolverOption { return func(r *Resolver) { r.maxAge = d } }
+
+// WithClock overrides the time source (tests).
+func WithClock(now func() time.Time) ResolverOption { return func(r *Resolver) { r.now = now } }
+
 // NewResolver builds a resolver over a registry and a signature verifier.
-func NewResolver(reg *Registry, v artifact.Verifier) *Resolver {
-	return &Resolver{reg: reg, v: v}
+func NewResolver(reg *Registry, v artifact.Verifier, opts ...ResolverOption) *Resolver {
+	r := &Resolver{reg: reg, v: v, now: time.Now}
+	for _, o := range opts {
+		o(r)
+	}
+	if r.now == nil {
+		r.now = time.Now
+	}
+	return r
 }
 
 // Result reports which channel satisfied a Resolve and the recovered artifact.
@@ -52,12 +82,33 @@ func (r *Resolver) Resolve(ctx context.Context, key string) (Result, error) {
 			lastErr = fmt.Errorf("%s: verify: %w", ch.Kind(), err)
 			continue
 		}
+		if err := r.checkFresh(art); err != nil {
+			lastErr = fmt.Errorf("%s: %w", ch.Kind(), err) // anti-rollback: try a fresher channel
+			continue
+		}
 		return Result{Channel: ch.Kind(), Artifact: art}, nil
 	}
 	if lastErr != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrAllChannelsFailed, lastErr)
 	}
 	return Result{}, ErrAllChannelsFailed
+}
+
+// checkFresh enforces anti-rollback when a max age is configured. A valid
+// signature already proves the artifact is authentic; this rejects a genuinely
+// signed but stale (or implausibly future) copy that a captor could replay.
+func (r *Resolver) checkFresh(a artifact.Artifact) error {
+	if r.maxAge <= 0 {
+		return nil // freshness enforcement disabled
+	}
+	age := r.now().Sub(a.IssuedAt)
+	if age > r.maxAge {
+		return fmt.Errorf("stale artifact: issued %s ago, exceeds max age %s", age.Round(time.Second), r.maxAge)
+	}
+	if age < -futureSkew {
+		return fmt.Errorf("artifact dated %s in the future (beyond %s skew)", (-age).Round(time.Second), futureSkew)
+	}
+	return nil
 }
 
 // Publisher writes one blob to EVERY channel (best-effort broadcast). Used to push

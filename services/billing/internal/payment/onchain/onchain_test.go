@@ -3,6 +3,7 @@ package onchain
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/caspervpn/billing/internal/model"
 )
@@ -70,6 +71,28 @@ func TestPoll_SkipsWhenUnderConfirmed(t *testing.T) {
 	events, _ := g.Poll(context.Background(), open)
 	if len(events) != 0 {
 		t.Fatalf("expected no events under min confirmations, got %d", len(events))
+	}
+}
+
+// C6: a fully-paid, well-confirmed invoice whose window has elapsed must not
+// settle — a late on-chain arrival cannot activate an expired order.
+func TestPoll_SkipsExpiredInvoice(t *testing.T) {
+	chain := &fakeChain{
+		received: map[string]string{"bc1qaddr": "0.0001"},
+		confs:    map[string]int{"bc1qaddr": 5},
+	}
+	g := New([]string{"BTC"}, 2, chain, &fakePool{addr: "bc1qaddr"})
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+
+	open := []model.Invoice{{
+		ID: "inv-1", Provider: "onchain", Currency: "BTC", Amount: "0.0001", PayAddress: "bc1qaddr",
+		ExpiresAt: now.Add(-time.Hour), // already expired
+	}}
+
+	events, _ := g.Poll(context.Background(), open)
+	if len(events) != 0 {
+		t.Fatalf("expected no events for expired invoice, got %d", len(events))
 	}
 }
 

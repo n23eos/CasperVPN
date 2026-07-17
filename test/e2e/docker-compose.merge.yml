@@ -1,0 +1,8 @@
+# Override for the reality_sync merge regression (test/e2e/reality-sync-merge.sh).
+# Only postgres + control-plane are used; own host ports so it never collides with
+# the dev / first-user / realnode stacks.
+services:
+  postgres:
+    ports: !override ["35432:5432"]
+  control-plane:
+    ports: !override ["38081:8081"]

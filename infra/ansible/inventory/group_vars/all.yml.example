@@ -4,8 +4,8 @@
 # the mimicry target is chosen per deploy from docs/mimicry-domains.md and the
 # actual secrets come from vault/env, not from committed files.
 
-# sing-box core
-singbox_version: "1.11.4"
+# sing-box core — keep in lockstep with roles/singbox/defaults/main.yml (canonical pin)
+singbox_version: "1.11.11"
 
 # telemetry + control-plane endpoints (your infra; not mimicry)
 telemetry_ingest_url: "http://telemetry:8085"
