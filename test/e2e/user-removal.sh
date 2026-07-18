@@ -23,7 +23,9 @@ source infra/scripts/lib.sh
 source infra/scripts/probe.sh
 
 NET=capvpn-rm-net
-IMG=ghcr.io/sagernet/sing-box:v1.11.4
+# shellcheck source=../../infra/versions.sh
+source infra/versions.sh
+IMG="ghcr.io/sagernet/sing-box:v${SINGBOX_VERSION}"
 ECHO=rm-echo ENTRY=rm-entry EXIT=rm-exit CLIENT=rm-client
 SOCKS_PORT=21098
 WORK="$(mktemp -d "$(pwd)/test/e2e/.rm.XXXXXX")"
