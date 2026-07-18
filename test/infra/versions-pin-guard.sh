@@ -15,10 +15,12 @@ if [ "$role" != "$SINGBOX_VERSION" ]; then
   echo "FAIL: ansible role default sing-box ${role} != versions.env ${SINGBOX_VERSION} (drift)" >&2; fail=1
 fi
 
-grep -q 'source infra/versions.sh' test/e2e/real-node.sh \
-  || { echo "FAIL: real-node.sh does not source infra/versions.sh" >&2; fail=1; }
-if grep -qE 'sing-box:v[0-9]+\.[0-9]+\.[0-9]+' test/e2e/real-node.sh; then
-  echo "FAIL: real-node.sh still hardcodes a sing-box version literal" >&2; fail=1
+# No script anywhere may hardcode a sing-box image version — the pin is the ONLY
+# source. Scan every e2e + infra script.
+hits="$(grep -rnE 'sing-box:v[0-9]+\.[0-9]+\.[0-9]+' test/e2e/ infra/ 2>/dev/null || true)"
+if [ -n "$hits" ]; then
+  echo "FAIL: hardcoded sing-box version literal(s) — source infra/versions.sh instead:" >&2
+  printf '%s\n' "$hits" >&2; fail=1
 fi
 
 [ "$fail" = 0 ] && echo "versions-pin-guard: ok (sing-box ${SINGBOX_VERSION}, single source)"
