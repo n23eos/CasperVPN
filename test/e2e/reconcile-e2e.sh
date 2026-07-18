@@ -22,7 +22,9 @@ CORE=(postgres control-plane subscription billing)
 CP=http://localhost:58081; SUB=http://localhost:58082; BILL=http://localhost:58084
 ADMIN=dev-admin-token; MOCK_SECRET=dev-mock-webhook-secret
 export CONTROL_PLANE_URL="$CP" CONTROL_PLANE_TOKEN="$ADMIN"
-IMG=ghcr.io/sagernet/sing-box:v1.11.4
+# shellcheck source=../../infra/versions.sh
+source infra/versions.sh
+IMG="ghcr.io/sagernet/sing-box:v${SINGBOX_VERSION}"
 NET="${PROJECT}_default"
 ECHO=re-echo EXIT=re-exit ENTRY=re-entry CLIENT=re-client VERIFY=re-verify
 SOCKS_PORT=21097
