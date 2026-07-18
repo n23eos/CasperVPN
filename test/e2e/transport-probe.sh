@@ -22,7 +22,9 @@ source infra/scripts/lib.sh
 source infra/scripts/probe.sh
 
 NET=capvpn-probe-net
-IMG=ghcr.io/sagernet/sing-box:v1.11.4
+# shellcheck source=../../infra/versions.sh
+source infra/versions.sh
+IMG="ghcr.io/sagernet/sing-box:v${SINGBOX_VERSION}"
 ECHO=pb-echo ENTRY=pb-entry EXIT=pb-exit CLIENT=pb-client
 SOCKS_PORT=21099
 export PROBE_IMG="$IMG" PROBE_NET="$NET" PROBE_CLIENT="$CLIENT"
