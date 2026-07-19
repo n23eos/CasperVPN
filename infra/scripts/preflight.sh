@@ -64,7 +64,10 @@ pf_hy2_tls() {
   # Extract each DNS SAN and match HY2_SNI EXACTLY (whole line, fixed string) — a
   # substring/boundary match would wrongly accept e.g. SAN hy2.example.com for SNI
   # hy2.example, and an unescaped SNI in a regex would let '.' match any char.
-  openssl x509 -in "$HY2_TLS_CERT" -noout -ext subjectAltName 2>/dev/null \
+  # -text (not -ext) for LibreSSL compatibility: macOS ships LibreSSL, whose
+  # x509 has no -ext flag. DNS: entries only ever appear inside the SAN section,
+  # so extracting them from full -text output is equivalent.
+  openssl x509 -in "$HY2_TLS_CERT" -noout -text 2>/dev/null \
     | tr ',' '\n' | sed -n 's/.*DNS:\([^ ,]*\).*/\1/p' \
     | grep -qxiF "$HY2_SNI" \
     || die "preflight: HY2_TLS_CERT SAN does not cover HY2_SNI ${HY2_SNI}"
