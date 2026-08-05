@@ -34,3 +34,10 @@ test/e2e/.realnode.*/
 
 # Live-run artifacts (manifests, 0600 token files) — NEVER commit
 .runs/
+
+# OpenTofu/Terraform local state & provider cache — NEVER commit
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
