@@ -1,7 +1,7 @@
 /* Hallmark · pre-emit critique: P4 H5 E4 S5 R4 V5
  * Hallmark · genre: atmospheric · macrostructure: Marquee Hero · theme: Midnight (warm-dark hue 40)
- * enrichment: H9 Tier-B hand-built SVG ghost · nav: N5 floating pill · footer: Ft5 statement
- * H9 knobs: build=Tier-B hand-SVG, animation=none, scale=dominant
+ * enrichment: original 3D ghost mascot · nav: N5 floating pill · footer: Ft5 statement
+ * H9 knobs: build=transparent raster mascot, animation=entrance-only, scale=dominant
  * inferred: audience = users behind state DPI + self-hosters · use = read → open GitHub · tone = technical-atmospheric
  */
 
@@ -132,7 +132,12 @@ button:focus-visible {
   padding: calc(var(--space-4xl)) var(--page-gutter) var(--space-3xl);
   gap: var(--space-xl);
 }
-.hero__ghost { width: clamp(120px, 18vw, 190px); height: auto; }
+.hero__mascot {
+  width: clamp(12rem, 24vw, 18.5rem);
+  height: auto;
+  filter: drop-shadow(0 1.5rem 2.5rem oklch(78% 0.140 75 / 0.13));
+  user-select: none;
+}
 .hero__display {
   font-size: var(--text-display);
   max-width: 14ch;
