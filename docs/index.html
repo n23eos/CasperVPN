@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CasperVPN — the VPN backend that survives the censor</title>
+<meta name="description" content="Open-source backend for a subscription VPN that survives state-level DPI filtering. Multiple transports per node, automatic node replacement, a feedback loop that turns blocks into new configs.">
+<meta property="og:title" content="CasperVPN">
+<meta property="og:description" content="Blocked tonight. Back by morning. A DPI-censorship-resistant VPN platform — open source, sing-box core.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 140'%3E%3Cpath d='M60 12C33 12 21 33 21 62v56q6-9 12 0t12 0q6-9 12 0t12 0q6-9 12 0t12 0V62c0-29-12-50-33-50Z' fill='%23ece4d4'/%3E%3Cellipse cx='47' cy='58' rx='4.5' ry='7' fill='%23231d15'/%3E%3Cellipse cx='74' cy='55' rx='4.5' ry='7' fill='%23231d15'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tomorrow:wght@500;600&family=Geist:wght@350;400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="m-yes" viewBox="0 0 16 16">
+      <path d="M3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-part" viewBox="0 0 16 16">
+      <path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-no" viewBox="0 0 16 16">
+      <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<nav class="nav-pill" aria-label="Primary">
+  <a class="nav-pill__brand" href="#top">
+    <svg width="18" height="21" viewBox="0 0 120 140" aria-hidden="true">
+      <path d="M60 12C33 12 21 33 21 62v56q6-9 12 0t12 0q6-9 12 0t12 0q6-9 12 0t12 0V62c0-29-12-50-33-50Z" fill="var(--color-ghost)"/>
+      <ellipse cx="47" cy="58" rx="4.5" ry="7" fill="var(--color-paper)"/>
+      <ellipse cx="74" cy="55" rx="4.5" ry="7" fill="var(--color-paper)"/>
+    </svg>
+    CasperVPN
+  </a>
+  <ul class="nav-pill__links">
+    <li><a href="#survival">Survival</a></li>
+    <li><a href="#compare">Compare</a></li>
+  </ul>
+  <a class="nav-pill__cta" href="https://github.com/n23eos/CasperVPN">GitHub ↗</a>
+</nav>
+
+<main id="top">
+
+  <!-- Marquee hero · H9 hand-built ghost -->
+  <header class="hero">
+    <svg class="hero__ghost reveal" style="--i:0" viewBox="0 0 120 140" role="img" aria-label="A friendly ghost — the CasperVPN mascot">
+      <path d="M60 12C33 12 21 33 21 62v56q6-9 12 0t12 0q6-9 12 0t12 0q6-9 12 0t12 0V62c0-29-12-50-33-50Z"
+            fill="var(--color-ghost)"/>
+      <path d="M60 12c21 0 33 21 33 50v56q-3 4.5-6 4.5V62c0-27-11-46-30-49.5 1-.3 2-.5 3-.5Z"
+            fill="var(--color-ghost-shade)" opacity="0.55"/>
+      <ellipse cx="47" cy="58" rx="4.5" ry="7" fill="var(--color-paper)"/>
+      <ellipse cx="74" cy="55" rx="4.5" ry="7" fill="var(--color-paper)"/>
+      <path d="M54 76q7 6 14 0" fill="none" stroke="var(--color-paper)" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+    <h1 class="hero__display reveal" style="--i:1">Blocked tonight. <em>Back by morning.</em></h1>
+  </header>
+
+  <hr class="rule-thick">
+
+  <!-- What it is -->
+  <section class="section" aria-label="What CasperVPN is">
+    <p class="lede">CasperVPN is an open-source backend for running a subscription VPN that
+    survives state-level DPI filtering — the TSPU/RKN class. Traffic mimics allowed
+    HTTPS and HTTP-3. Nodes rotate when blocked. A feedback loop turns “what got
+    blocked where” into new configs and domains.</p>
+    <p class="lede muted">sing-box on every node. Clients are external — Happ or any
+    sing-box-compatible app — connected through a per-user subscription URL. No custom
+    apps for a store to purge.</p>
+  </section>
+
+  <!-- How it survives -->
+  <section class="section section--tight" id="survival">
+    <h2 class="section__title">Survival is diversity plus feedback, not stronger encryption</h2>
+    <div class="steps">
+      <div class="step">
+        <span class="step__num" aria-hidden="true">1.0</span>
+        <div>
+          <h3>Many transports, no monoculture</h3>
+          <p>Every node carries VLESS-REALITY, Hysteria2, Shadowsocks-2022 and AmneziaWG
+          at once. The client switches on its own — the censor has to kill four
+          protocols to kill one node.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="step__num" aria-hidden="true">2.0</span>
+        <div>
+          <h3>Field signals</h3>
+          <p>Clients report anonymous field signals — no PII by construction. The system
+          learns what got blocked, where, and on which carrier, while users stay
+          unidentifiable.</p>
+        </div>
+      </div>
+      <div class="step">
+        <span class="step__num" aria-hidden="true">3.0</span>
+        <div>
+          <h3>Automatic replacement</h3>
+          <p>The orchestrator detects the block, provisions a fresh node with Terraform
+          and Ansible, rotates IPs and mimicry domains. Entry and exit are separate
+          machines — attacking an entry never exposes the exit.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Comparison -->
+  <section class="section compare" id="compare">
+    <h2 class="section__title">Against the alternatives</h2>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Feature comparison table">
+      <table>
+        <caption>Feature comparison of CasperVPN against panel-based sellers, commercial VPNs and DIY setups</caption>
+        <thead>
+          <tr>
+            <th scope="col"></th>
+            <th scope="col" class="col-casper">CasperVPN</th>
+            <th scope="col">Marzban / 3x-ui</th>
+            <th scope="col">NordVPN / Proton</th>
+            <th scope="col">DIY WireGuard</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Works under TSPU/DPI (VLESS-REALITY, traffic mimicry)</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Multiple transports per node, client switches automatically</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Partial — manual setup"><use href="#m-part"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Block detection with automatic node replacement</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Fast IP rotation, entry ≠ exit</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Feedback loop: field signals become new configs automatically</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Subscription delivery over 5 channels — configs arrive even when the site is blocked</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Crypto payments, no foreign cards required</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Partial — seller-dependent"><use href="#m-part"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Partial"><use href="#m-part"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Not applicable"><use href="#m-part"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Battle-tested clients (Happ / sing-box), not purged from app stores</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Partial"><use href="#m-part"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Zero domains or IPs in code — nothing to block “by signature”</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Partial"><use href="#m-part"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Telemetry without PII, anonymous by construction</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Partial"><use href="#m-part"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-partial)" role="img" aria-label="Partial"><use href="#m-part"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+          </tr>
+          <tr>
+            <th scope="row">Open source (AGPLv3)</th>
+            <td class="col-casper"><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-no)" role="img" aria-label="No"><use href="#m-no"/></svg></td>
+            <td><svg class="mark" width="16" height="16" style="color:var(--color-yes)" role="img" aria-label="Yes"><use href="#m-yes"/></svg></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="compare__legend" aria-hidden="true">
+      <span><svg class="mark" width="14" height="14" style="color:var(--color-yes)"><use href="#m-yes"/></svg> yes</span>
+      <span><svg class="mark" width="14" height="14" style="color:var(--color-partial)"><use href="#m-part"/></svg> partial / depends</span>
+      <span><svg class="mark" width="14" height="14" style="color:var(--color-no)"><use href="#m-no"/></svg> no</span>
+    </div>
+    <p class="compare__note">Every row reflects the shipped architecture — see
+    <a href="https://github.com/n23eos/CasperVPN/blob/main/architecture.md">architecture.md</a>.
+    Per-user credential isolation is currently enforced for VLESS-REALITY only; we don't
+    claim it for the other transports yet.</p>
+  </section>
+
+  <!-- CTA -->
+  <section class="section cta">
+    <h2 class="section__title">Run your own</h2>
+    <p class="lede muted">One Go monorepo, six services, Terraform + Ansible fleet.
+    AGPLv3 for open deployments; a commercial license covers closed-source SaaS.</p>
+    <div class="cta__actions">
+      <a class="btn btn--fill" href="https://github.com/n23eos/CasperVPN">Read the code ↗</a>
+      <a class="btn btn--outline" href="https://github.com/n23eos/CasperVPN/blob/main/COMMERCIAL.md">Dual licensing</a>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot-stmt">
+  <p class="foot-stmt__line">Attack the entry. You’ll never find the exit.</p>
+  <div class="foot-stmt__meta">
+    <span class="foot-stmt__brand">CasperVPN</span>
+    <span><a href="https://github.com/n23eos/CasperVPN">GitHub</a> · AGPLv3 + commercial · © 2026</span>
+  </div>
+</footer>
+
+</body>
+</html>

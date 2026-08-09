@@ -32,8 +32,8 @@
 # network. The mimicry host is NOT baked into the repo (docs/mimicry-domains.md
 # intentionally lists none) — you must supply it:
 #   REALITY_DEST=host:443 REALITY_SERVER_NAME=host test/e2e/real-node.sh
-# Note: some hosts behind a CDN are REALITY-incompatible (e.g. www.microsoft.com);
-# dl.google.com and www.apple.com are known-good targets.
+# Note: some hosts behind a CDN are REALITY-incompatible; pick any TLS 1.3 host
+# you control or a widely documented public example.
 #
 # Semantics: env unset -> SKIP (exit 0). env set but the dest is unreachable or
 # not TLS 1.3 -> FAIL (exit 1) — a broken dest must not masquerade as green.

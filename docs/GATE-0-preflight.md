@@ -56,5 +56,5 @@ make gate0
 
 **GATE-PAID is a separate, explicit approval.** Do NOT run `make node-up` until it
 is granted. The Cloudflare Tunnel publishes only the subscription origin; the CP
-admin API is never exposed. See [`live-run-runbook.md`](./live-run-runbook.md) for
-the complete operator sequence, stop gates, evidence template, and teardown.
+admin API is never exposed. The complete operator sequence, stop gates, evidence
+template, and teardown live in the operator-private runbook (not in this repo).

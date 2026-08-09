@@ -41,3 +41,11 @@ test/e2e/.realnode.*/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+
+# operator-private docs (never commit)
+.plan.md
+.plan.done.md
+claude-code-prompts.md
+docs/live-run-runbook.md
+services/*/.plan.md
+.hallmark/
