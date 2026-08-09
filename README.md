@@ -1,89 +1,108 @@
 # CasperVPN
 
-Централизованный VPN-сервис с подпиской, устойчивый к DPI-блокировкам класса
-ТСПУ/РКН. Живучесть — за счёт **разнообразия транспортов и петли обратной связи**,
-а не «шифрования посильнее»: выживает трафик, мимикрирующий под разрешённый HTTPS/
-HTTP-3, и система, которая умеет переключаться, а не один протокол.
+**A subscription-based, DPI-censorship-resistant VPN platform.** Backend for
+running a commercial VPN service that survives state-level traffic filtering
+(Russia's TSPU/RKN-class DPI): traffic mimics allowed HTTPS/HTTP-3, nodes
+rotate automatically when blocked, and a feedback loop turns "what got blocked
+where" into new configs and domains.
 
-Ядро на всех нодах — **sing-box** ([ADR-002](docs/decisions/ADR-002-singbox-core.md)).
-Клиенты — **внешние** (Happ / sing-box-совместимые) через per-user subscription URL;
-свои приложения не пишем ([ADR-003](docs/decisions/ADR-003-external-clients-happ.md)).
+Survivability comes from **transport diversity and feedback**, not "stronger
+encryption": multiple protocols per node, fast rotation, and clients that
+switch — not a single protocol monoculture.
 
-Источник истины по архитектуре — [`architecture.md`](architecture.md); контракты —
-[`docs/contracts.md`](docs/contracts.md); решения — [`docs/decisions/`](docs/decisions/).
+- Core on every node — **sing-box** ([ADR-002](docs/decisions/ADR-002-singbox-core.md)).
+- Clients are **external** (Happ / any sing-box-compatible app) via per-user
+  subscription URL; we don't ship our own apps ([ADR-003](docs/decisions/ADR-003-external-clients-happ.md)).
+- Architecture source of truth — [`architecture.md`](architecture.md); contracts —
+  [`docs/contracts.md`](docs/contracts.md); decisions — [`docs/decisions/`](docs/decisions/).
 
-## Требование [АНТИ-БЛОК] (к каждому сервису)
+Русская версия — [README.ru.md](README.ru.md).
 
-1. **Много транспортов одновременно, не монокультура** — нода несёт несколько
-   `Transport`; клиент переключается (VLESS-REALITY / Hysteria2 / AmneziaWG /
+## License
+
+**Dual-licensed:**
+
+- **AGPLv3** ([LICENSE](LICENSE)) — free, including commercial use, but if you
+  run a modified version as a network service you must open-source it under
+  the same terms.
+- **Commercial license** — for closed-source / SaaS use without AGPL
+  obligations. See [COMMERCIAL.md](COMMERCIAL.md) or email
+  <mns.nicholas@gmail.com>.
+
+## The [ANTI-BLOCK] requirement (applies to every service)
+
+1. **Many transports at once, no monoculture** — a node carries several
+   `Transport`s; the client switches (VLESS-REALITY / Hysteria2 / AmneziaWG /
    Shadowsocks-2022).
-2. **Быстрая ротация и entry ≠ exit** — атака на entry не палит exit.
-3. **Per-user изоляция** — персональные `reality_short_id`/`uuid`/ключ.
-   ⚠️ Сейчас энфорсится только для **VLESS-REALITY**; hysteria2/shadowsocks-2022/
-   amnezia-wg пока несут узловые (общие) креды (см. `architecture.md`,
-   `docs/wave-2/`).
-4. **Петля обратной связи** — анонимные `FieldSignal` + `HealthEvent` превращают
-   «где заблокировали» в новые конфиги/домены.
-5. **Ноль хардкода** — ни домена мимикрии, ни IP в коде; только из конфига/БД.
+2. **Fast rotation and entry ≠ exit** — attacking an entry node must not
+   expose the exit.
+3. **Per-user isolation** — personal `reality_short_id`/`uuid`/keys.
+   ⚠️ Currently enforced only for **VLESS-REALITY**; hysteria2 /
+   shadowsocks-2022 / amnezia-wg still carry node-level (shared) credentials
+   (see `architecture.md`, `docs/wave-2/`).
+4. **Feedback loop** — anonymous `FieldSignal` + `HealthEvent` turn "blocked
+   where" into new configs/domains.
+5. **Zero hardcode** — no mimicry domain and no IP in code; config/DB only.
 
-## Сервисы
+## Services
 
-Монорепо на Go workspace (`go.work`): `packages/contracts` + 6 сервисов. Каждый —
-отдельный модуль `github.com/caspervpn/<name>`.
+Go workspace monorepo (`go.work`): `packages/contracts` + 6 services. Each is
+a separate module `github.com/caspervpn/<name>`.
 
-| Сервис | Порт (dev) | Роль |
-|--------|-----------|------|
-| `control-plane` | 8081 | реестр нод, per-user REALITY id/секреты, сборка конфигов, guarded activation |
-| `subscription` | 8082 | per-user subscription URL, рендер base64/sing-box/clash, ротация токена |
-| `delivery` | 8083 | мультиканальная доставка (HTTPS/DoH/Telegram/GitHub raw/DNS TXT) |
-| `billing` | 8084 | подписки, квоты, крипта-биллинг ([ADR-004](docs/decisions/ADR-004-crypto-billing.md)) |
-| `telemetry` | 8085 | приём анонимных FieldSignal + HealthEvent |
-| `orchestrator` | 8086 | provision/ротация нод (Terraform+Ansible), детект блокировок, автозамена |
+| Service | Port (dev) | Role |
+|---------|-----------|------|
+| `control-plane` | 8081 | node registry, per-user REALITY ids/secrets, config assembly, guarded activation |
+| `subscription` | 8082 | per-user subscription URL, base64/sing-box/clash rendering, token rotation |
+| `delivery` | 8083 | multi-channel delivery (HTTPS/DoH/Telegram/GitHub raw/DNS TXT) |
+| `billing` | 8084 | subscriptions, quotas, crypto billing ([ADR-004](docs/decisions/ADR-004-crypto-billing.md)) |
+| `telemetry` | 8085 | ingest of anonymous FieldSignal + HealthEvent |
+| `orchestrator` | 8086 | node provision/rotation (Terraform+Ansible), block detection, auto-replacement |
 
-`packages/contracts/` — **заморожен**: Go-типы + JSON Schema + OpenAPI, единый
-источник для 6 команд. Менять только аддитивно и синхронно (см. `docs/contracts.md`).
+`packages/contracts/` is **frozen**: Go types + JSON Schema + OpenAPI — the
+single source for 6 teams. Change only additively and in sync
+(see `docs/contracts.md`).
 
-## Сборка и тесты
+## Build and test
 
 ```bash
-make build    # собрать все модули
-make test     # тесты по всем модулям (-race)
+make build    # build all modules
+make test     # tests across all modules (-race)
 make vet      # go vet
 make fmt      # gofmt -w
-make up       # docker compose: postgres + сервисы (dev)
-make down     # остановить стек
+make up       # docker compose: postgres + services (dev)
+make down     # stop the stack
 ```
 
-Go floor **1.20** (потолок из решения — 1.23). Docker-образы — `golang:1.22`.
-Опциональные e2e (docker; часть требует операторский `REALITY_DEST`):
+Go floor **1.20** (decision ceiling — 1.23). Docker images — `golang:1.22`.
+Optional e2e (docker; some need an operator `REALITY_DEST`):
 `make e2e-first-user`, `e2e-real-node`, `e2e-transport-probe`, `e2e-reconcile`.
-Инфра-гварды без облака: `make infra-guards`.
+Infra guards without cloud: `make infra-guards`.
 
-## Репозиторий
+## Repository layout
 
 ```
-packages/contracts/   заморожённые типы/схемы/OpenAPI (единый контракт)
-services/<name>/       6 сервисов (control-plane, subscription, delivery, billing, telemetry, orchestrator)
-infra/                 Terraform + Ansible флота; scripts/ (node lifecycle, preflight, gate0)
+packages/contracts/   frozen types/schemas/OpenAPI (the single contract)
+services/<name>/       6 services (control-plane, subscription, delivery, billing, telemetry, orchestrator)
+infra/                 fleet Terraform + Ansible; scripts/ (node lifecycle, preflight, gate0)
 test/e2e/              docker e2e + pure-shell guards
-test/infra/            pure-shell guards для live-lifecycle (без облака)
-docs/                  контракты, ADR, операторские runbook'и
-web/admin/             панель оператора (плейсхолдер)
+test/infra/            pure-shell guards for live lifecycle (no cloud)
+docs/                  contracts, ADRs, operator runbooks
+web/admin/             operator panel (placeholder)
 ```
 
-## Статус
+## Status
 
-- **Billing reliability** — Postgres-интеграция, денежные гонки и наблюдаемость
-  восстановления закрыты (тесты под `-race`). Baseline заморожен.
-- **VPS-apply** — код готов и в main (preflight, изолированный workspace, cost-safe
-  teardown, live reconcile wrapper, GATE-0 preflight — `make gate0`,
-  [docs/GATE-0-preflight.md](docs/GATE-0-preflight.md)). Живого apply на VPS ещё не
-  было; orchestrator fleet-loop OFF (`DRY_RUN=true`, `PROBE_ENABLED=false`) до
-  закрытия #3/#7/#8. См. [docs/FIRST-WORKING-USER.md](docs/FIRST-WORKING-USER.md).
+- **Billing reliability** — Postgres integration, money races and recovery
+  observability closed (tests under `-race`). Baseline frozen.
+- **VPS apply** — code ready and in main (preflight, isolated workspace,
+  cost-safe teardown, live reconcile wrapper, GATE-0 preflight — `make gate0`,
+  [docs/GATE-0-preflight.md](docs/GATE-0-preflight.md)). No live apply on a VPS
+  yet; orchestrator fleet-loop OFF (`DRY_RUN=true`, `PROBE_ENABLED=false`)
+  until #3/#7/#8 are closed. See [docs/FIRST-WORKING-USER.md](docs/FIRST-WORKING-USER.md).
 
-## Безопасность
+## Security
 
-Секреты — только env/secret manager, никогда в коде и деплой-скриптах. Dev-креды в
-`docker-compose.dev.yml` — только для локалки. Формат коммитов:
-`<type>: <описание>` (feat/fix/refactor/docs/test/chore/perf/ci).
-Правила для агентов и людей — [`CLAUDE.md`](CLAUDE.md).
+Secrets — env/secret manager only, never in code or deploy scripts. Dev creds
+in `docker-compose.dev.yml` are local-only. Commit format:
+`<type>: <description>` (feat/fix/refactor/docs/test/chore/perf/ci).
+Rules for agents and humans — [`CLAUDE.md`](CLAUDE.md).

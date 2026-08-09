@@ -75,11 +75,11 @@ tidy:
 
 ## up: start local dev stack (postgres + services)
 up:
-	docker compose -f docker-compose.dev.yml up --build -d
+	docker-compose -f docker-compose.dev.yml up --build -d
 
 ## down: stop local dev stack
 down:
-	docker compose -f docker-compose.dev.yml down
+	docker-compose -f docker-compose.dev.yml down
 
 ## e2e-first-user: full happy path against a clean isolated stack (see test/e2e/first-user.sh)
 e2e-first-user:

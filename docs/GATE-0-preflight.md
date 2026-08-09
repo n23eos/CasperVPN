@@ -37,8 +37,8 @@ export RUN_MAX_MINUTES=120                  # hard teardown deadline window
 
 # Docker/REALITY e2e (opt-in; need docker + your REALITY_DEST):
 make e2e-first-user
-REALITY_DEST=$REALITY_DEST REALITY_SERVER_NAME=${REALITY_DEST%%:*} make e2e-real-node
 REALITY_DEST=$REALITY_DEST REALITY_SERVER_NAME=${REALITY_DEST%%:*} make e2e-transport-probe
+REALITY_DEST=$REALITY_DEST REALITY_SERVER_NAME=${REALITY_DEST%%:*} make e2e-reconcile
 export E2E_CONFIRMED=1
 
 # After enabling provider budget alerts in both dashboards:
@@ -56,4 +56,5 @@ make gate0
 
 **GATE-PAID is a separate, explicit approval.** Do NOT run `make node-up` until it
 is granted. The Cloudflare Tunnel publishes only the subscription origin; the CP
-admin API is never exposed. See `.plan.md` Part 2 for the full live-run runbook.
+admin API is never exposed. See [`live-run-runbook.md`](./live-run-runbook.md) for
+the complete operator sequence, stop gates, evidence template, and teardown.

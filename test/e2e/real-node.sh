@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # real-node.sh — the honest proof of a REAL REALITY tunnel, end to end, locally.
 #
-#   CP+billing+subscription -> register a node with its REALITY public key ->
+#   CP+billing+subscription -> register an entry (vless+hy2) + its paired exit ->
 #   create+pay a user -> sync that user's UUID/short-id into the node allow-list
-#   -> render+start the node (real x25519 keypair, generated on the node) ->
-#   fetch the user's /sub -> start a client sing-box -> curl through the REALITY
-#   tunnel and get a real HTTP response. Then re-key (rotation) and prove the
-#   fresh public key tunnels while the old one is gone.
+#   -> render+start the entry (real x25519 keypair, generated on the node) routed
+#   through a real shadowsocks-2022 exit -> prove the entry->exit REALITY data
+#   plane carries HTTP (this earns the activation evidence) -> drive the GUARDED
+#   activation (exit-first, then entry, revision-checked) -> fetch the user's /sub
+#   -> start a client sing-box -> curl through the REALITY tunnel and get a real
+#   HTTP response. Then re-key (rotation) and prove the fresh public key tunnels
+#   while the old one is gone.
+#
+# Registration goes through the current control-plane contract: a node is created
+# `provisioning` and only reaches `active` via POST /v1/nodes/{id}/activate (the
+# guarded flow — >=2 distinct client transports, a paired active exit, allow-list
+# revision match). This test therefore also exercises that promotion path.
 #
 # The REALITY private key is generated for the node; this test proves the client
 # never sees it — it is absent from the client config, /sub, the control-plane API
@@ -15,10 +23,17 @@
 # of the trusted secret boundary. The guarantee is that it never reaches a client
 # or an outward-facing surface.) Only the public half flows to CP and clients.
 #
+# Scope: this test proves the vless-REALITY data plane (handshake + tunnel + key
+# rotation + private-key hygiene). The entry advertises hysteria2 as its second
+# transport so it can clear the >=2-distinct activation gate; the hysteria2 data
+# plane itself is proven separately by e2e-transport-probe.
+#
 # OPT-IN: REALITY needs a live TLS 1.3 mimicry target, which is real external
 # network. The mimicry host is NOT baked into the repo (docs/mimicry-domains.md
 # intentionally lists none) — you must supply it:
 #   REALITY_DEST=host:443 REALITY_SERVER_NAME=host test/e2e/real-node.sh
+# Note: some hosts behind a CDN are REALITY-incompatible (e.g. www.microsoft.com);
+# dl.google.com and www.apple.com are known-good targets.
 #
 # Semantics: env unset -> SKIP (exit 0). env set but the dest is unreachable or
 # not TLS 1.3 -> FAIL (exit 1) — a broken dest must not masquerade as green.
@@ -43,6 +58,7 @@ MOCK_SECRET=dev-mock-webhook-secret
 source infra/versions.sh
 SINGBOX_IMG="ghcr.io/sagernet/sing-box:v${SINGBOX_VERSION}"
 NODE_CT=rn-node
+EXIT_CT=rn-exit
 CLIENT_CT=rn-client
 CLIENT_SOCKS_PORT=21080
 CURL=(curl -sS --max-time 10)
@@ -67,7 +83,7 @@ skip() { echo "SKIP: $*" >&2; exit 0; }
 step() { echo "==> $*"; }
 
 teardown_stack() {
-  docker rm -f "$NODE_CT" "$CLIENT_CT" >/dev/null 2>&1 || true
+  docker rm -f "$NODE_CT" "$EXIT_CT" "$CLIENT_CT" >/dev/null 2>&1 || true
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 }
 cleanup() { teardown_stack; rm -rf "$WORK"; }
@@ -114,18 +130,36 @@ NODE_PUB="$(awk '/PublicKey/{print $2}' <<<"$KP")"
 [ -n "$NODE_PRIV" ] && [ -n "$NODE_PUB" ] || fail "keypair parse failed"
 umask 077; printf 'private_key=%s\npublic_key=%s\n' "$NODE_PRIV" "$NODE_PUB" > "$WORK/reality.key"
 
-# --- 3. Register the node with its REAL public key (shared upsert helper) ----
-step "register node in control-plane via reality_sync.sh (real pubkey)"
+# entry->exit hop + hysteria2 credentials (the hop PSK is a real 32-byte
+# shadowsocks-2022 key; hy2 is advertised so the entry clears the >=2 gate).
+PSK="$(openssl rand -base64 32)"
+HY2_PW="$(openssl rand -hex 16)"
+ENTRY_ID=rn-node-1
+EXIT_ID=rn-exit-1
+
+# --- 3. Register the entry (vless+hy2) + its paired exit (both provisioning) -
+step "register entry (vless+hy2) + paired exit in control-plane (provisioning)"
 # shellcheck source=/dev/null
 source infra/scripts/lib.sh; source infra/scripts/control_plane.sh; source infra/scripts/reality_sync.sh
 export CONTROL_PLANE_URL="$CP" CONTROL_PLANE_TOKEN="$ADMIN_TOKEN"
-NODE_ID=rn-node-1 NODE_ROLE=entry NODE_STATUS=active PROVIDER=local CLOUD=local REGION=RU-MOW \
-  ENTRY_IP="$NODE_CT" EPHEMERAL_ENTRY_IP=false \
-  REALITY_PUBLIC_KEY="$NODE_PUB" REALITY_SERVER_NAMES="$REALITY_SERVER_NAME" REALITY_DEST="$REALITY_DEST" \
-  REALITY_TAG=vless-reality-in REALITY_PORT=443 \
-  reality_sync_node
+# reality_sync_node creates the entry provisioning with BOTH client transports.
+register_entry() {  # re-runs as an idempotent upsert (merge on 409)
+  NODE_ID="$ENTRY_ID" NODE_ROLE=entry NODE_STATUS=provisioning PROVIDER=local CLOUD=local REGION=RU-MOW \
+    ENTRY_IP="$NODE_CT" EPHEMERAL_ENTRY_IP=false \
+    REALITY_PUBLIC_KEY="$NODE_PUB" REALITY_SHORT_IDS="${1:-}" \
+    REALITY_SERVER_NAMES="$REALITY_SERVER_NAME" REALITY_DEST="$REALITY_DEST" \
+    REALITY_TAG=vless-reality-in REALITY_PORT=443 \
+    HY2_PASSWORD="$HY2_PW" HY2_SNI="$REALITY_SERVER_NAME" HY2_INSECURE=true \
+    reality_sync_node
+}
+register_entry
+# Paired exit: carries no client transport; a real deploy's exit terminates the
+# entry's shadowsocks-2022 hop, which the exit container below actually does.
+"${CURL[@]}" -X POST "$CP/v1/nodes" -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"id\":\"$EXIT_ID\",\"role\":\"exit\",\"status\":\"provisioning\",\"entry_node_id\":\"$ENTRY_ID\",\"provider\":\"local\",\"cloud\":\"local\",\"region\":\"RU-MOW\",\"ephemeral_entry_ip\":false,\"transports\":[]}" \
+  -o /dev/null -w '' || fail "exit registration failed"
 
-# --- 4. Create + pay a user, read their personal UUID / short-id -------------
+# --- 4. Create + pay a user, read their personal UUID / short-id ------------
 step "create + pay a user"
 USER_JSON=$("${CURL[@]}" -X POST "$CP/v1/users" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' -d '{"telegram_id": 700700}')
@@ -142,41 +176,98 @@ SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$MOCK_SECRET" -hex | awk
   -H 'Content-Type: application/json' --data-binary "$BODY")" = 200 ] || fail "webhook not 200"
 echo "    user $USER_ID uuid=$USER_UUID short_id=$USER_SID"
 
-# --- 5a. Sync the user's allow-list onto the node ---------------------------
-# Two flows: user short-id into the CP node pool (keeps CP truthful) AND into the
-# running node's server config (what actually admits the handshake).
-step "sync user allow-list -> control-plane node pool + node server config"
-NODE_ID=rn-node-1 NODE_ROLE=entry NODE_STATUS=active PROVIDER=local CLOUD=local REGION=RU-MOW \
-  ENTRY_IP="$NODE_CT" EPHEMERAL_ENTRY_IP=false \
-  REALITY_PUBLIC_KEY="$NODE_PUB" REALITY_SHORT_IDS="$USER_SID" \
-  REALITY_SERVER_NAMES="$REALITY_SERVER_NAME" REALITY_DEST="$REALITY_DEST" \
-  REALITY_TAG=vless-reality-in REALITY_PORT=443 \
-  reality_sync_node
+# --- 5. Sync the user's allow-list onto the CP node pool --------------------
+step "sync user allow-list -> control-plane node pool"
+register_entry "$USER_SID"
 
-render_node_config() {  # $1=private_key  -> writes $WORK/node.json
+# --- 6. Start the real EXIT + ENTRY containers (entry routes through exit) ---
+render_exit_config() {  # shadowsocks-2022 in -> direct out
+  jq -n --arg psk "$PSK" '{
+    log:{level:"warn"},
+    inbounds:[{type:"shadowsocks",tag:"ss-in",listen:"::",listen_port:8388,
+      method:"2022-blake3-aes-256-gcm",password:$psk}],
+    outbounds:[{type:"direct",tag:"direct"}]
+  }' > "$WORK/exit.json"
+}
+start_exit() {
+  docker rm -f "$EXIT_CT" >/dev/null 2>&1 || true
+  docker run -d --name "$EXIT_CT" --network "$NET" \
+    -v "$WORK/exit.json:/etc/sing-box/config.json:ro" "$SINGBOX_IMG" run -c /etc/sing-box/config.json >/dev/null
+  for i in $(seq 1 15); do docker exec "$EXIT_CT" true 2>/dev/null && break; sleep 1; done
+  EXIT_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$EXIT_CT")"
+  [ -n "$EXIT_IP" ] || fail "no exit IP"
+}
+
+render_node_config() {  # $1=private_key  -> writes $WORK/node.json (vless REALITY in -> ss2022 out to exit)
   jq -n --arg uuid "$USER_UUID" --arg sni "$REALITY_SERVER_NAME" --arg dh "$DEST_HOST" \
-    --argjson dp "$DEST_PORT" --arg priv "$1" --arg sid "$USER_SID" '{
+    --argjson dp "$DEST_PORT" --arg priv "$1" --arg sid "$USER_SID" \
+    --arg exip "$EXIT_IP" --arg psk "$PSK" '{
       log: {level:"warn"},
       inbounds: [{type:"vless", tag:"vless-in", listen:"::", listen_port:443,
         users:[{uuid:$uuid, flow:"xtls-rprx-vision"}],
         tls:{enabled:true, server_name:$sni,
           reality:{enabled:true, handshake:{server:$dh, server_port:$dp},
             private_key:$priv, short_id:[$sid]}}}],
-      outbounds: [{type:"direct", tag:"direct"}]
+      outbounds: [
+        {type:"shadowsocks", tag:"to-exit", server:$exip, server_port:8388,
+          method:"2022-blake3-aes-256-gcm", password:$psk},
+        {type:"direct", tag:"direct"}],
+      route: {final:"to-exit"}
     }' > "$WORK/node.json"
 }
 
-start_node() {  # (re)start the node container from $WORK/node.json
+start_node() {  # (re)start the entry container from $WORK/node.json
   docker rm -f "$NODE_CT" >/dev/null 2>&1 || true
   docker run -d --name "$NODE_CT" --network "$NET" \
     -v "$WORK/node.json:/etc/sing-box/config.json:ro" "$SINGBOX_IMG" run -c /etc/sing-box/config.json >/dev/null
   for i in $(seq 1 15); do docker exec "$NODE_CT" true 2>/dev/null && break; sleep 1; done
 }
 
+step "start real exit (shadowsocks-2022) + entry (vless REALITY -> exit)"
+render_exit_config; start_exit
 render_node_config "$NODE_PRIV"; start_node
-step "node up (uuid in allow-list, short-id in pool)"
 
-# --- 5. Fetch /sub, build a client, tunnel through REALITY -------------------
+# --- 7. Earn the activation evidence: client -> entry(REALITY) -> exit -> HTTP
+# A hand-built client (the node is not yet active, so /sub does not render it).
+# This IS the reconciler's authenticated entry->exit probe: success attests the
+# data plane, which we then hand to the guarded exit activation as evidence.
+reality_probe() {  # returns 0 on HTTP success through entry->exit
+  jq -n --arg uuid "$USER_UUID" --arg pub "$NODE_PUB" --arg sni "$REALITY_SERVER_NAME" \
+    --arg sid "$USER_SID" --arg srv "$NODE_CT" '{
+    log:{level:"warn"},
+    inbounds:[{type:"mixed", tag:"in", listen:"0.0.0.0", listen_port:1080}],
+    outbounds:[
+      {type:"vless", tag:"to-entry", server:$srv, server_port:443, uuid:$uuid, flow:"xtls-rprx-vision",
+        tls:{enabled:true, server_name:$sni, utls:{enabled:true, fingerprint:"chrome"},
+          reality:{enabled:true, public_key:$pub, short_id:$sid}}},
+      {type:"direct", tag:"direct"}],
+    route:{final:"to-entry"}}' > "$WORK/probe.json"
+  docker rm -f "$CLIENT_CT" >/dev/null 2>&1 || true
+  docker run -d --name "$CLIENT_CT" --network "$NET" -p "${CLIENT_SOCKS_PORT}:1080" \
+    -v "$WORK/probe.json:/etc/sing-box/config.json:ro" "$SINGBOX_IMG" run -c /etc/sing-box/config.json >/dev/null
+  sleep 4
+  local code
+  code=$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' \
+    --proxy "socks5h://127.0.0.1:${CLIENT_SOCKS_PORT}" "https://${REALITY_SERVER_NAME}/" || echo 000)
+  docker rm -f "$CLIENT_CT" >/dev/null 2>&1 || true
+  echo "    entry->exit probe HTTP $code"
+  case "$code" in 2??|3??) return 0;; *) return 1;; esac
+}
+step "verify entry->exit REALITY data plane (earns activation evidence)"
+reality_probe || fail "entry->exit REALITY data plane did not carry HTTP (pre-activation)"
+
+# --- 8. Guarded activation: exit first (evidence), then entry (revision) -----
+step "guarded activation: exit (evidence) -> entry (revision-checked)"
+"${CURL[@]}" -X POST "$CP/v1/nodes/$EXIT_ID/activate" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"expected_revision":"","evidence":"exit_data_plane_verified"}' \
+  | jq -e '.status=="active"' >/dev/null || fail "exit activation refused"
+REV="$("${CURL[@]}" "$CP/v1/nodes/$ENTRY_ID/reality-users" -H "Authorization: Bearer $ADMIN_TOKEN" | jq -r '.revision')"
+"${CURL[@]}" -X POST "$CP/v1/nodes/$ENTRY_ID/activate" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d "$(jq -n --arg r "$REV" '{expected_revision:$r}')" \
+  | jq -e '.status=="active"' >/dev/null || fail "entry activation refused (revision race or structure)"
+echo "    entry+exit active (exit-first, entry-last)"
+
+# --- 9. Fetch /sub, build a client, tunnel through REALITY ------------------
 tunnel_check() {  # $1=expected pubkey ; returns 0 on HTTP success through tunnel
   local want_pub="$1"
   local token sub tag
@@ -207,14 +298,14 @@ tunnel_check() {  # $1=expected pubkey ; returns 0 on HTTP success through tunne
 }
 
 SUB_ID=$("${CURL[@]}" -H "Authorization: Bearer $ADMIN_TOKEN" "$CP/v1/users/$USER_ID" | jq -re .subscription_id)
-step "tunnel #1 through the freshly keyed node"
+step "tunnel #1 through the freshly keyed node (via /sub)"
 tunnel_check "$NODE_PUB" || fail "REALITY tunnel did not carry HTTP (initial key)"
 
-# --- 7. Secret hygiene: private key must appear NOWHERE outward --------------
+# --- 10. Secret hygiene: private key must appear NOWHERE outward -------------
 step "secret hygiene: node private key must not leak"
 LEAK=0
 grep -q "$NODE_PRIV" "$WORK/client.json" "$WORK/sub.json" && { echo "  LEAK in client/sub config" >&2; LEAK=1; }
-for path in "/v1/users/$USER_ID" "/v1/nodes/rn-node-1" "/v1/users/$USER_ID/subscription-set"; do
+for path in "/v1/users/$USER_ID" "/v1/nodes/$ENTRY_ID" "/v1/users/$USER_ID/subscription-set"; do
   "${CURL[@]}" -H "Authorization: Bearer $ADMIN_TOKEN" "$CP$path" | grep -q "$NODE_PRIV" && { echo "  LEAK in $path" >&2; LEAK=1; }
 done
 { "${COMPOSE[@]}" logs --no-color 2>&1; docker logs "$NODE_CT" 2>&1; docker logs "$CLIENT_CT" 2>&1; } | grep -q "$NODE_PRIV" \
@@ -224,13 +315,15 @@ done
 grep -q "$NODE_PUB" "$WORK/sub.json" || fail "public key missing from client config (hygiene check is inert)"
 echo "    private key absent from every outward surface; public key present"
 
-# --- 8. Rotation: new key tunnels, old key is gone --------------------------
+# --- 11. Rotation: new key tunnels, old key is gone -------------------------
 step "rotate node key; new pubkey must tunnel, old must be absent"
 OLD_PUB="$NODE_PUB"
 KP2="$(docker run --rm "$SINGBOX_IMG" generate reality-keypair)"
 NODE_PRIV="$(awk '/PrivateKey/{print $2}' <<<"$KP2")"; NODE_PUB="$(awk '/PublicKey/{print $2}' <<<"$KP2")"
 printf 'private_key=%s\npublic_key=%s\n' "$NODE_PRIV" "$NODE_PUB" > "$WORK/reality.key"
-NODE_ID=rn-node-1 NODE_ROLE=entry NODE_STATUS=active PROVIDER=local CLOUD=local REGION=RU-MOW \
+# Merge upsert bumps the vless public key on the already-active node (status stays
+# active; hysteria2 and the user allow-list are preserved).
+NODE_ID="$ENTRY_ID" NODE_ROLE=entry NODE_STATUS=active PROVIDER=local CLOUD=local REGION=RU-MOW \
   ENTRY_IP="$NODE_CT" EPHEMERAL_ENTRY_IP=false \
   REALITY_PUBLIC_KEY="$NODE_PUB" REALITY_SHORT_IDS="$USER_SID" \
   REALITY_SERVER_NAMES="$REALITY_SERVER_NAME" REALITY_DEST="$REALITY_DEST" \
@@ -242,4 +335,4 @@ grep -q "$OLD_PUB" "$WORK/sub.json" && fail "old public key still present in /su
 echo "    rotation OK: fresh pubkey tunnels, old pubkey gone"
 
 echo
-echo "PASS: real REALITY tunnel — user paid -> allow-listed -> tunneled HTTP; rotation coherent; private key never reached a client, /sub, the API, or any log"
+echo "PASS: real REALITY tunnel — user paid -> allow-listed -> guarded activation -> tunneled HTTP via entry->exit; rotation coherent; private key never reached a client, /sub, the API, or any log"
