@@ -16,6 +16,9 @@ switch — not a single protocol monoculture.
 - Architecture source of truth — [`architecture.md`](architecture.md); contracts —
   [`docs/contracts.md`](docs/contracts.md); decisions — [`docs/decisions/`](docs/decisions/).
 
+**Website** — [n23eos.github.io/CasperVPN](https://n23eos.github.io/CasperVPN/)
+([по-русски](https://n23eos.github.io/CasperVPN/ru.html)).
+
 Русская версия — [README.ru.md](README.ru.md).
 
 ## License

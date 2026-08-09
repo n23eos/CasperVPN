@@ -12,6 +12,9 @@ HTTP-3, и система, которая умеет переключаться,
 Источник истины по архитектуре — [`architecture.md`](architecture.md); контракты —
 [`docs/contracts.md`](docs/contracts.md); решения — [`docs/decisions/`](docs/decisions/).
 
+**Сайт** — [n23eos.github.io/CasperVPN/ru.html](https://n23eos.github.io/CasperVPN/ru.html)
+([in English](https://n23eos.github.io/CasperVPN/)).
+
 English version — [README.md](README.md).
 
 ## Лицензия
