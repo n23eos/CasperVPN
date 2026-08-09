@@ -44,3 +44,5 @@ signing a Contributor License Agreement (CLA).
 ---
 
 Copyright (c) 2025–2026 Nikolay (n23eos) <mns.nicholas@gmail.com>
+
+<!-- CLA check test -->
