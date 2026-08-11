@@ -16,7 +16,9 @@ import (
 //
 // Public (no auth): POST /v1/signals (anonymous clients/nodes), GET /healthz.
 // Internal (bearer): POST /v1/health, GET /v1/aggregates, GET /v1/recommendations,
-// GET /metrics. When internalToken is empty (dev only) the auth gate passes through.
+// GET /metrics. When internalToken is empty the internal endpoints are DISABLED
+// (403): HealthEvents drive node rotation, so a forgotten env var must fail
+// closed, not open the feedback loop to poisoning.
 func Router(in *ingest.Ingestor, q *query.Handler, m *metrics.Collector, internalToken string) http.Handler {
 	mux := http.NewServeMux()
 
@@ -52,12 +54,13 @@ func metricsHandler(q *query.Handler, m *metrics.Collector) http.HandlerFunc {
 }
 
 // authMiddleware enforces a bearer token in constant time. Empty configured token
-// disables the gate (dev only; main logs a warning in that case).
+// fails closed: the internal surface is unavailable until a token is set (main
+// logs a warning in that case).
 func authMiddleware(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if token == "" {
-				next.ServeHTTP(w, r)
+				http.Error(w, "internal API disabled: TELEMETRY_INTERNAL_TOKEN is not set", http.StatusForbidden)
 				return
 			}
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
