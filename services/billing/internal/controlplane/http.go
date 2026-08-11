@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/platform/httpx"
 )
 
 // HTTPClient is the real control-plane adapter. The bearer token authenticates
@@ -60,7 +61,8 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body any, out 
 		return &statusError{method: method, path: path, code: resp.StatusCode, body: string(b)}
 	}
 	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		// Bounded read: never trust a peer (even the control-plane) for body size.
+		if err := httpx.DecodeJSON(resp.Body, out); err != nil {
 			return fmt.Errorf("controlplane: decode: %w", err)
 		}
 	}

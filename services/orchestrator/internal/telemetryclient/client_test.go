@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/caspervpn/contracts"
-	"github.com/caspervpn/orchestrator/internal/httpx"
+	"github.com/caspervpn/platform/httpx"
 )
 
 func TestRecommendationsHappyPath(t *testing.T) {

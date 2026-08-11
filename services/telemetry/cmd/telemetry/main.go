@@ -36,7 +36,10 @@ const (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("%s: config: %v", serviceName, err)
+	}
 	now := time.Now
 
 	st, err := newStore(cfg)

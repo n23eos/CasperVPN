@@ -1,9 +1,10 @@
 module github.com/caspervpn/subscription
 
-go 1.20
+go 1.22
 
 require (
 	github.com/caspervpn/contracts v0.0.0
+	github.com/caspervpn/platform v0.0.0
 	github.com/jackc/pgx/v5 v5.5.5
 )
 
@@ -18,3 +19,5 @@ require (
 
 // Resolved via the workspace (go.work) during the scaffolding wave.
 replace github.com/caspervpn/contracts => ../../packages/contracts
+
+replace github.com/caspervpn/platform => ../../packages/platform

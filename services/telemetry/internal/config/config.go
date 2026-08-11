@@ -4,9 +4,9 @@
 package config
 
 import (
-	"os"
-	"strconv"
 	"time"
+
+	"github.com/caspervpn/platform/envcfg"
 )
 
 // Default tunables. Named constants — no magic numbers scattered in logic.
@@ -70,65 +70,38 @@ type VerdictParams struct {
 	SpikeMinSources   int
 }
 
-// Load reads configuration from the environment, applying defaults.
-func Load() Config {
-	return Config{
-		Port:          getStr("PORT", defaultPort),
-		InternalToken: getStr("TELEMETRY_INTERNAL_TOKEN", ""),
-		DatabaseURL:   getStr("DATABASE_URL", ""),
+// Load reads configuration from the environment, applying defaults. A
+// malformed value (bad int/float/duration) is an error: startup must fail
+// loudly instead of silently running with a default.
+func Load() (Config, error) {
+	var e envcfg.Env
+	cfg := Config{
+		Port:          e.Str("PORT", defaultPort),
+		InternalToken: e.Str("TELEMETRY_INTERNAL_TOKEN", ""),
+		DatabaseURL:   e.Str("DATABASE_URL", ""),
 
-		Window:     getDur("TELEMETRY_WINDOW", defaultWindow),
-		Retention:  getDur("TELEMETRY_RETENTION", defaultRetention),
-		PruneEvery: getDur("TELEMETRY_PRUNE_EVERY", defaultPruneEvery),
+		Window:     e.Duration("TELEMETRY_WINDOW", defaultWindow),
+		Retention:  e.Duration("TELEMETRY_RETENTION", defaultRetention),
+		PruneEvery: e.Duration("TELEMETRY_PRUNE_EVERY", defaultPruneEvery),
 
-		RatePerSec:  getInt("TELEMETRY_RATE_PER_SEC", defaultRatePerSec),
-		RateBurst:   getInt("TELEMETRY_RATE_BURST", defaultRateBurst),
-		GlobalRate:  getInt("TELEMETRY_GLOBAL_RATE", defaultGlobalRate),
-		GlobalBurst: getInt("TELEMETRY_GLOBAL_BURST", defaultGlobalBurst),
-		MaxBatch:    getInt("TELEMETRY_MAX_BATCH", defaultMaxBatch),
+		RatePerSec:  e.Int("TELEMETRY_RATE_PER_SEC", defaultRatePerSec),
+		RateBurst:   e.Int("TELEMETRY_RATE_BURST", defaultRateBurst),
+		GlobalRate:  e.Int("TELEMETRY_GLOBAL_RATE", defaultGlobalRate),
+		GlobalBurst: e.Int("TELEMETRY_GLOBAL_BURST", defaultGlobalBurst),
+		MaxBatch:    e.Int("TELEMETRY_MAX_BATCH", defaultMaxBatch),
 
 		Verdict: VerdictParams{
-			MinSources:        getInt("TELEMETRY_MIN_SOURCES", defaultMinSources),
-			MinBlockedSources: getInt("TELEMETRY_MIN_BLOCKED_SOURCES", defaultMinBlockedSources),
-			DeadShareThresh:   getFloat("TELEMETRY_DEAD_SHARE", defaultDeadShareThresh),
-			MaxOKShareForDead: getFloat("TELEMETRY_MAX_OK_SHARE", defaultMaxOKShareForDead),
-			DegradedThresh:    getFloat("TELEMETRY_DEGRADED_SHARE", defaultDegradedThresh),
-			SpikeDelta:        getFloat("TELEMETRY_SPIKE_DELTA", defaultSpikeDelta),
-			SpikeMinSources:   getInt("TELEMETRY_SPIKE_MIN_SOURCES", defaultSpikeMinSources),
+			MinSources:        e.Int("TELEMETRY_MIN_SOURCES", defaultMinSources),
+			MinBlockedSources: e.Int("TELEMETRY_MIN_BLOCKED_SOURCES", defaultMinBlockedSources),
+			DeadShareThresh:   e.Float("TELEMETRY_DEAD_SHARE", defaultDeadShareThresh),
+			MaxOKShareForDead: e.Float("TELEMETRY_MAX_OK_SHARE", defaultMaxOKShareForDead),
+			DegradedThresh:    e.Float("TELEMETRY_DEGRADED_SHARE", defaultDegradedThresh),
+			SpikeDelta:        e.Float("TELEMETRY_SPIKE_DELTA", defaultSpikeDelta),
+			SpikeMinSources:   e.Int("TELEMETRY_SPIKE_MIN_SOURCES", defaultSpikeMinSources),
 		},
 	}
-}
-
-func getStr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+	if err := e.Err(); err != nil {
+		return Config{}, err
 	}
-	return def
-}
-
-func getInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func getFloat(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return def
-}
-
-func getDur(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return def
+	return cfg, nil
 }

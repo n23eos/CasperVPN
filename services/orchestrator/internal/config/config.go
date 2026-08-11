@@ -9,6 +9,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/caspervpn/platform/envcfg"
 )
 
 // Config is the full orchestrator configuration. Zero secrets are ever
@@ -64,46 +66,46 @@ type Config struct {
 
 // Load reads configuration from the environment, applying safe defaults.
 func Load() (Config, error) {
+	var e envcfg.Env
 	cfg := Config{
-		Port:                 getenv("PORT", "8086"),
-		ReconcileInterval:    time.Minute,
+		Port: e.Str("PORT", "8086"),
+		// Safety default: dry-run unless explicitly disabled.
+		DryRun:               e.Bool("DRY_RUN", true),
+		ReconcileInterval:    e.Duration("RECONCILE_INTERVAL", time.Minute),
 		TelemetryURL:         os.Getenv("TELEMETRY_URL"),
 		TelemetryToken:       os.Getenv("TELEMETRY_TOKEN"),
 		ControlPlaneURL:      os.Getenv("CONTROL_PLANE_URL"),
 		ControlPlaneToken:    os.Getenv("CONTROL_PLANE_TOKEN"),
-		ScriptsDir:           getenv("SCRIPTS_DIR", "infra/scripts"),
-		ScriptTimeout:        10 * time.Minute,
-		RecommendationMaxAge: 15 * time.Minute,
-		ProbeMaxAge:          10 * time.Minute,
-		DrainGrace:           30 * time.Minute,
+		ScriptsDir:           e.Str("SCRIPTS_DIR", "infra/scripts"),
+		ScriptTimeout:        e.Duration("SCRIPT_TIMEOUT", 10*time.Minute),
+		RecommendationMaxAge: e.Duration("RECOMMENDATION_MAX_AGE", 15*time.Minute),
+		ProbeMaxAge:          e.Duration("PROBE_MAX_AGE", 10*time.Minute),
+		DrainGrace:           e.Duration("DRAIN_GRACE", 30*time.Minute),
 		MaxActionsPerCycle:   1,
-		ProbeSource:          getenv("PROBE_SOURCE", "orchestrator-local"),
-		ProbeTimeout:         10 * time.Second,
+		ProbeEnabled:         e.Bool("PROBE_ENABLED", false),
+		ProbeSource:          e.Str("PROBE_SOURCE", "orchestrator-local"),
+		ProbeTimeout:         e.Duration("PROBE_TIMEOUT", 10*time.Second),
 		DefaultRegion:        os.Getenv("DEFAULT_REGION"),
 		DefaultCloud:         os.Getenv("DEFAULT_CLOUD"),
 	}
-
-	var err error
-	// Safety default: dry-run unless explicitly disabled.
-	if cfg.DryRun, err = getbool("DRY_RUN", true); err != nil {
+	if err := e.Err(); err != nil {
 		return Config{}, err
 	}
-	if cfg.ProbeEnabled, err = getbool("PROBE_ENABLED", false); err != nil {
-		return Config{}, err
-	}
+	// envcfg allows zero durations (other services use 0 as "disabled"); every
+	// duration here drives a loop or timeout, so all must be strictly positive.
 	for _, d := range []struct {
 		env string
-		dst *time.Duration
+		val time.Duration
 	}{
-		{"RECONCILE_INTERVAL", &cfg.ReconcileInterval},
-		{"SCRIPT_TIMEOUT", &cfg.ScriptTimeout},
-		{"RECOMMENDATION_MAX_AGE", &cfg.RecommendationMaxAge},
-		{"PROBE_MAX_AGE", &cfg.ProbeMaxAge},
-		{"DRAIN_GRACE", &cfg.DrainGrace},
-		{"PROBE_TIMEOUT", &cfg.ProbeTimeout},
+		{"RECONCILE_INTERVAL", cfg.ReconcileInterval},
+		{"SCRIPT_TIMEOUT", cfg.ScriptTimeout},
+		{"RECOMMENDATION_MAX_AGE", cfg.RecommendationMaxAge},
+		{"PROBE_MAX_AGE", cfg.ProbeMaxAge},
+		{"DRAIN_GRACE", cfg.DrainGrace},
+		{"PROBE_TIMEOUT", cfg.ProbeTimeout},
 	} {
-		if err := getduration(d.env, d.dst); err != nil {
-			return Config{}, err
+		if d.val <= 0 {
+			return Config{}, fmt.Errorf("config: %s must be a positive duration", d.env)
 		}
 	}
 	if v := os.Getenv("MAX_ACTIONS_PER_CYCLE"); v != "" {
@@ -127,37 +129,5 @@ func (c Config) Validate() error {
 	if c.ControlPlaneURL == "" {
 		return fmt.Errorf("config: CONTROL_PLANE_URL is required when DRY_RUN=false")
 	}
-	return nil
-}
-
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func getbool(key string, def bool) (bool, error) {
-	v := os.Getenv(key)
-	if v == "" {
-		return def, nil
-	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		return false, fmt.Errorf("config: %s must be a boolean, got %q", key, v)
-	}
-	return b, nil
-}
-
-func getduration(key string, dst *time.Duration) error {
-	v := os.Getenv(key)
-	if v == "" {
-		return nil
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil || d <= 0 {
-		return fmt.Errorf("config: %s must be a positive duration, got %q", key, v)
-	}
-	*dst = d
 	return nil
 }

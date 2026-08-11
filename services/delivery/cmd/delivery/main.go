@@ -27,7 +27,10 @@ const (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("%s: config: %v", serviceName, err)
+	}
 	a, err := app.Build(cfg)
 	if err != nil {
 		log.Fatalf("%s: build: %v", serviceName, err)

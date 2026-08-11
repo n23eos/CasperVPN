@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/caspervpn/platform/httpjson"
+
 	"github.com/caspervpn/billing/internal/model"
 	"github.com/caspervpn/billing/internal/payment"
 	"github.com/caspervpn/billing/internal/plan"
@@ -46,7 +48,7 @@ func (a *API) Routes() *http.ServeMux {
 }
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "billing"})
+	httpjson.Write(w, http.StatusOK, map[string]string{"status": "ok", "service": "billing"})
 }
 
 type createInvoiceReq struct {
@@ -69,36 +71,36 @@ type createInvoiceResp struct {
 // registry to open an invoice (with gateway failover).
 func (a *API) createInvoice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req createInvoiceReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxWebhookBody)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		httpjson.Error(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.AnonUserID == "" {
-		writeErr(w, http.StatusBadRequest, "anon_user_id required")
+		httpjson.Error(w, http.StatusBadRequest, "anon_user_id required")
 		return
 	}
 	// Rate-limit invoice creation per account so one abuser can't flood the crypto
 	// gateways (without throttling everyone via a single global bucket).
 	if !a.invoiceLimiter.allow(req.AnonUserID) {
-		writeErr(w, http.StatusTooManyRequests, "rate limited")
+		httpjson.Error(w, http.StatusTooManyRequests, "rate limited")
 		return
 	}
 	planID := contracts.SubscriptionPlan(req.Plan)
 	if !planID.Valid() {
-		writeErr(w, http.StatusBadRequest, "unknown plan")
+		httpjson.Error(w, http.StatusBadRequest, "unknown plan")
 		return
 	}
 	if req.Currency == "" {
-		writeErr(w, http.StatusBadRequest, "currency required")
+		httpjson.Error(w, http.StatusBadRequest, "currency required")
 		return
 	}
 	amount, ok := a.catalog.Price(planID, req.Currency)
 	if !ok {
-		writeErr(w, http.StatusBadRequest, "no price for plan/currency")
+		httpjson.Error(w, http.StatusBadRequest, "no price for plan/currency")
 		return
 	}
 
@@ -110,17 +112,17 @@ func (a *API) createInvoice(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, payment.ErrNoGateway) {
-			writeErr(w, http.StatusServiceUnavailable, "no gateway for currency")
+			httpjson.Error(w, http.StatusServiceUnavailable, "no gateway for currency")
 			return
 		}
-		writeErr(w, http.StatusBadGateway, "gateway error")
+		httpjson.Error(w, http.StatusBadGateway, "gateway error")
 		return
 	}
 	if err := a.store.CreateInvoice(r.Context(), inv); err != nil {
-		writeErr(w, http.StatusInternalServerError, "store error")
+		httpjson.Error(w, http.StatusInternalServerError, "store error")
 		return
 	}
-	writeJSON(w, http.StatusCreated, createInvoiceResp{
+	httpjson.Write(w, http.StatusCreated, createInvoiceResp{
 		InvoiceID:  inv.ID,
 		Provider:   inv.Provider,
 		PayAddress: inv.PayAddress,
@@ -134,28 +136,28 @@ func (a *API) createInvoice(w http.ResponseWriter, r *http.Request) {
 // lives in the gateway; a bad signature yields 401 and no state change.
 func (a *API) webhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	provider := strings.TrimPrefix(r.URL.Path, "/v1/webhooks/")
 	if provider == "" {
-		writeErr(w, http.StatusNotFound, "provider required")
+		httpjson.Error(w, http.StatusNotFound, "provider required")
 		return
 	}
 	gw, ok := a.registry.Get(provider)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "unknown provider")
+		httpjson.Error(w, http.StatusNotFound, "unknown provider")
 		return
 	}
 	body, err := readLimitedBody(r)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "read body")
+		httpjson.Error(w, http.StatusBadRequest, "read body")
 		return
 	}
 	ev, err := gw.ParseWebhook(webhookSignature(r), body)
 	if err != nil {
 		// Bad signature or unparseable payload — reject, change nothing.
-		writeErr(w, http.StatusUnauthorized, "invalid webhook")
+		httpjson.Error(w, http.StatusUnauthorized, "invalid webhook")
 		return
 	}
 	if err := a.processor.Process(r.Context(), ev); err != nil {
@@ -163,21 +165,11 @@ func (a *API) webhook(w http.ResponseWriter, r *http.Request) {
 		// redelivering; transient failures return 5xx to trigger provider retry.
 		if errors.Is(err, payment.ErrUnderpaid) || errors.Is(err, payment.ErrStaleEvent) ||
 			errors.Is(err, payment.ErrProviderMismatch) || errors.Is(err, payment.ErrCurrencyMismatch) {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
+			httpjson.Write(w, http.StatusOK, map[string]string{"status": "rejected"})
 			return
 		}
-		writeErr(w, http.StatusBadGateway, "processing failed")
+		httpjson.Error(w, http.StatusBadGateway, "processing failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+	httpjson.Write(w, http.StatusOK, map[string]string{"status": "ok"})
 }

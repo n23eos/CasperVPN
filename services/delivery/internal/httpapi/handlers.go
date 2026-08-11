@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/caspervpn/delivery/internal/channel"
+	"github.com/caspervpn/platform/httpjson"
 )
 
 // API holds the dependencies the handlers need.
@@ -45,7 +46,7 @@ func (a *API) Routes() *http.ServeMux {
 }
 
 func (a *API) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "delivery"})
+	httpjson.Write(w, http.StatusOK, map[string]string{"status": "ok", "service": "delivery"})
 }
 
 // ready reports readiness: the service can actually deliver only if at least one
@@ -54,7 +55,7 @@ func (a *API) health(w http.ResponseWriter, _ *http.Request) {
 func (a *API) ready(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	health := a.reg.Health(r.Context())
@@ -65,11 +66,11 @@ func (a *API) ready(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if healthy == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+		httpjson.Write(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"status": "unready", "reason": "no healthy channel", "channels": len(health)})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httpjson.Write(w, http.StatusOK, map[string]interface{}{
 		"status": "ready", "healthy_channels": healthy, "channels": len(health)})
 }
 
@@ -107,7 +108,7 @@ func (a *API) channels(w http.ResponseWriter, r *http.Request) {
 		a.createChannel(w, r)
 	default:
 		w.Header().Set("Allow", "GET, POST")
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -123,7 +124,7 @@ func (a *API) listChannels(w http.ResponseWriter, r *http.Request) {
 			Healthy:  health[k],
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+	httpjson.Write(w, http.StatusOK, map[string]interface{}{"items": items})
 }
 
 // createChannel validates a channel descriptor. Live channel construction is
@@ -134,28 +135,28 @@ func (a *API) createChannel(w http.ResponseWriter, r *http.Request) {
 	if !a.authorizedAdmin(r) {
 		if a.adminToken == "" {
 			// Fail-closed: the admin surface is off unless an operator token is set.
-			writeError(w, http.StatusForbidden, "channel admin API disabled (set DELIVERY_ADMIN_TOKEN)")
+			httpjson.Error(w, http.StatusForbidden, "channel admin API disabled (set DELIVERY_ADMIN_TOKEN)")
 			return
 		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	var dto channelDTO
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&dto); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid channel body")
+		httpjson.Error(w, http.StatusBadRequest, "invalid channel body")
 		return
 	}
 	if !knownKind(channel.Kind(dto.Kind)) {
-		writeError(w, http.StatusBadRequest, "unknown channel kind")
+		httpjson.Error(w, http.StatusBadRequest, "unknown channel kind")
 		return
 	}
 	if _, exists := a.reg.Get(channel.Kind(dto.Kind)); exists {
-		writeError(w, http.StatusConflict, "channel already exists")
+		httpjson.Error(w, http.StatusConflict, "channel already exists")
 		return
 	}
 	dto.Enabled = true
-	writeJSON(w, http.StatusCreated, dto)
+	httpjson.Write(w, http.StatusCreated, dto)
 }
 
 // fetchViaChannel serves GET /d/{channel}/{token}: fetch the signed blob a
@@ -164,13 +165,13 @@ func (a *API) createChannel(w http.ResponseWriter, r *http.Request) {
 func (a *API) fetchViaChannel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/d/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		writeError(w, http.StatusNotFound, "expected /d/{channel}/{token}")
+		httpjson.Error(w, http.StatusNotFound, "expected /d/{channel}/{token}")
 		return
 	}
 	kind := channel.Kind(parts[0])
@@ -178,7 +179,7 @@ func (a *API) fetchViaChannel(w http.ResponseWriter, r *http.Request) {
 
 	ch, ok := a.reg.Get(kind)
 	if !ok {
-		writeError(w, http.StatusNotFound, "channel not found")
+		httpjson.Error(w, http.StatusNotFound, "channel not found")
 		return
 	}
 	blob, err := ch.Fetch(r.Context(), token)
@@ -194,11 +195,11 @@ func (a *API) fetchViaChannel(w http.ResponseWriter, r *http.Request) {
 func writeFetchError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, channel.ErrNotFound):
-		writeError(w, http.StatusNotFound, "subscription not found on channel")
+		httpjson.Error(w, http.StatusNotFound, "subscription not found on channel")
 	case errors.Is(err, channel.ErrUnavailable):
-		writeError(w, http.StatusServiceUnavailable, "channel temporarily unavailable")
+		httpjson.Error(w, http.StatusServiceUnavailable, "channel temporarily unavailable")
 	default:
-		writeError(w, http.StatusServiceUnavailable, "channel error")
+		httpjson.Error(w, http.StatusServiceUnavailable, "channel error")
 	}
 }
 
@@ -209,14 +210,4 @@ func knownKind(k channel.Kind) bool {
 		return true
 	}
 	return false
-}
-
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }

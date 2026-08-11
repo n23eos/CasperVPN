@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/platform/httpjson"
 	"github.com/caspervpn/telemetry/internal/metrics"
 	"github.com/caspervpn/telemetry/internal/store"
 )
@@ -62,15 +63,15 @@ func (in *Ingestor) HandleSignals(w http.ResponseWriter, r *http.Request) {
 
 	var req signalsRequest
 	if code, err := decodeStrict(w, r, in.maxBodyBytes, &req); err != nil {
-		writeErr(w, code, err.Error())
+		httpjson.Error(w, code, err.Error())
 		return
 	}
 	if len(req.Signals) == 0 {
-		writeErr(w, http.StatusBadRequest, "empty batch")
+		httpjson.Error(w, http.StatusBadRequest, "empty batch")
 		return
 	}
 	if len(req.Signals) > in.maxBatch {
-		writeErr(w, http.StatusRequestEntityTooLarge, "batch too large")
+		httpjson.Error(w, http.StatusRequestEntityTooLarge, "batch too large")
 		return
 	}
 
@@ -79,7 +80,7 @@ func (in *Ingestor) HandleSignals(w http.ResponseWriter, r *http.Request) {
 	token := in.limiter.SourceToken(clientOrigin(r))
 	if !in.limiter.Allow(token, len(req.Signals)) {
 		in.metrics.IncRateLimited()
-		writeErr(w, http.StatusTooManyRequests, "rate limited")
+		httpjson.Error(w, http.StatusTooManyRequests, "rate limited")
 		return
 	}
 
@@ -104,11 +105,11 @@ func (in *Ingestor) HandleSignals(w http.ResponseWriter, r *http.Request) {
 
 	if len(accepted) > 0 {
 		if err := in.store.WriteSignals(r.Context(), accepted); err != nil {
-			writeErr(w, http.StatusInternalServerError, "storage error")
+			httpjson.Error(w, http.StatusInternalServerError, "storage error")
 			return
 		}
 	}
-	writeJSON(w, http.StatusAccepted, ingestResponse{Accepted: len(accepted), Rejected: rejected})
+	httpjson.Write(w, http.StatusAccepted, ingestResponse{Accepted: len(accepted), Rejected: rejected})
 }
 
 type healthRequest struct {
@@ -125,15 +126,15 @@ func (in *Ingestor) HandleHealth(w http.ResponseWriter, r *http.Request) {
 
 	var req healthRequest
 	if code, err := decodeStrict(w, r, in.maxBodyBytes, &req); err != nil {
-		writeErr(w, code, err.Error())
+		httpjson.Error(w, code, err.Error())
 		return
 	}
 	if len(req.Events) == 0 {
-		writeErr(w, http.StatusBadRequest, "empty batch")
+		httpjson.Error(w, http.StatusBadRequest, "empty batch")
 		return
 	}
 	if len(req.Events) > in.maxBatch {
-		writeErr(w, http.StatusRequestEntityTooLarge, "batch too large")
+		httpjson.Error(w, http.StatusRequestEntityTooLarge, "batch too large")
 		return
 	}
 
@@ -153,12 +154,12 @@ func (in *Ingestor) HandleHealth(w http.ResponseWriter, r *http.Request) {
 
 	if len(accepted) > 0 {
 		if err := in.store.WriteHealth(r.Context(), accepted); err != nil {
-			writeErr(w, http.StatusInternalServerError, "storage error")
+			httpjson.Error(w, http.StatusInternalServerError, "storage error")
 			return
 		}
 		in.metrics.AddHealth(len(accepted))
 	}
-	writeJSON(w, http.StatusAccepted, ingestResponse{Accepted: len(accepted), Rejected: rejected})
+	httpjson.Write(w, http.StatusAccepted, ingestResponse{Accepted: len(accepted), Rejected: rejected})
 }
 
 // decodeStrict reads a size-capped body and decodes JSON with unknown fields
@@ -205,14 +206,4 @@ func bucketReason(reason string) string {
 	default:
 		return "invalid"
 	}
-}
-
-func writeJSON(w http.ResponseWriter, code int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
 }

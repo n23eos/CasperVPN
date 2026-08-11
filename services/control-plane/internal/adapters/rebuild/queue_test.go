@@ -4,14 +4,24 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/caspervpn/control-plane/internal/domain"
 )
+
+// stubRebuilder lets a live worker process jobUser jobs harmlessly: the worker
+// may still be draining when the test races it around shutdown.
+type stubRebuilder struct{}
+
+func (stubRebuilder) Build(context.Context, string) (domain.SubscriptionSet, error) {
+	return domain.SubscriptionSet{}, nil
+}
 
 // A full channel used to spawn one goroutine per enqueue, unbounded, and each of
 // them blocked forever after shutdown (workers gone, nobody draining). This
 // guards the fix: overflow enqueues on a stopped queue must return promptly
 // instead of parking goroutines on a channel nobody reads.
 func TestEnqueue_OverflowDoesNotBlockAfterShutdown(t *testing.T) {
-	q := New(nil, nil, 1, 1, nil)
+	q := New(nil, stubRebuilder{}, 1, 1, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	q.Start(ctx)

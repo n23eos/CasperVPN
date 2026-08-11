@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/caspervpn/contracts"
-	"github.com/caspervpn/orchestrator/internal/httpx"
+	"github.com/caspervpn/platform/httpx"
 )
 
 // Client talks to the telemetry service.
