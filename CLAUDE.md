@@ -11,20 +11,24 @@
 
 ## Сборка и тесты
 
-Монорепо на Go workspace (`go.work`): `packages/contracts` + 6 сервисов.
+Монорепо на Go workspace (`go.work`): `packages/contracts` + `packages/platform` +
+6 сервисов.
 
 ```bash
-make build   # собрать все модули
-make test    # тесты по всем модулям
-make vet     # go vet
-make lint    # golangci-lint (no-op с предупреждением, если не установлен)
-make fmt     # gofmt -w
-make up      # docker compose: postgres + сервисы
-make down    # остановить стек
+make build            # собрать все модули
+make test             # тесты по всем модулям (-race)
+make test-integration # Postgres-интеграция billing + control-plane (см. integration-ci.yml)
+make vet              # go vet
+make lint             # golangci-lint (LINT_STRICT=1 — жёсткий гейт, так гоняет CI)
+make fmt              # gofmt -w
+make e2e-guards       # чисто-shell e2e-гварды (без облака/докера; гоняются в CI)
+make gate0            # операторский GATE-0 preflight (без облачных ресурсов)
+make up               # docker compose: postgres + сервисы
+make down             # остановить стек
 ```
 
-- Go floor — **1.20** (собирается на текущем тулчейне; потолок из решения — 1.23,
-  поднять `go`-директиву можно свободно). Docker-образы собираются на `golang:1.22`.
+- Go floor — **1.22** (синхронно с CI и Docker-образами `golang:1.22`; потолок из
+  решения — 1.23, поднять `go`-директиву можно свободно).
 - Каждый сервис — отдельный модуль `github.com/caspervpn/<name>`, тянет
   `contracts` через `go.work` + `replace` (без внешнего реестра).
 - Порты в dev: control-plane 8081, subscription 8082, delivery 8083, billing 8084,
@@ -38,6 +42,7 @@ make down    # остановить стек
 | Папка | Владелец / подсистема | Роль |
 |-------|-----------------------|------|
 | `packages/contracts/` | **общее, заморожено** | типы/схемы/OpenAPI — единый источник |
+| `packages/platform/` | **общее, НЕ заморожено** | плюмбинг сервисов: envcfg (строгий env), httpx (исходящий HTTP: bearer/ретраи/лимит тела), httpjson (единый JSON-ответ) |
 | `services/control-plane/` | control-plane | реестр нод, выдача per-user REALITY id/секретов, сборка конфигов |
 | `services/subscription/` | subscription | per-user subscription URL, рендер base64/sing-box/clash |
 | `services/delivery/` | delivery | мультиканальная доставка (HTTPS/DoH/Telegram/GitHub raw/DNS TXT) |
@@ -45,7 +50,7 @@ make down    # остановить стек
 | `services/telemetry/` | telemetry | приём анонимных FieldSignal + HealthEvent, петля обратной связи |
 | `services/orchestrator/` | orchestrator | provision/ротация нод (Terraform+Ansible), детект блокировок, автозамена |
 | `web/admin/` | admin UI | панель оператора (плейсхолдер) |
-| `infra/` | infra | Terraform/Ansible флота (плейсхолдер) |
+| `infra/` | infra | Terraform/Ansible флота: модули compute (hetzner/vultr/oci), роли sing-box, lifecycle-скрипты, свой CI |
 | `test/chaos/` | reliability | chaos/устойчивость (плейсхолдер) |
 | `docs/` | общее | контракты, ADR |
 

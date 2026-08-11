@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/domain"
 	"github.com/caspervpn/control-plane/internal/secret"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // SignalStore persists FieldSignal aggregates and their derived verdicts.

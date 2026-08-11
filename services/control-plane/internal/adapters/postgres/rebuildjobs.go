@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/caspervpn/control-plane/internal/adapters/rebuild"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/caspervpn/control-plane/internal/adapters/rebuild"
 )
 
 // RebuildJobStore is the durable backend for the rebuild queue (implements

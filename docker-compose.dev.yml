@@ -38,12 +38,16 @@ services:
       PORT: 8081
       ENV: dev
       SEED: "true"
+      # Demo fleet (mimicry domains/IPs) is data, mounted below — never baked in.
+      SEED_NODES_FILE: /config/seed.nodes.json
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
       # Dev-only service tokens (token:role). NEVER reuse in prod — see rules/security.md.
       CONTROL_PLANE_TOKENS: ${CONTROL_PLANE_TOKENS:-dev-admin-token:admin,dev-orchestrator-token:orchestrator,dev-telemetry-token:telemetry,dev-subscription-token:subscription,dev-billing-token:billing}
       # Token revocation propagation into the subscription service (dev-only token).
       SUBSCRIPTION_INTERNAL_URL: http://subscription:8082
       SUBSCRIPTION_INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:-dev-internal-token}
+    volumes:
+      - ./services/control-plane/config:/config:ro
     ports: ["8081:8081"]
 
   subscription:
@@ -99,6 +103,9 @@ services:
     environment:
       PORT: 8085
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
+      # Internal endpoints are fail-closed: without a token they return 403.
+      # Dev-only value, NEVER reuse in prod.
+      TELEMETRY_INTERNAL_TOKEN: ${TELEMETRY_INTERNAL_TOKEN:-dev-telemetry-internal-token}
     ports: ["8085:8085"]
 
   orchestrator:

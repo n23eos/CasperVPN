@@ -5,10 +5,10 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
+	"github.com/caspervpn/platform/httpjson"
 	"github.com/caspervpn/subscription/internal/cache"
 	"github.com/caspervpn/subscription/internal/config"
 	"github.com/caspervpn/subscription/internal/controlplane"
@@ -44,17 +44,5 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "subscription"})
-}
-
-// writeJSON writes v as a JSON response.
-func writeJSON(w http.ResponseWriter, code int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-// writeError writes a JSON error envelope.
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+	httpjson.Write(w, http.StatusOK, map[string]string{"status": "ok", "service": "subscription"})
 }

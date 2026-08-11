@@ -1,7 +1,10 @@
-// Package httpx is the shared HTTP plumbing for the orchestrator's outbound
-// clients: bearer auth, bounded timeouts, JSON decoding with size limits, and
-// a small bounded retry for idempotent requests. No infinite loops: every
-// retry budget is finite and every attempt is context-bounded.
+// Package httpx is the shared outbound HTTP plumbing for CasperVPN services:
+// bearer auth, bounded timeouts, JSON decoding with size limits, and a small
+// bounded retry for idempotent requests. No infinite loops: every retry budget
+// is finite and every attempt is context-bounded.
+//
+// Clients that build their own *http.Request (paged queries etc.) should still
+// decode responses via DecodeJSON so the body-size cap applies everywhere.
 package httpx
 
 import (
@@ -14,8 +17,18 @@ import (
 	"time"
 )
 
-// maxBody caps response bodies (defensive against a compromised peer).
-const maxBody = 8 << 20 // 8 MiB
+// MaxBody caps response bodies (defensive against a compromised peer).
+const MaxBody = 8 << 20 // 8 MiB
+
+// DecodeJSON decodes at most MaxBody bytes of r into out. Use it instead of a
+// bare json.NewDecoder(resp.Body) so no client trusts a peer for body size.
+func DecodeJSON(r io.Reader, out any) error {
+	b, err := io.ReadAll(io.LimitReader(r, MaxBody))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, out)
+}
 
 // Client wraps http.Client with base URL + bearer token.
 type Client struct {
@@ -136,7 +149,7 @@ func (c *Client) attempt(ctx context.Context, method, path string, payload []byt
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody))
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}

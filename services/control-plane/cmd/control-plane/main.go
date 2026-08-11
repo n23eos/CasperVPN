@@ -92,7 +92,8 @@ func main() {
 	nodeSvc = nodeSvc.WithActivator(nodeStore)
 
 	if os.Getenv("SEED") == "true" {
-		if err := seed.Run(ctx, seed.Services{Nodes: nodeSvc, NodesRepo: nodeStore, Users: userSvc, Subs: subSvc, Bundles: bundleSvc}); err != nil {
+		// Demo fleet comes from a data file (mimicry domains/IPs are never in code).
+		if err := seed.Run(ctx, seed.Services{Nodes: nodeSvc, NodesRepo: nodeStore, Users: userSvc, Subs: subSvc, Bundles: bundleSvc}, os.Getenv("SEED_NODES_FILE")); err != nil {
 			logger.Printf("seed: %v", err)
 		} else {
 			logger.Printf("seed: dev data loaded")

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -68,9 +69,9 @@ func newTestServer(t testing.TB) (*Server, *controlplane.Memory) {
 	m.PutSubscription(contracts.Subscription{ID: "s1", UserID: "u1", Plan: contracts.SubscriptionPlanUnlimited, Status: contracts.SubscriptionStatusActive, Token: "tok-good", ExpiresAt: &future, TrafficLimitBytes: 0})
 	m.PutSubscription(contracts.Subscription{ID: "s2", UserID: "u1", Plan: contracts.SubscriptionPlanBasic, Status: contracts.SubscriptionStatusExpired, Token: "tok-exp", ExpiresAt: &past})
 	m.PutSubscription(contracts.Subscription{ID: "s3", UserID: "u1", Plan: contracts.SubscriptionPlanUnlimited, Status: contracts.SubscriptionStatusActive, Token: "tok-new", ExpiresAt: &future})
-	_ = m.Register(nil, "tok-good", "u1", "s1")
-	_ = m.Register(nil, "tok-exp", "u1", "s2")
-	_ = m.Register(nil, "tok-nosub", "u1", "missing-sub")
+	_ = m.Register(context.Background(), "tok-good", "u1", "s1")
+	_ = m.Register(context.Background(), "tok-exp", "u1", "s2")
+	_ = m.Register(context.Background(), "tok-nosub", "u1", "missing-sub")
 	m.SetNodes([]contracts.Node{multiNode("n1", contracts.NodeStatusActive), multiNode("n2", contracts.NodeStatusActive)})
 
 	now := func() time.Time { return fixedNow }

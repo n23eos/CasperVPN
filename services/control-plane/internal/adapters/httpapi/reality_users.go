@@ -3,8 +3,9 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/caspervpn/contracts"
 	"github.com/go-chi/chi/v5"
+
+	"github.com/caspervpn/contracts"
 )
 
 // getNodeRealityUsers serves GET /v1/nodes/{id}/reality-users — the REALITY

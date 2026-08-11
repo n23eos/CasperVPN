@@ -10,12 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/adapters/httpapi"
 	"github.com/caspervpn/control-plane/internal/adapters/memory"
 	"github.com/caspervpn/control-plane/internal/authz"
 	"github.com/caspervpn/control-plane/internal/usecase"
-	"gopkg.in/yaml.v3"
 )
 
 const specPath = "../../../../../packages/contracts/openapi/control-plane.yaml"

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "node-seed-eu1",
+    "role": "combined",
+    "status": "active",
+    "provider": "hetzner",
+    "cloud": "eu-a",
+    "region": "eu-central",
+    "entry_ip": "203.0.113.10",
+    "ephemeral_entry_ip": true,
+    "capacity_users": 150,
+    "created_at": "0001-01-01T00:00:00Z",
+    "transports": [
+      {
+        "tag": "reality-www",
+        "type": "vless-reality",
+        "version": "v1",
+        "port": 443,
+        "enabled": true,
+        "priority": 0,
+        "vless_reality": {
+          "server_names": ["www.microsoft.com"],
+          "dest": "www.microsoft.com:443",
+          "public_key": "SEED_PUBKEY_node-seed-eu1",
+          "short_ids": ["0123abcd"],
+          "flow": "xtls-rprx-vision",
+          "fingerprint": "chrome"
+        }
+      },
+      {
+        "tag": "hy2-mobile",
+        "type": "hysteria2",
+        "version": "v1",
+        "port": 8443,
+        "enabled": true,
+        "priority": 1,
+        "hysteria2": {
+          "password": "seed-hy2-node-seed-eu1",
+          "sni": "cdn.jsdelivr.net",
+          "obfs": "salamander",
+          "obfs_password": "seed-obfs-node-seed-eu1"
+        }
+      }
+    ]
+  },
+  {
+    "id": "node-seed-eu2",
+    "role": "combined",
+    "status": "active",
+    "provider": "hetzner",
+    "cloud": "eu-a",
+    "region": "eu-west",
+    "entry_ip": "203.0.113.20",
+    "ephemeral_entry_ip": true,
+    "capacity_users": 150,
+    "created_at": "0001-01-01T00:00:00Z",
+    "transports": [
+      {
+        "tag": "reality-www",
+        "type": "vless-reality",
+        "version": "v1",
+        "port": 443,
+        "enabled": true,
+        "priority": 0,
+        "vless_reality": {
+          "server_names": ["www.microsoft.com"],
+          "dest": "www.microsoft.com:443",
+          "public_key": "SEED_PUBKEY_node-seed-eu2",
+          "short_ids": ["0123abcd"],
+          "flow": "xtls-rprx-vision",
+          "fingerprint": "chrome"
+        }
+      },
+      {
+        "tag": "hy2-mobile",
+        "type": "hysteria2",
+        "version": "v1",
+        "port": 8443,
+        "enabled": true,
+        "priority": 1,
+        "hysteria2": {
+          "password": "seed-hy2-node-seed-eu2",
+          "sni": "cdn.jsdelivr.net",
+          "obfs": "salamander",
+          "obfs_password": "seed-obfs-node-seed-eu2"
+        }
+      }
+    ]
+  }
+]

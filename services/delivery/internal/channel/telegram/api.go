@@ -42,18 +42,18 @@ type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// TelegramAPI is the real Bot API adapter. Base + Token come from config.
-type TelegramAPI struct {
+// API is the real Bot API adapter. Base + Token come from config.
+type API struct {
 	Base  string   // e.g. https://api.telegram.org — config-supplied, never hardcoded
 	Token string   // bot token — from env/secret manager (security.md)
 	HTTP  httpDoer // nil => http.DefaultClient
 }
 
 // Network identifies the messenger.
-func (t TelegramAPI) Network() string { return "telegram" }
+func (t API) Network() string { return "telegram" }
 
 // Send posts a sendMessage call to the Telegram Bot API.
-func (t TelegramAPI) Send(ctx context.Context, chatID int64, text string) error {
+func (t API) Send(ctx context.Context, chatID int64, text string) error {
 	if t.Base == "" || t.Token == "" {
 		return fmt.Errorf("telegram: base and token required")
 	}

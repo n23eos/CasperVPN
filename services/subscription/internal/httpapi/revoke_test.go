@@ -5,6 +5,7 @@ package httpapi
 // render cache — and owner-scoped revokes must not kill unrelated tokens.
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -53,7 +54,7 @@ func TestRevokeBySubscription_LeavesOtherTokensAlive(t *testing.T) {
 	srv, m := newTestServer(t)
 	h := srv.Handler()
 	// Second live token of the same user, different subscription.
-	_ = m.Register(nil, "tok-second", "u1", "s3")
+	_ = m.Register(context.Background(), "tok-second", "u1", "s3")
 
 	w := do(t, h, http.MethodPost, "/internal/revoke", internalHeaders, []byte(`{"subscription_id":"s1"}`))
 	if w.Code != http.StatusNoContent {

@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/caspervpn/contracts"
-	"github.com/caspervpn/control-plane/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/control-plane/internal/domain"
 )
 
 const nodeColumns = `id, role, status, entry_node_id, provider, cloud, region,

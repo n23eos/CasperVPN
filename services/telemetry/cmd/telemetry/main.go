@@ -36,7 +36,10 @@ const (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("%s: config: %v", serviceName, err)
+	}
 	now := time.Now
 
 	st, err := newStore(cfg)
@@ -51,7 +54,7 @@ func main() {
 	queries := query.NewHandler(st, cfg.Window, cfg.Verdict, now)
 
 	if cfg.InternalToken == "" {
-		log.Printf("%s: WARNING TELEMETRY_INTERNAL_TOKEN unset — internal endpoints are UNAUTHENTICATED (dev only)", serviceName)
+		log.Printf("%s: WARNING TELEMETRY_INTERNAL_TOKEN unset — internal endpoints (/v1/health, /v1/aggregates, /v1/recommendations, /metrics) are DISABLED", serviceName)
 	}
 	handler := api.Router(ingestor, queries, coll, cfg.InternalToken)
 

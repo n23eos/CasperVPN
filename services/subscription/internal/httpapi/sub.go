@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/platform/httpjson"
 	"github.com/caspervpn/subscription/internal/cache"
 	"github.com/caspervpn/subscription/internal/personalize"
 	"github.com/caspervpn/subscription/internal/render"
@@ -17,12 +18,12 @@ import (
 // handleSub dispatches /sub/{token}, /sub/{token}/nodes and /sub/{token}/happ.
 func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/sub/")
 	if rest == "" {
-		writeError(w, http.StatusNotFound, "missing token")
+		httpjson.Error(w, http.StatusNotFound, "missing token")
 		return
 	}
 
@@ -40,7 +41,7 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 		token = rest
 	}
 	if strings.Contains(token, "/") {
-		writeError(w, http.StatusNotFound, "not found")
+		httpjson.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	if dec, err := url.PathUnescape(token); err == nil {
@@ -78,7 +79,7 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, token
 
 	body, ct, err := s.renderer.Render(format, filtered.Bundle)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "render failed")
+		httpjson.Error(w, http.StatusInternalServerError, "render failed")
 		return
 	}
 
@@ -117,7 +118,7 @@ func (s *Server) serveDeepLink(w http.ResponseWriter, r *http.Request, token str
 	}
 	// Confirm the token is real before minting a link.
 	if _, _, err := s.idx.Lookup(r.Context(), token); err != nil {
-		writeError(w, http.StatusUnauthorized, "unknown or revoked token")
+		httpjson.Error(w, http.StatusUnauthorized, "unknown or revoked token")
 		return
 	}
 	subURL := requestSubscriptionURL(r, token)
@@ -154,13 +155,13 @@ func writeCached(w http.ResponseWriter, e cache.Entry) {
 func writeResolveError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, resolve.ErrUnknownToken):
-		writeError(w, http.StatusUnauthorized, "unknown or revoked token")
+		httpjson.Error(w, http.StatusUnauthorized, "unknown or revoked token")
 	case errors.Is(err, resolve.ErrNoSubscription):
-		writeError(w, http.StatusNotFound, "no active subscription for token")
+		httpjson.Error(w, http.StatusNotFound, "no active subscription for token")
 	case errors.Is(err, resolve.ErrExpired):
-		writeError(w, http.StatusGone, "subscription expired")
+		httpjson.Error(w, http.StatusGone, "subscription expired")
 	default:
-		writeError(w, http.StatusBadGateway, "upstream error")
+		httpjson.Error(w, http.StatusBadGateway, "upstream error")
 	}
 }
 

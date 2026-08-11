@@ -5,10 +5,10 @@ package query
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
+	"github.com/caspervpn/platform/httpjson"
 	"github.com/caspervpn/telemetry/internal/aggregate"
 	"github.com/caspervpn/telemetry/internal/config"
 	"github.com/caspervpn/telemetry/internal/store"
@@ -87,7 +87,7 @@ func (h *Handler) HandleAggregates(w http.ResponseWriter, r *http.Request) {
 			Trend: a.Trend, Spike: a.Spike, Dead: a.Dead, Degraded: a.Degraded, Reason: a.Reason,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	httpjson.Write(w, http.StatusOK, map[string]interface{}{
 		"generated_at": h.now().UTC(),
 		"aggregates":   items,
 	})
@@ -113,11 +113,5 @@ func (h *Handler) HandleRecommendations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	recs := aggregate.Recommend(sigs, health, now, h.window, h.verdict)
-	writeJSON(w, http.StatusOK, recs)
-}
-
-func writeJSON(w http.ResponseWriter, code int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	httpjson.Write(w, http.StatusOK, recs)
 }

@@ -3,9 +3,10 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/caspervpn/control-plane/internal/authz"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/caspervpn/control-plane/internal/authz"
 )
 
 // Router builds the chi mux. /healthz is public; everything under /v1 requires a

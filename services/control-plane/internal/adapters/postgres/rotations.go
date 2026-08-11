@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/domain"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // RotationStore persists node and user-secret rotation history.

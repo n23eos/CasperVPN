@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/caspervpn/billing/internal/controlplane"
 	"github.com/caspervpn/billing/internal/expiry"
 	"github.com/caspervpn/billing/internal/httpapi"
@@ -27,7 +29,7 @@ import (
 	"github.com/caspervpn/billing/internal/store"
 	"github.com/caspervpn/billing/internal/subscription"
 	"github.com/caspervpn/contracts"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/caspervpn/platform/envcfg"
 )
 
 const serviceName = "billing"
@@ -38,22 +40,37 @@ func main() {
 	catalog := loadCatalog()
 	repo, closeStore := newStore()
 	defer closeStore()
-	registry := buildRegistry()
 
-	cp := controlplane.NewHTTPClient(
-		getenv("CONTROL_PLANE_URL", "http://control-plane:8081"),
-		os.Getenv("CONTROL_PLANE_TOKEN"),
-	)
-	activator := subscription.NewActivator(cp, catalog, repo, time.Now)
-	processor := payment.NewProcessor(repo, activator, replayWindow(), time.Now)
+	var e envcfg.Env
+	registry := buildRegistry(&e)
+
+	// No compiled-in default for the control-plane endpoint: it belongs in config
+	// (docker-compose / deploy env), and billing cannot activate subscriptions
+	// without it, so fail fast instead of dialing a baked-in address.
+	cpURL := e.Str("CONTROL_PLANE_URL", "")
+	replayWindow := e.Duration("BILLING_REPLAY_WINDOW", time.Hour)
 	// On-chain poll/expire policy (variant A). SETTLEMENT_GRACE has no default — it is
 	// a per-chain policy and is REQUIRED (fail-fast) when an on-chain gateway is live.
 	onchainCfg := payment.OnChain{
-		Grace:        interval("SETTLEMENT_GRACE", 0),
-		PollLease:    interval("POLL_LEASE", 30*time.Second),
-		ChainTimeout: interval("CHAIN_CHECK_TIMEOUT", 10*time.Second),
-		Owner:        getenv("BILLING_INSTANCE_ID", idgen.New()), // observability only; unique per process
+		Grace:        e.Duration("SETTLEMENT_GRACE", 0),
+		PollLease:    e.Duration("POLL_LEASE", 30*time.Second),
+		ChainTimeout: e.Duration("CHAIN_CHECK_TIMEOUT", 10*time.Second),
+		Owner:        e.Str("BILLING_INSTANCE_ID", idgen.New()), // observability only; unique per process
 	}
+	staleThreshold := e.Duration("SETTLEMENT_STALE_THRESHOLD", 2*time.Minute)
+	sweepInterval := e.Duration("BILLING_SWEEP_INTERVAL", time.Minute)
+	pollInterval := e.Duration("BILLING_POLL_INTERVAL", 30*time.Second)
+	port := e.Str("PORT", "8084")
+	if err := e.Err(); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	if cpURL == "" {
+		log.Fatalf("config: CONTROL_PLANE_URL is required (billing activates subscriptions via the control-plane); set it to the control-plane base URL, e.g. http://control-plane:8081")
+	}
+
+	cp := controlplane.NewHTTPClient(cpURL, os.Getenv("CONTROL_PLANE_TOKEN"))
+	activator := subscription.NewActivator(cp, catalog, repo, time.Now)
+	processor := payment.NewProcessor(repo, activator, replayWindow, time.Now)
 	if registryHasOnChain(registry) {
 		if err := onchainCfg.Validate(); err != nil {
 			log.Fatalf("on-chain config: %v", err)
@@ -65,7 +82,7 @@ func main() {
 	poller := payment.NewPoller(repo, registry, processor, payment.Recovery{
 		// Must exceed the activation HTTP timeout (control-plane client is 10s, and an
 		// Activate makes up to a few calls) so recovery never pre-empts a live settle.
-		StaleThreshold: interval("SETTLEMENT_STALE_THRESHOLD", 2*time.Minute),
+		StaleThreshold: staleThreshold,
 	}, onchainCfg, recoveryLog, time.Now)
 	sweeper := expiry.NewSweeper(repo, cp, time.Now)
 
@@ -73,12 +90,12 @@ func main() {
 	defer stop()
 
 	// Background loops: expiry sweep + settlement polling.
-	go runLoop(ctx, "sweeper", interval("BILLING_SWEEP_INTERVAL", time.Minute), func() {
+	go runLoop(ctx, "sweeper", sweepInterval, func() {
 		if err := sweeper.RunOnce(ctx); err != nil {
 			log.Printf("sweeper: %v", err)
 		}
 	})
-	go runLoop(ctx, "poller", interval("BILLING_POLL_INTERVAL", 30*time.Second), func() {
+	go runLoop(ctx, "poller", pollInterval, func() {
 		if err := poller.RunOnce(ctx); err != nil {
 			log.Printf("poller: %v", err)
 		}
@@ -86,7 +103,7 @@ func main() {
 
 	api := httpapi.New(registry, processor, repo, catalog)
 	srv := &http.Server{
-		Addr:              ":" + getenv("PORT", "8084"),
+		Addr:              ":" + port,
 		Handler:           api.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -122,7 +139,7 @@ func registryHasOnChain(reg *payment.Registry) bool {
 	return false
 }
 
-func buildRegistry() *payment.Registry {
+func buildRegistry(e *envcfg.Env) *payment.Registry {
 	reg := payment.NewRegistry()
 
 	if base := os.Getenv("BTCPAY_BASE_URL"); base != "" {
@@ -131,7 +148,7 @@ func buildRegistry() *payment.Registry {
 			APIKey:        os.Getenv("BTCPAY_API_KEY"),
 			StoreID:       os.Getenv("BTCPAY_STORE_ID"),
 			WebhookSecret: os.Getenv("BTCPAY_WEBHOOK_SECRET"),
-			Currencies:    splitCSV(getenv("BTCPAY_CURRENCIES", "BTC")),
+			Currencies:    splitCSV(e.Str("BTCPAY_CURRENCIES", "BTC")),
 		}
 		// Fail fast: a configured gateway with no webhook secret would verify
 		// forged "settled" webhooks against an empty HMAC key.
@@ -143,7 +160,7 @@ func buildRegistry() *payment.Registry {
 	}
 
 	if secret := os.Getenv("BILLING_MOCK_SECRET"); secret != "" {
-		reg.Register(mock.New(secret, splitCSV(getenv("BILLING_MOCK_CURRENCIES", "BTC,XMR"))))
+		reg.Register(mock.New(secret, splitCSV(e.Str("BILLING_MOCK_CURRENCIES", "BTC,XMR"))))
 		log.Printf("registered gateway: mock (dev)")
 	}
 
@@ -199,24 +216,6 @@ func runLoop(ctx context.Context, name string, every time.Duration, fn func()) {
 			fn()
 		}
 	}
-}
-
-func replayWindow() time.Duration { return interval("BILLING_REPLAY_WINDOW", time.Hour) }
-
-func interval(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return def
-}
-
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 func splitCSV(s string) []string {

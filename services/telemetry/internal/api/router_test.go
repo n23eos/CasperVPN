@@ -40,7 +40,7 @@ func newServer(token string) http.Handler {
 // sources report a DPI block for one node/transport, and the recommendations API
 // then returns an actionable mark_node_blocked — the core acceptance criterion.
 func TestLoop_IngestToRecommendation(t *testing.T) {
-	srv := newServer("") // no auth in this test
+	srv := newServer("loop-token")
 
 	var items []string
 	for asn := 1; asn <= 6; asn++ {
@@ -58,7 +58,9 @@ func TestLoop_IngestToRecommendation(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/recommendations", nil))
+	r := httptest.NewRequest(http.MethodGet, "/v1/recommendations", nil)
+	r.Header.Set("Authorization", "Bearer loop-token")
+	srv.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("recommendations status = %d, want 200", w.Code)
 	}
@@ -101,15 +103,39 @@ func TestAuth_InternalEndpointsRequireToken(t *testing.T) {
 	}
 }
 
-func TestMetrics_Exposed(t *testing.T) {
+// TestAuth_EmptyTokenFailsClosed guards the fail-closed policy: an unset
+// internal token must disable the internal surface, not open it — HealthEvents
+// feed node rotation, so pass-through would let anyone poison the loop.
+func TestAuth_EmptyTokenFailsClosed(t *testing.T) {
 	srv := newServer("")
+
+	for _, path := range []string{"/v1/health", "/v1/aggregates", "/v1/recommendations", "/metrics"} {
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s with empty configured token = %d, want 403", path, w.Code)
+		}
+	}
+
+	// Public surface stays open.
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("healthz = %d, want 200", w.Code)
+	}
+}
+
+func TestMetrics_Exposed(t *testing.T) {
+	srv := newServer("metrics-token")
 	// Ingest one signal so a counter exists.
 	body := `{"signals":[{"signal_id":"m1","node_id":"n1","transport_type":"hysteria2",` +
 		`"region":"RU-MOW","signal_type":"ok","observed_at":"2026-07-07T11:59:00Z"}]}`
 	srv.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/signals", strings.NewReader(body)))
 
 	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	r := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	r.Header.Set("Authorization", "Bearer metrics-token")
+	srv.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("metrics = %d, want 200", w.Code)
 	}

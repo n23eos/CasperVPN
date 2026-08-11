@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/caspervpn/platform/httpjson"
 )
 
 // handleInternal serves the bearer-guarded control-plane callbacks:
@@ -16,15 +18,15 @@ import (
 // Disabled entirely (404) when INTERNAL_TOKEN is unset.
 func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.InternalToken == "" {
-		writeError(w, http.StatusNotFound, "not found")
+		httpjson.Error(w, http.StatusNotFound, "not found")
 		return
 	}
 	if !s.authorizedInternal(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -36,7 +38,7 @@ func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request) {
 	case "invalidate":
 		s.internalInvalidate(w, r)
 	default:
-		writeError(w, http.StatusNotFound, "not found")
+		httpjson.Error(w, http.StatusNotFound, "not found")
 	}
 }
 
@@ -56,11 +58,11 @@ type registerReq struct {
 func (s *Server) internalRegisterToken(w http.ResponseWriter, r *http.Request) {
 	var req registerReq
 	if err := decodeJSON(r, &req); err != nil || req.Token == "" || req.UserID == "" || req.SubscriptionID == "" {
-		writeError(w, http.StatusBadRequest, "token, user_id and subscription_id are required")
+		httpjson.Error(w, http.StatusBadRequest, "token, user_id and subscription_id are required")
 		return
 	}
 	if err := s.idx.Register(r.Context(), req.Token, req.UserID, req.SubscriptionID); err != nil {
-		writeError(w, http.StatusInternalServerError, "register failed")
+		httpjson.Error(w, http.StatusInternalServerError, "register failed")
 		return
 	}
 	// A re-registered token may change its target; drop any stale cache.
@@ -86,7 +88,7 @@ type revokeReq struct {
 func (s *Server) internalRevokeToken(w http.ResponseWriter, r *http.Request) {
 	var req revokeReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+		httpjson.Error(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	set := 0
@@ -96,7 +98,7 @@ func (s *Server) internalRevokeToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if set != 1 {
-		writeError(w, http.StatusBadRequest, "exactly one of token, user_id, subscription_id is required")
+		httpjson.Error(w, http.StatusBadRequest, "exactly one of token, user_id, subscription_id is required")
 		return
 	}
 
@@ -110,7 +112,7 @@ func (s *Server) internalRevokeToken(w http.ResponseWriter, r *http.Request) {
 		_, err = s.idx.RevokeBySubscription(r.Context(), req.SubscriptionID)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "revoke failed")
+		httpjson.Error(w, http.StatusInternalServerError, "revoke failed")
 		return
 	}
 	// Bump all caches so a revoked token cannot be served from cache until TTL
@@ -128,7 +130,7 @@ type invalidateReq struct {
 func (s *Server) internalInvalidate(w http.ResponseWriter, r *http.Request) {
 	var req invalidateReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
+		httpjson.Error(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	switch {

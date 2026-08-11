@@ -13,6 +13,28 @@ import (
 	"time"
 )
 
+// processAlive reports whether pid is a live (non-zombie) process. kill(pid, 0)
+// alone is not enough: in containers whose PID 1 does not reap orphans, a killed
+// child lingers as a zombie and kill(pid, 0) still succeeds on it.
+func processAlive(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return false
+	}
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		// No /proc entry (e.g. non-Linux unix): fall back to the signal check,
+		// which said the process exists.
+		return true
+	}
+	// State is the field right after the parenthesized comm, which may itself
+	// contain spaces — parse from the last ')'.
+	rest := string(stat)
+	if i := strings.LastIndexByte(rest, ')'); i >= 0 {
+		rest = strings.TrimSpace(rest[i+1:])
+	}
+	return !strings.HasPrefix(rest, "Z")
+}
+
 // TestTimeoutKillsProcessTree proves the timeout kills the WHOLE process tree, not
 // just that Run() returns quickly: the script forks a background child that would
 // create a marker after a delay, then blocks. After the timeout the child must be
@@ -46,7 +68,7 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse child pid %q: %v", pidRaw, err)
 	}
-	if err := syscall.Kill(pid, 0); err == nil {
+	if processAlive(pid) {
 		t.Fatalf("child %d still alive after timeout — process tree not killed", pid)
 	}
 

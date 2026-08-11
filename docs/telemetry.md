@@ -174,7 +174,7 @@ dead/degraded с человекочитаемым `reason`.
 | Переменная | Default | Назначение |
 |------------|---------|------------|
 | `PORT` | `8085` | порт HTTP |
-| `TELEMETRY_INTERNAL_TOKEN` | — | bearer для internal-эндпоинтов (пусто = dev, без auth) |
+| `TELEMETRY_INTERNAL_TOKEN` | — | bearer для internal-эндпоинтов (пусто = internal-эндпоинты отключены, 403) |
 | `DATABASE_URL` | — | DSN Postgres; задан → durable-store, пусто → in-memory |
 | `TELEMETRY_WINDOW` | `15m` | окно агрегации/вердиктов |
 | `TELEMETRY_RETENTION` | `72h` | горизонт хранения |

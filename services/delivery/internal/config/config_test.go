@@ -9,7 +9,10 @@ func TestLoadDefaults(t *testing.T) {
 	// With no env set, defaults apply and no channel endpoints are present
 	// (unset channels are simply not configured — dynamic, not hardcoded).
 	t.Setenv("PORT", "")
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if cfg.Port != defaultPort {
 		t.Fatalf("port = %q", cfg.Port)
 	}
@@ -28,7 +31,10 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("DELIVERY_BOT_COOLDOWN", "10s")
 	t.Setenv("DELIVERY_BOT_RATE_PER_SEC", "4")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if cfg.Port != "9999" {
 		t.Fatalf("port = %q", cfg.Port)
 	}
@@ -43,11 +49,10 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 }
 
-func TestParseHelpersIgnoreBadValues(t *testing.T) {
+func TestLoadFailsOnMalformedValues(t *testing.T) {
 	t.Setenv("DELIVERY_BOT_RATE_PER_SEC", "not-an-int")
 	t.Setenv("DELIVERY_BOT_COOLDOWN", "not-a-duration")
-	cfg := Load()
-	if cfg.Bot.RatePerSec != defaultBotRatePerSec || cfg.Bot.Cooldown != defaultBotCooldown {
-		t.Fatalf("bad env values should fall back to defaults: %+v", cfg.Bot)
+	if _, err := Load(); err == nil {
+		t.Fatal("malformed env values must fail Load, got nil error")
 	}
 }

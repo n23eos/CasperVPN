@@ -6,10 +6,10 @@
 package config
 
 import (
-	"os"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/caspervpn/platform/envcfg"
 )
 
 const (
@@ -69,80 +69,48 @@ type BotTunables struct {
 	Cooldown   time.Duration
 }
 
-// Load reads configuration from the environment, applying defaults.
-func Load() Config {
-	return Config{
-		Port:           getStr("PORT", defaultPort),
-		AdminToken:     getStr("DELIVERY_ADMIN_TOKEN", ""),
-		ArtifactMaxAge: getDur("DELIVERY_ARTIFACT_MAX_AGE", 0),
-		SignKeyID:      getStr("DELIVERY_SIGN_KEY_ID", "delivery-ephemeral"),
-		SignSeedB64:    getStr("DELIVERY_SIGN_SEED", ""),
-		VerifyKeys:     parseKeyMap(getStr("DELIVERY_VERIFY_KEYS", "")),
-		SealKeyB64:     getStr("DELIVERY_SEAL_KEY", ""),
+// Load reads configuration from the environment, applying defaults. A
+// malformed value (bad int/duration) is an error: startup must fail loudly
+// instead of silently running with a default.
+func Load() (Config, error) {
+	var e envcfg.Env
+	cfg := Config{
+		Port:           e.Str("PORT", defaultPort),
+		AdminToken:     e.Str("DELIVERY_ADMIN_TOKEN", ""),
+		ArtifactMaxAge: e.Duration("DELIVERY_ARTIFACT_MAX_AGE", 0),
+		SignKeyID:      e.Str("DELIVERY_SIGN_KEY_ID", "delivery-ephemeral"),
+		SignSeedB64:    e.Str("DELIVERY_SIGN_SEED", ""),
+		VerifyKeys:     parseKeyMap(e.CSV("DELIVERY_VERIFY_KEYS")),
+		SealKeyB64:     e.Str("DELIVERY_SEAL_KEY", ""),
 
-		DNSZone:       getStr("DELIVERY_DNS_ZONE", ""),
-		DoHEndpoint:   getStr("DELIVERY_DOH_ENDPOINT", ""),
-		GitRawMirrors: splitCSV(getStr("DELIVERY_GITRAW_MIRRORS", "")),
+		DNSZone:       e.Str("DELIVERY_DNS_ZONE", ""),
+		DoHEndpoint:   e.Str("DELIVERY_DOH_ENDPOINT", ""),
+		GitRawMirrors: e.CSV("DELIVERY_GITRAW_MIRRORS"),
 
-		TelegramBase:  getStr("DELIVERY_TELEGRAM_BASE", ""),
-		TelegramToken: getStr("DELIVERY_TELEGRAM_TOKEN", ""),
-		MaxBase:       getStr("DELIVERY_MAX_BASE", ""),
-		MaxToken:      getStr("DELIVERY_MAX_TOKEN", ""),
+		TelegramBase:  e.Str("DELIVERY_TELEGRAM_BASE", ""),
+		TelegramToken: e.Str("DELIVERY_TELEGRAM_TOKEN", ""),
+		MaxBase:       e.Str("DELIVERY_MAX_BASE", ""),
+		MaxToken:      e.Str("DELIVERY_MAX_TOKEN", ""),
 
 		Bot: BotTunables{
-			RatePerSec: getInt("DELIVERY_BOT_RATE_PER_SEC", defaultBotRatePerSec),
-			Burst:      getInt("DELIVERY_BOT_BURST", defaultBotBurst),
-			Cooldown:   getDur("DELIVERY_BOT_COOLDOWN", defaultBotCooldown),
+			RatePerSec: e.Int("DELIVERY_BOT_RATE_PER_SEC", defaultBotRatePerSec),
+			Burst:      e.Int("DELIVERY_BOT_BURST", defaultBotBurst),
+			Cooldown:   e.Duration("DELIVERY_BOT_COOLDOWN", defaultBotCooldown),
 		},
 	}
+	if err := e.Err(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
-// parseKeyMap parses "id1:pub1,id2:pub2" into a map.
-func parseKeyMap(s string) map[string]string {
+// parseKeyMap parses ["id1:pub1", "id2:pub2"] pairs into a map.
+func parseKeyMap(pairs []string) map[string]string {
 	out := map[string]string{}
-	for _, pair := range splitCSV(s) {
+	for _, pair := range pairs {
 		if i := strings.IndexByte(pair, ':'); i > 0 {
 			out[pair[:i]] = pair[i+1:]
 		}
 	}
 	return out
-}
-
-func splitCSV(s string) []string {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func getStr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func getInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func getDur(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return def
 }

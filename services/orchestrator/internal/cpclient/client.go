@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/caspervpn/contracts"
-	"github.com/caspervpn/orchestrator/internal/httpx"
 	"github.com/caspervpn/orchestrator/internal/ports"
+	"github.com/caspervpn/platform/httpx"
 )
 
 // Client talks to the control-plane.

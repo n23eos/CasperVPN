@@ -49,7 +49,7 @@ switch — not a single protocol monoculture.
 
 ## Services
 
-Go workspace monorepo (`go.work`): `packages/contracts` + 6 services. Each is
+Go workspace monorepo (`go.work`): `packages/contracts` + `packages/platform` + 6 services. Each is
 a separate module `github.com/caspervpn/<name>`.
 
 | Service | Port (dev) | Role |
@@ -85,6 +85,7 @@ Infra guards without cloud: `make infra-guards`.
 
 ```
 packages/contracts/   frozen types/schemas/OpenAPI (the single contract)
+packages/platform/    shared service plumbing: envcfg / httpx / httpjson (not frozen)
 services/<name>/       6 services (control-plane, subscription, delivery, billing, telemetry, orchestrator)
 infra/                 fleet Terraform + Ansible; scripts/ (node lifecycle, preflight, gate0)
 test/e2e/              docker e2e + pure-shell guards

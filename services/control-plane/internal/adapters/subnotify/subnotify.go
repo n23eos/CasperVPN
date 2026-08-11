@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/caspervpn/platform/httpx"
 )
 
 // Notifier calls the subscription service's internal API.
@@ -89,7 +91,7 @@ func (n *Notifier) post(ctx context.Context, path string, payload any) error {
 		return fmt.Errorf("subnotify: %s: %w", path, err)
 	}
 	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, httpx.MaxBody))
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

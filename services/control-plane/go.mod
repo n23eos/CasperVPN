@@ -1,9 +1,10 @@
 module github.com/caspervpn/control-plane
 
-go 1.20
+go 1.22
 
 require (
 	github.com/caspervpn/contracts v0.0.0
+	github.com/caspervpn/platform v0.0.0
 	github.com/go-chi/chi/v5 v5.0.12
 	github.com/jackc/pgx/v5 v5.5.5
 	gopkg.in/yaml.v3 v3.0.1
@@ -22,3 +23,5 @@ require (
 
 // Resolved via the workspace (go.work) during the scaffolding wave.
 replace github.com/caspervpn/contracts => ../../packages/contracts
+
+replace github.com/caspervpn/platform => ../../packages/platform

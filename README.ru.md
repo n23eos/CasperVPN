@@ -43,7 +43,7 @@ English version — [README.md](README.md).
 
 ## Сервисы
 
-Монорепо на Go workspace (`go.work`): `packages/contracts` + 6 сервисов. Каждый —
+Монорепо на Go workspace (`go.work`): `packages/contracts` + `packages/platform` + 6 сервисов. Каждый —
 отдельный модуль `github.com/caspervpn/<name>`.
 
 | Сервис | Порт (dev) | Роль |
@@ -78,6 +78,7 @@ Go floor **1.20** (потолок из решения — 1.23). Docker-обра
 
 ```
 packages/contracts/   заморожённые типы/схемы/OpenAPI (единый контракт)
+packages/platform/    общий плюмбинг сервисов: envcfg / httpx / httpjson (не заморожен)
 services/<name>/       6 сервисов (control-plane, subscription, delivery, billing, telemetry, orchestrator)
 infra/                 Terraform + Ansible флота; scripts/ (node lifecycle, preflight, gate0)
 test/e2e/              docker e2e + pure-shell guards

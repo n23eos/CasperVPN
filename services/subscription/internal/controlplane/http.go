@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/platform/httpx"
 )
 
 // HTTPClient is a Provider backed by the control-plane REST API (frozen
@@ -51,11 +51,18 @@ type nodePage struct {
 	NextCursor string           `json:"next_cursor"`
 }
 
+// maxPages bounds the cursor-pagination loop in ListNodes so a misbehaving
+// (or compromised) control-plane cannot spin the client forever.
+const maxPages = 1000
+
 // ListNodes implements Provider via GET /v1/nodes, following cursor pagination.
 func (c *HTTPClient) ListNodes(ctx context.Context, f NodeFilter) ([]contracts.Node, error) {
 	var all []contracts.Node
 	cursor := ""
-	for {
+	for pages := 0; ; pages++ {
+		if pages >= maxPages {
+			return nil, fmt.Errorf("controlplane /v1/nodes: pagination loop: exceeded %d pages", maxPages)
+		}
 		q := url.Values{}
 		if f.Status != "" {
 			q.Set("status", string(f.Status))
@@ -79,6 +86,9 @@ func (c *HTTPClient) ListNodes(ctx context.Context, f NodeFilter) ([]contracts.N
 		all = append(all, page.Items...)
 		if page.NextCursor == "" || (f.Limit > 0 && len(all) >= f.Limit) {
 			break
+		}
+		if page.NextCursor == cursor {
+			return nil, fmt.Errorf("controlplane /v1/nodes: pagination loop: cursor %q did not advance", cursor)
 		}
 		cursor = page.NextCursor
 	}
@@ -107,7 +117,7 @@ func (c *HTTPClient) getJSON(ctx context.Context, path string, out interface{}) 
 	case resp.StatusCode >= 400:
 		return fmt.Errorf("controlplane %s: status %d", path, resp.StatusCode)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := httpx.DecodeJSON(resp.Body, out); err != nil {
 		return fmt.Errorf("controlplane %s: decode: %w", path, err)
 	}
 	return nil

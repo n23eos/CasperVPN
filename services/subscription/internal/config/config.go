@@ -8,8 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
+
+	"github.com/caspervpn/platform/envcfg"
 )
 
 // Defaults that are NOT censorship-relevant (safe to keep in code).
@@ -66,26 +67,32 @@ type Config struct {
 
 // Load resolves configuration from the environment, reading the routing-policy
 // file referenced by ROUTING_POLICY_FILE (default config/routing.ru.json).
+// A malformed env value (bad integer/duration) fails startup instead of
+// silently falling back to a default.
 func Load() (Config, error) {
+	var e envcfg.Env
 	c := Config{
-		Port:                envOr("PORT", defaultPort),
-		ControlPlaneURL:     os.Getenv("CONTROL_PLANE_URL"),
-		ControlPlaneToken:   os.Getenv("CONTROL_PLANE_TOKEN"),
+		Port:                e.Str("PORT", defaultPort),
+		ControlPlaneURL:     e.Str("CONTROL_PLANE_URL", ""),
+		ControlPlaneToken:   e.Str("CONTROL_PLANE_TOKEN", ""),
 		ControlPlaneTimeout: defaultControlPlaneTimeout,
-		InternalToken:       os.Getenv("INTERNAL_TOKEN"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		ProfileUpdateHours:  envIntOr("PROFILE_UPDATE_INTERVAL_HOURS", defaultProfileUpdateHours),
-		CacheTTL:            envDurationOr("CACHE_TTL", defaultCacheTTL),
-		ProfileTitle:        os.Getenv("SUBSCRIPTION_PROFILE_TITLE"),
-		SupportURL:          os.Getenv("SUBSCRIPTION_SUPPORT_URL"),
-		ProfileWebPageURL:   os.Getenv("SUBSCRIPTION_WEB_PAGE_URL"),
-		Announce:            os.Getenv("SUBSCRIPTION_ANNOUNCE"),
+		InternalToken:       e.Str("INTERNAL_TOKEN", ""),
+		DatabaseURL:         e.Str("DATABASE_URL", ""),
+		ProfileUpdateHours:  e.Int("PROFILE_UPDATE_INTERVAL_HOURS", defaultProfileUpdateHours),
+		CacheTTL:            e.Duration("CACHE_TTL", defaultCacheTTL),
+		ProfileTitle:        e.Str("SUBSCRIPTION_PROFILE_TITLE", ""),
+		SupportURL:          e.Str("SUBSCRIPTION_SUPPORT_URL", ""),
+		ProfileWebPageURL:   e.Str("SUBSCRIPTION_WEB_PAGE_URL", ""),
+		Announce:            e.Str("SUBSCRIPTION_ANNOUNCE", ""),
+	}
+	path := e.Str("ROUTING_POLICY_FILE", defaultRoutingPolicyFilePath)
+	if err := e.Err(); err != nil {
+		return Config{}, err
 	}
 	if c.ProfileUpdateHours < 1 {
 		return Config{}, fmt.Errorf("config: PROFILE_UPDATE_INTERVAL_HOURS must be >= 1")
 	}
 
-	path := envOr("ROUTING_POLICY_FILE", defaultRoutingPolicyFilePath)
 	rp, err := LoadRoutingPolicy(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("config: routing policy: %w", err)
@@ -110,29 +117,4 @@ func LoadRoutingPolicy(path string) (RoutingPolicy, error) {
 		return RoutingPolicy{}, err
 	}
 	return rp, nil
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envIntOr(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func envDurationOr(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return def
 }

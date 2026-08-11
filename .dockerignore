@@ -1,0 +1,33 @@
+# Keep the build context to what `go build` needs: the whole repo is COPYed
+# (go.work resolves cross-module deps), so everything irrelevant or sensitive
+# must be excluded here — the context otherwise drags in .git, artifacts, and
+# any local secret-bearing files (.env, *.tfvars are gitignored but NOT
+# context-ignored without this file).
+
+.git
+.github
+.gitignore
+
+# Build artifacts and local state
+bin/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.runs/
+
+# Local secrets / env — never in an image or its context
+.env
+.env.*
+*.tfvars
+
+# Docs, web assets, infra: not needed to compile services
+docs/
+web/
+infra/
+test/
+*.md
+
+# Editor/OS noise
+.DS_Store
+.idea/
+.vscode/

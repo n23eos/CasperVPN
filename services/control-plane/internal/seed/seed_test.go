@@ -2,6 +2,7 @@ package seed
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/caspervpn/contracts"
@@ -29,7 +30,10 @@ func TestRun_SeedsActiveFleetIdempotently(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if err := Run(ctx, svc); err != nil {
+	// Use the shipped dev fixture so the test also guards that the file stays valid.
+	nodesFile := filepath.Join("..", "..", "config", "seed.nodes.json")
+
+	if err := Run(ctx, svc, nodesFile); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
 
@@ -47,10 +51,18 @@ func TestRun_SeedsActiveFleetIdempotently(t *testing.T) {
 	}
 
 	// Idempotent: a second run sees a non-empty fleet and does nothing.
-	if err := Run(ctx, svc); err != nil {
+	if err := Run(ctx, svc, nodesFile); err != nil {
 		t.Fatalf("second seed run: %v", err)
 	}
 	if again, _ := nodes.ListActive(ctx); len(again) != 2 {
 		t.Fatalf("after re-run active = %d, want 2 (idempotent)", len(again))
+	}
+}
+
+// No-hardcode guard: with no nodes file the seeder must refuse to run instead of
+// falling back to embedded mimicry domains/IPs.
+func TestRun_RequiresNodesFile(t *testing.T) {
+	if err := Run(context.Background(), Services{}, ""); err == nil {
+		t.Fatal("want error when SEED_NODES_FILE is empty")
 	}
 }

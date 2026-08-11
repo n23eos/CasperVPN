@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func TestHandleSignals_Accepts(t *testing.T) {
 	if resp.Accepted != 1 || resp.Rejected != 0 {
 		t.Fatalf("accepted/rejected = %d/%d, want 1/0", resp.Accepted, resp.Rejected)
 	}
-	got, _ := st.SignalsSince(nil, time.Time{})
+	got, _ := st.SignalsSince(context.Background(), time.Time{})
 	if len(got) != 1 {
 		t.Fatalf("store has %d signals, want 1", len(got))
 	}
@@ -114,7 +115,7 @@ func TestHandleHealth_Accepts(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body.String())
 	}
-	got, _ := st.HealthSince(nil, time.Time{})
+	got, _ := st.HealthSince(context.Background(), time.Time{})
 	if len(got) != 1 {
 		t.Fatalf("store has %d health events, want 1", len(got))
 	}

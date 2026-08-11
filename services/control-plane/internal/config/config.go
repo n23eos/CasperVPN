@@ -5,10 +5,10 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/caspervpn/control-plane/internal/authz"
+	"github.com/caspervpn/platform/envcfg"
 )
 
 // Config is the resolved control-plane configuration.
@@ -38,17 +38,21 @@ type Config struct {
 
 // Load reads configuration from the environment and validates it.
 func Load() (Config, error) {
+	var e envcfg.Env
 	c := Config{
-		Port:           getenv("PORT", "8081"),
+		Port:           e.Str("PORT", "8081"),
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
-		Env:            getenv("ENV", "dev"),
-		RebuildWorkers: getenvInt("REBUILD_WORKERS", 4),
-		RebuildBuffer:  getenvInt("REBUILD_BUFFER", 1024),
-		RebuildDurable: getenvBool("REBUILD_DURABLE", false),
+		Env:            e.Str("ENV", "dev"),
+		RebuildWorkers: e.Int("REBUILD_WORKERS", 4),
+		RebuildBuffer:  e.Int("REBUILD_BUFFER", 1024),
+		RebuildDurable: e.Bool("REBUILD_DURABLE", false),
 
 		SubscriptionInternalURL:    os.Getenv("SUBSCRIPTION_INTERNAL_URL"),
 		SubscriptionInternalToken:  os.Getenv("SUBSCRIPTION_INTERNAL_TOKEN"),
-		SubscriptionTimeoutSeconds: getenvInt("SUBSCRIPTION_TIMEOUT_SECONDS", 5),
+		SubscriptionTimeoutSeconds: e.Int("SUBSCRIPTION_TIMEOUT_SECONDS", 5),
+	}
+	if err := e.Err(); err != nil {
+		return Config{}, err
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: DATABASE_URL is required")
@@ -102,29 +106,4 @@ func parseTokens(raw string) (map[string]authz.Role, error) {
 		out[tok] = role
 	}
 	return out, nil
-}
-
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func getenvInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func getenvBool(key string, def bool) bool {
-	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
-	}
-	return def
 }
