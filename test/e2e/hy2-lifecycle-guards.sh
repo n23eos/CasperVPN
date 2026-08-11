@@ -21,7 +21,9 @@ bad()  { echo "  FAIL: $1" >&2; fail=$((fail+1)); }
 SECRET='{"hy2_password":"super-secret-pw","hy2_tls_key":"KEYDATA"}'
 VF="$(write_secure_vars_file "$SECRET")"
 trap 'rm -f "$VF"' EXIT
-mode="$(stat -f '%Lp' "$VF" 2>/dev/null || stat -c '%a' "$VF")"
+# GNU form first: on Linux, BSD `stat -f` does not fail — it prints filesystem
+# info — so it must be the fallback (GNU `stat -c` fails cleanly on macOS).
+mode="$(stat -c '%a' "$VF" 2>/dev/null || stat -f '%Lp' "$VF")"
 [ "$mode" = "600" ] && ok "vars file mode 0600" || bad "vars file mode is $mode, want 600"
 [ "$(cat "$VF")" = "$SECRET" ] && ok "vars file holds the content" || bad "vars file content mismatch"
 

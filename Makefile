@@ -13,7 +13,7 @@ MODULES := packages/contracts $(SERVICES)
 
 BIN := bin
 
-.PHONY: all build test lint vet fmt tidy up down clean help e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-reconcile-signal e2e-user-removal e2e-reconcile \
+.PHONY: all build test lint vet fmt tidy up down clean help e2e-guards e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-reconcile-signal e2e-user-removal e2e-reconcile \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode infra-guards gate0
 
 INFRA := infra
@@ -81,6 +81,9 @@ up:
 ## down: stop local dev stack
 down:
 	docker-compose -f docker-compose.dev.yml down
+
+## e2e-guards: all pure-shell e2e guards (no cloud, no docker, no sing-box) — the CI-cheap subset
+e2e-guards: e2e-hy2-guards e2e-probe-gate e2e-reconcile-state e2e-reconcile-signal
 
 ## e2e-first-user: full happy path against a clean isolated stack (see test/e2e/first-user.sh)
 e2e-first-user:
