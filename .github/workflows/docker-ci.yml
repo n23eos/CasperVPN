@@ -1,0 +1,55 @@
+# Docker gate: the shared Dockerfile and the dev compose file were previously
+# never exercised in CI — an image-build regression surfaced only on an
+# operator's `make up`. One representative service build (the Dockerfile is
+# identical for all six modulo the SERVICE arg) plus a compose config check.
+name: docker-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.dev.yml"
+      - "services/**"
+      - "packages/**"
+      - "go.work"
+      - ".github/workflows/docker-ci.yml"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.dev.yml"
+      - "services/**"
+      - "packages/**"
+      - "go.work"
+      - ".github/workflows/docker-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: docker build (control-plane)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image
+        run: docker build --build-arg SERVICE=control-plane -t caspervpn/control-plane:ci .
+      - name: image runs as nonroot
+        run: |
+          uid="$(docker inspect --format '{{.Config.User}}' caspervpn/control-plane:ci)"
+          echo "USER=$uid"
+          test "$uid" = "nonroot"
+
+  compose:
+    name: compose config check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate docker-compose.dev.yml
+        run: docker compose -f docker-compose.dev.yml config -q
