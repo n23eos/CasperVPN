@@ -78,10 +78,19 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
-	srv := &http.Server{Addr: ":" + cfg.Port, Handler: mux}
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
 	}()
 	log.Printf("%s listening on %s (contracts %s)", serviceName, srv.Addr, contracts.TransportVersionV1)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
