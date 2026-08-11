@@ -39,6 +39,7 @@ type Cache struct {
 	version uint64
 	entries map[string]stored
 	now     func() time.Time
+	sweepAt int
 }
 
 // New builds a cache with the given TTL. now may be nil (defaults to time.Now).
@@ -81,6 +82,25 @@ func (c *Cache) Put(token, format string, e Entry) {
 		version: c.version,
 		expires: c.now().Add(c.ttl),
 	}
+	c.maybeSweep()
+}
+
+// maybeSweep drops expired and version-stale entries once the map doubles past
+// the last sweep mark, so memory stays bounded by the live working set instead
+// of growing with every token×format×personalization combination ever served.
+// Amortized O(1) per Put. Caller must hold c.mu.
+func (c *Cache) maybeSweep() {
+	const minSweep = 1024
+	if len(c.entries) < c.sweepAt || len(c.entries) < minSweep {
+		return
+	}
+	now := c.now()
+	for k, s := range c.entries {
+		if s.version != c.version || !s.expires.After(now) {
+			delete(c.entries, k)
+		}
+	}
+	c.sweepAt = 2 * len(c.entries)
 }
 
 // evictLocked frees room: dead entries first (expired / stale version), then —
@@ -109,9 +129,11 @@ func (c *Cache) InvalidateAll() {
 	c.version++
 }
 
-// InvalidateToken drops all cached formats for one token (leaked-link / rotate).
-// It scans by key prefix rather than a hardcoded format list: a newly added
-// render format must never keep serving a revoked token from cache.
+// InvalidateToken drops all cached variants for one token (leaked-link /
+// rotate). It scans by key prefix rather than a fixed format list: keys carry
+// personalization suffixes (e.g. "singbox:RU:ios"), and a newly added render
+// format must never keep serving a revoked token from cache. The walk is fine
+// because token invalidation is a rare, admin-triggered event.
 func (c *Cache) InvalidateToken(token string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
