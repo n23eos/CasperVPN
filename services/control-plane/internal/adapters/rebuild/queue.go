@@ -37,6 +37,10 @@ type Queue struct {
 	workers   int
 	jobTTL    time.Duration
 	logger    *log.Logger
+	// pending caps the number of offload goroutines a full channel may spawn;
+	// done (closed on shutdown) lets every parked offload exit instead of leaking.
+	pending chan struct{}
+	done    chan struct{}
 }
 
 // New builds a Queue. buffer sizes the channel; workers is the concurrency.
@@ -57,11 +61,17 @@ func New(sets domain.SetRepo, rebuilder Rebuilder, buffer, workers int, logger *
 		workers:   workers,
 		jobTTL:    30 * time.Second,
 		logger:    logger,
+		pending:   make(chan struct{}, buffer),
+		done:      make(chan struct{}),
 	}
 }
 
 // Start launches the workers; they stop when ctx is cancelled.
 func (q *Queue) Start(ctx context.Context) {
+	go func() {
+		<-ctx.Done()
+		close(q.done)
+	}()
 	for i := 0; i < q.workers; i++ {
 		go q.worker(ctx)
 	}
@@ -73,13 +83,32 @@ func (q *Queue) EnqueueNode(nodeID string) { q.enqueue(job{kind: jobNode, id: no
 // EnqueueUser schedules a rebuild for one user.
 func (q *Queue) EnqueueUser(userID string) { q.enqueue(job{kind: jobUser, id: userID}) }
 
-// enqueue never blocks the caller (a request handler): it offloads a full
-// channel to a goroutine rather than stalling the request path.
+// enqueue tries not to block the caller (a request handler): a full channel is
+// offloaded to a goroutine. Offloads are capped by the pending semaphore — a
+// blocked node fanning out to thousands of users must not spawn an unbounded
+// goroutine pile — and every parked offload exits on shutdown via done. With the
+// buffer AND all offload slots exhausted the caller blocks (bounded backpressure):
+// jobs carry invalidation, so dropping them silently is not an option.
 func (q *Queue) enqueue(j job) {
 	select {
 	case q.jobs <- j:
+		return
 	default:
-		go func() { q.jobs <- j }()
+	}
+	select {
+	case q.pending <- struct{}{}:
+		go func() {
+			defer func() { <-q.pending }()
+			select {
+			case q.jobs <- j:
+			case <-q.done:
+			}
+		}()
+	default:
+		select {
+		case q.jobs <- j:
+		case <-q.done:
+		}
 	}
 }
 
