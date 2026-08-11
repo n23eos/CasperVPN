@@ -4,11 +4,17 @@
 // repository because production registration refuses to create an already-active
 // node (active is reached only via the guarded activation path, not Register), and
 // the dev fleet must come up serving. Dev only.
+//
+// The demo fleet itself (mimicry domains, IPs, transports) is DATA, not code: it
+// is read from the JSON file named by SEED_NODES_FILE — the [АНТИ-БЛОК] no-hardcode
+// rule applies to the seeder too. The dev fixture ships in config/seed.nodes.json.
 package seed
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/caspervpn/contracts"
@@ -27,8 +33,18 @@ type Services struct {
 	NodesRepo domain.NodeRepo
 }
 
-// Run seeds a demo fleet + user + subscription if the fleet is empty.
-func Run(ctx context.Context, s Services) error {
+// Run seeds the fleet from nodesFile + a demo user + subscription if the fleet
+// is empty. nodesFile is required: the demo nodes carry mimicry domains and IPs,
+// which must live in data, never in the binary.
+func Run(ctx context.Context, s Services, nodesFile string) error {
+	if nodesFile == "" {
+		return fmt.Errorf("seed: SEED_NODES_FILE not set (mimicry domains/IPs are data, not code)")
+	}
+	nodes, err := loadNodes(nodesFile)
+	if err != nil {
+		return err
+	}
+
 	existing, _, err := s.Nodes.List(ctx, domain.NodeFilter{Limit: 1})
 	if err != nil {
 		return fmt.Errorf("seed: probe nodes: %w", err)
@@ -37,10 +53,7 @@ func Run(ctx context.Context, s Services) error {
 		return nil // already seeded
 	}
 
-	for _, n := range demoNodes() {
-		if err := n.Validate(); err != nil {
-			return fmt.Errorf("seed: invalid demo node %s: %w", n.ID, err)
-		}
+	for _, n := range nodes {
 		if err := s.NodesRepo.Create(ctx, n); err != nil {
 			return fmt.Errorf("seed: create node %s: %w", n.ID, err)
 		}
@@ -60,39 +73,28 @@ func Run(ctx context.Context, s Services) error {
 	return nil
 }
 
-// demoNodes are two active nodes with several transports each (diversity, not
-// monoculture). All mimicry domains / IPs are DATA here, never hardcoded in the
-// service logic.
-func demoNodes() []contracts.Node {
+// loadNodes reads and validates the demo fleet. A zero created_at in the file is
+// filled with the current time — fixtures should not embed wall-clock values.
+func loadNodes(path string) ([]contracts.Node, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("seed: read nodes file: %w", err)
+	}
+	var nodes []contracts.Node
+	if err := json.Unmarshal(raw, &nodes); err != nil {
+		return nil, fmt.Errorf("seed: parse %s: %w", path, err)
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("seed: %s contains no nodes", path)
+	}
 	now := time.Now().UTC()
-	mk := func(id, region, ip string) contracts.Node {
-		return contracts.Node{
-			ID: id, Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive,
-			Provider: "hetzner", Cloud: "eu-a", Region: region, EntryIP: ip,
-			EphemeralEntryIP: true, CapacityUsers: 150, CreatedAt: now,
-			Transports: []contracts.Transport{
-				{
-					Tag: "reality-www", Type: contracts.TransportVlessReality,
-					Version: contracts.TransportVersionV1, Port: 443, Enabled: true, Priority: 0,
-					VlessReality: &contracts.VlessRealityParams{
-						ServerNames: []string{"www.microsoft.com"}, Dest: "www.microsoft.com:443",
-						PublicKey: "SEED_PUBKEY_" + id, ShortIDs: []string{"0123abcd"},
-						Flow: "xtls-rprx-vision", Fingerprint: "chrome",
-					},
-				},
-				{
-					Tag: "hy2-mobile", Type: contracts.TransportHysteria2,
-					Version: contracts.TransportVersionV1, Port: 8443, Enabled: true, Priority: 1,
-					Hysteria2: &contracts.Hysteria2Params{
-						Password: "seed-hy2-" + id, SNI: "cdn.jsdelivr.net",
-						Obfs: "salamander", ObfsPassword: "seed-obfs-" + id,
-					},
-				},
-			},
+	for i := range nodes {
+		if nodes[i].CreatedAt.IsZero() {
+			nodes[i].CreatedAt = now
+		}
+		if err := nodes[i].Validate(); err != nil {
+			return nil, fmt.Errorf("seed: invalid node %s in %s: %w", nodes[i].ID, path, err)
 		}
 	}
-	return []contracts.Node{
-		mk("node-seed-eu1", "eu-central", "203.0.113.10"),
-		mk("node-seed-eu2", "eu-west", "203.0.113.20"),
-	}
+	return nodes, nil
 }
