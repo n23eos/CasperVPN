@@ -3,8 +3,9 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/caspervpn/contracts"
 	"github.com/go-chi/chi/v5"
+
+	"github.com/caspervpn/contracts"
 )
 
 // writeUser emits a user response with the server-side PrivateKey stripped. No

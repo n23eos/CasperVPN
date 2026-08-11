@@ -3,8 +3,9 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/caspervpn/contracts"
 	"github.com/go-chi/chi/v5"
+
+	"github.com/caspervpn/contracts"
 )
 
 func (h *Handler) createSubscription(w http.ResponseWriter, r *http.Request) {

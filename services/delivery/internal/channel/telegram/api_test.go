@@ -34,9 +34,9 @@ func (d *recordDoer) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-func TestTelegramAPISend(t *testing.T) {
+func TestAPISend(t *testing.T) {
 	d := &recordDoer{status: http.StatusOK}
-	api := TelegramAPI{Base: "https://api.telegram.org", Token: "TOK", HTTP: d}
+	api := API{Base: "https://api.telegram.org", Token: "TOK", HTTP: d}
 	if api.Network() != "telegram" {
 		t.Fatalf("network = %q", api.Network())
 	}
@@ -51,14 +51,14 @@ func TestTelegramAPISend(t *testing.T) {
 	}
 }
 
-func TestTelegramAPIRequiresConfig(t *testing.T) {
-	if err := (TelegramAPI{}).Send(context.Background(), 1, "x"); err == nil {
+func TestAPIRequiresConfig(t *testing.T) {
+	if err := (API{}).Send(context.Background(), 1, "x"); err == nil {
 		t.Fatalf("expected error without base/token")
 	}
 }
 
-func TestTelegramAPINon200IsError(t *testing.T) {
-	api := TelegramAPI{Base: "https://api.telegram.org", Token: "TOK", HTTP: &recordDoer{status: http.StatusForbidden}}
+func TestAPINon200IsError(t *testing.T) {
+	api := API{Base: "https://api.telegram.org", Token: "TOK", HTTP: &recordDoer{status: http.StatusForbidden}}
 	if err := api.Send(context.Background(), 1, "x"); err == nil {
 		t.Fatalf("expected error on non-200")
 	}
@@ -88,7 +88,7 @@ func TestMaxAPIRequiresConfig(t *testing.T) {
 }
 
 func TestSendTransportErrorPropagates(t *testing.T) {
-	api := TelegramAPI{Base: "b", Token: "t", HTTP: &recordDoer{err: errors.New("net")}}
+	api := API{Base: "b", Token: "t", HTTP: &recordDoer{err: errors.New("net")}}
 	if err := api.Send(context.Background(), 1, "x"); err == nil {
 		t.Fatalf("expected transport error")
 	}

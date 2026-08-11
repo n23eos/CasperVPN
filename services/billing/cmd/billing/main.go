@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/caspervpn/billing/internal/controlplane"
 	"github.com/caspervpn/billing/internal/expiry"
 	"github.com/caspervpn/billing/internal/httpapi"
@@ -27,7 +29,6 @@ import (
 	"github.com/caspervpn/billing/internal/store"
 	"github.com/caspervpn/billing/internal/subscription"
 	"github.com/caspervpn/contracts"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const serviceName = "billing"

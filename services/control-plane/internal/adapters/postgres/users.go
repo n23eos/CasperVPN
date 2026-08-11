@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/caspervpn/contracts"
-	"github.com/caspervpn/control-plane/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/caspervpn/contracts"
+	"github.com/caspervpn/control-plane/internal/domain"
 )
 
 const userColumns = `id, telegram_id, email, status, reality_short_id, vless_uuid,

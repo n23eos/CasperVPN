@@ -12,7 +12,7 @@ func TestRealityShortID_Width8Bytes(t *testing.T) {
 		t.Fatalf("short-id width = %d hex chars, want 16", len(id))
 	}
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Fatalf("short-id has non-hex char %q in %q", c, id)
 		}
 	}

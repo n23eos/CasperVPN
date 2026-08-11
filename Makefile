@@ -54,10 +54,11 @@ vet:
 		( cd $$m && go vet ./... ) || exit 1; \
 	done
 
-## lint: golangci-lint across the workspace (no-op with a warning if not installed)
+## lint: golangci-lint across the workspace (warns if not installed; LINT_STRICT=1 makes a missing linter a hard failure — CI sets it)
 lint:
 	@if ! command -v golangci-lint >/dev/null 2>&1; then \
 		echo "!! golangci-lint not installed — skipping. Install: https://golangci-lint.run/welcome/install/"; \
+		if [ "$(LINT_STRICT)" = "1" ]; then echo "!! LINT_STRICT=1 — failing"; exit 1; fi; \
 	else \
 		for m in $(MODULES); do \
 			echo ">> lint $$m"; \

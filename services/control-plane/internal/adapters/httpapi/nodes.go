@@ -4,9 +4,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/domain"
-	"github.com/go-chi/chi/v5"
 )
 
 func (h *Handler) listNodes(w http.ResponseWriter, r *http.Request) {
