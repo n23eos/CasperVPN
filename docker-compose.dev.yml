@@ -64,6 +64,9 @@ services:
       # Real control-plane provider (without these the in-memory fixtures are used).
       CONTROL_PLANE_URL: http://control-plane:8081
       CONTROL_PLANE_TOKEN: ${SUBSCRIPTION_CP_TOKEN:-dev-subscription-token}
+      # Absolute path: the distroless image's WORKDIR is /home/nonroot, so the
+      # default relative path would miss the mount below.
+      ROUTING_POLICY_FILE: /config/routing.ru.json
     volumes:
       # Routing policy is data, not code (distroless image ships no files).
       - ./services/subscription/config:/config:ro
