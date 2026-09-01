@@ -1,10 +1,12 @@
 # CasperVPN
 
-**A subscription-based, DPI-censorship-resistant VPN platform.** Backend for
-running a commercial VPN service that survives state-level traffic filtering
-(Russia's TSPU/RKN-class DPI): traffic mimics allowed HTTPS/HTTP-3, nodes
-rotate automatically when blocked, and a feedback loop turns "what got blocked
-where" into new configs and domains.
+**CasperVPN is a Go backend for running a subscription VPN service that survives state-level DPI filtering.** Traffic imitates allowed HTTPS and HTTP-3, blocked nodes rotate automatically, and a feedback loop turns reports of what got blocked where into new configs and domains. Each node runs sing-box and carries several transports at once (VLESS-REALITY, Hysteria2, AmneziaWG, Shadowsocks-2022), so a client switches instead of depending on one protocol. Clients are external sing-box apps that subscribe through a per-user URL, so no custom client ships with it. Six services in a Go workspace, dual-licensed under AGPLv3 and a commercial license.
+
+<div align="center">
+
+[![Star on GitHub](https://img.shields.io/github/stars/n23eos/CasperVPN?style=for-the-badge&logo=github&label=Star%20this%20repo&color=FFD700&labelColor=1a1a1a)](https://github.com/n23eos/CasperVPN)
+
+</div>
 
 Survivability comes from **transport diversity and feedback**, not "stronger
 encryption": multiple protocols per node, fast rotation, and clients that
