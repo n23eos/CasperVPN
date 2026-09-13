@@ -49,3 +49,4 @@ claude-code-prompts.md
 docs/live-run-runbook.md
 services/*/.plan.md
 .hallmark/
+\!notes/
