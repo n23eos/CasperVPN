@@ -6,9 +6,12 @@
 package config
 
 import (
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/platform/envcfg"
 )
 
@@ -19,11 +22,29 @@ const (
 	defaultBotRatePerSec = 1
 	defaultBotBurst      = 5
 	defaultBotCooldown   = 3 * time.Second
+	defaultHTTPTimeout   = 10 * time.Second
+	defaultPollTimeout   = 25 * time.Second
+	defaultRetryDelay    = time.Second
 )
 
 // Config is the fully-resolved delivery configuration.
 type Config struct {
 	Port string
+	Env  string
+
+	// BotEnabled is mandatory in production and explicit in dev/test. The
+	// opt-in keeps local library and channel work free from external services.
+	BotEnabled bool
+
+	DatabaseURL       string
+	ControlPlaneBase  string
+	ControlPlaneToken string
+	BillingBase       string
+	BillingToken      string
+	PublicSubBase     string
+	HTTPTimeout       time.Duration
+	PollTimeout       time.Duration
+	RetryDelay        time.Duration
 
 	// AdminToken guards the mutating admin surface (POST /v1/channels). Empty
 	// disables that path entirely (fail-closed) — a bare service exposes only
@@ -67,6 +88,8 @@ type BotTunables struct {
 	RatePerSec int
 	Burst      int
 	Cooldown   time.Duration
+	DefaultPlan     contracts.SubscriptionPlan
+	DefaultCurrency string
 }
 
 // Load reads configuration from the environment, applying defaults. A
@@ -74,8 +97,20 @@ type BotTunables struct {
 // instead of silently running with a default.
 func Load() (Config, error) {
 	var e envcfg.Env
+	env := e.Str("ENV", "production")
 	cfg := Config{
 		Port:           e.Str("PORT", defaultPort),
+		Env:            env,
+		BotEnabled:     e.Bool("DELIVERY_BOT_ENABLED", env == "production"),
+		DatabaseURL:       e.Str("DATABASE_URL", ""),
+		ControlPlaneBase:  strings.TrimRight(e.Str("DELIVERY_CONTROL_PLANE_BASE", ""), "/"),
+		ControlPlaneToken: e.Str("DELIVERY_CONTROL_PLANE_TOKEN", ""),
+		BillingBase:       strings.TrimRight(e.Str("DELIVERY_BILLING_BASE", ""), "/"),
+		BillingToken:      e.Str("DELIVERY_BILLING_TOKEN", ""),
+		PublicSubBase:     strings.TrimRight(e.Str("DELIVERY_PUBLIC_SUBSCRIPTION_BASE", ""), "/"),
+		HTTPTimeout:       e.Duration("DELIVERY_HTTP_TIMEOUT", defaultHTTPTimeout),
+		PollTimeout:       e.Duration("DELIVERY_TELEGRAM_POLL_TIMEOUT", defaultPollTimeout),
+		RetryDelay:        e.Duration("DELIVERY_RETRY_DELAY", defaultRetryDelay),
 		AdminToken:     e.Str("DELIVERY_ADMIN_TOKEN", ""),
 		ArtifactMaxAge: e.Duration("DELIVERY_ARTIFACT_MAX_AGE", 0),
 		SignKeyID:      e.Str("DELIVERY_SIGN_KEY_ID", "delivery-ephemeral"),
@@ -96,12 +131,86 @@ func Load() (Config, error) {
 			RatePerSec: e.Int("DELIVERY_BOT_RATE_PER_SEC", defaultBotRatePerSec),
 			Burst:      e.Int("DELIVERY_BOT_BURST", defaultBotBurst),
 			Cooldown:   e.Duration("DELIVERY_BOT_COOLDOWN", defaultBotCooldown),
+			DefaultPlan: contracts.SubscriptionPlan(e.Str("DELIVERY_BOT_DEFAULT_PLAN", string(contracts.SubscriptionPlanBasic))),
+			DefaultCurrency: strings.ToUpper(e.Str("DELIVERY_BOT_DEFAULT_CURRENCY", "XMR")),
 		},
 	}
 	if err := e.Err(); err != nil {
 		return Config{}, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// Validate rejects partial production and bot configurations before any
+// network listener starts. Error messages name variables but never their values.
+func (c Config) Validate() error {
+	switch c.Env {
+	case "production", "dev", "test":
+	default:
+		return fmt.Errorf("config: ENV must be production, dev, or test")
+	}
+	if !c.Bot.DefaultPlan.Valid() {
+		return fmt.Errorf("config: DELIVERY_BOT_DEFAULT_PLAN is invalid")
+	}
+	if strings.TrimSpace(c.Bot.DefaultCurrency) == "" {
+		return fmt.Errorf("config: DELIVERY_BOT_DEFAULT_CURRENCY is required")
+	}
+	if c.Env == "production" {
+		if !c.BotEnabled {
+			return fmt.Errorf("config: DELIVERY_BOT_ENABLED must be true in production")
+		}
+		if c.SignSeedB64 == "" || c.SealKeyB64 == "" {
+			return fmt.Errorf("config: DELIVERY_SIGN_SEED and DELIVERY_SEAL_KEY are required in production")
+		}
+	}
+	if !c.BotEnabled {
+		return nil
+	}
+	required := map[string]string{
+		"DATABASE_URL": c.DatabaseURL,
+		"DELIVERY_CONTROL_PLANE_BASE": c.ControlPlaneBase,
+		"DELIVERY_CONTROL_PLANE_TOKEN": c.ControlPlaneToken,
+		"DELIVERY_BILLING_BASE": c.BillingBase,
+		"DELIVERY_BILLING_TOKEN": c.BillingToken,
+		"DELIVERY_TELEGRAM_BASE": c.TelegramBase,
+		"DELIVERY_TELEGRAM_TOKEN": c.TelegramToken,
+		"DELIVERY_PUBLIC_SUBSCRIPTION_BASE": c.PublicSubBase,
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("config: %s is required when delivery bot is enabled", name)
+		}
+	}
+	if c.HTTPTimeout <= 0 || c.PollTimeout <= 0 || c.RetryDelay <= 0 {
+		return fmt.Errorf("config: delivery HTTP, poll, and retry durations must be positive")
+	}
+	if err := requireURL("DELIVERY_CONTROL_PLANE_BASE", c.ControlPlaneBase, false); err != nil {
+		return err
+	}
+	if err := requireURL("DELIVERY_BILLING_BASE", c.BillingBase, false); err != nil {
+		return err
+	}
+	if err := requireURL("DELIVERY_TELEGRAM_BASE", c.TelegramBase, c.Env == "production"); err != nil {
+		return err
+	}
+	if err := requireURL("DELIVERY_PUBLIC_SUBSCRIPTION_BASE", c.PublicSubBase, true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func requireURL(name, raw string, httpsOnly bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("config: %s must be an absolute HTTP URL", name)
+	}
+	if httpsOnly && u.Scheme != "https" {
+		return fmt.Errorf("config: %s must use HTTPS", name)
+	}
+	return nil
 }
 
 // parseKeyMap parses ["id1:pub1", "id2:pub2"] pairs into a map.

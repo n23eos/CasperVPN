@@ -12,7 +12,7 @@ import (
 // per-user secrets. No real domains/IPs — fixtures only.
 func sampleBundle() SubscriptionBundle {
 	return SubscriptionBundle{
-		User: User{
+		User: User{Hysteria2Password: "pw",
 			ID:             "u-1",
 			Status:         UserStatusActive,
 			RealityShortID: "ab12",

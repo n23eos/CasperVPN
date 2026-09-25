@@ -33,7 +33,13 @@ func (h *Handler) activateNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	n, err := h.nodes.Activate(r.Context(), chi.URLParam(r, "id"), req.ExpectedRevision, req.Evidence, actorFromContext(r.Context()))
+	var n contracts.Node
+	var err error
+	if req.ExpectedAccessRevision != "" {
+		n, err = h.nodes.ActivateAccess(r.Context(), chi.URLParam(r, "id"), req.ExpectedAccessRevision, req.Evidence, actorFromContext(r.Context()))
+	} else {
+		n, err = h.nodes.Activate(r.Context(), chi.URLParam(r, "id"), req.ExpectedRevision, req.Evidence, actorFromContext(r.Context()))
+	}
 	if err != nil {
 		writeDomainError(w, err)
 		return

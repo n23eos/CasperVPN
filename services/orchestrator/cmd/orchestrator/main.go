@@ -60,10 +60,12 @@ func main() {
 			DrainGrace:           cfg.DrainGrace,
 			MaxActionsPerCycle:   cfg.MaxActionsPerCycle,
 		},
-		ProbeEnabled:  cfg.ProbeEnabled,
-		DefaultRegion: cfg.DefaultRegion,
-		DefaultCloud:  cfg.DefaultCloud,
-		Interval:      cfg.ReconcileInterval,
+		ProbeEnabled:     cfg.ProbeEnabled,
+		DefaultRegion:    cfg.DefaultRegion,
+		DefaultCloud:     cfg.DefaultCloud,
+		RotationInterval: cfg.RotationInterval,
+		AccessSyncEnabled: true,
+		Interval:         cfg.ReconcileInterval,
 	}
 
 	// The loop needs both seams to observe; without them (dry-run without

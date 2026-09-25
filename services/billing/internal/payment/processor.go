@@ -10,7 +10,6 @@ import (
 	"github.com/caspervpn/billing/internal/money"
 	"github.com/caspervpn/billing/internal/store"
 	"github.com/caspervpn/billing/internal/subscription"
-	"github.com/caspervpn/contracts"
 )
 
 // ErrStaleEvent rejects events older than the replay window.
@@ -93,16 +92,45 @@ func (p *Processor) Process(ctx context.Context, ev model.Event) error {
 // never pre-empted.
 func (p *Processor) Reconcile(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) (RecoveryReport, error) {
 	report := RecoveryReport{}
-	stuck, err := p.store.LeaseStuckSettlements(ctx, olderThan, leaseFor, limit)
+	deliveries, err := p.store.LeaseBillingDeliveries(ctx, olderThan, leaseFor, limit)
+	if err != nil {
+		report.Stages = map[string]int{stageLeaseQuery: 1}
+		return report, &recoveryError{stage: stageLeaseQuery, err: err}
+	}
+	report.Leased = len(deliveries)
+	var errs []error
+	for _, delivery := range deliveries {
+		if ctx.Err() != nil {
+			report.Canceled = true
+			break
+		}
+		if _, err := p.activator.Deliver(ctx, delivery); err != nil {
+			rerr := &recoveryError{stage: stageActivate, invoiceID: delivery.ID, err: err}
+			report.Failed++
+			report.note(rerr)
+			errs = append(errs, rerr)
+			continue
+		}
+		report.Recovered++
+	}
+	if ctx.Err() != nil {
+		return report, joinBounded(errs)
+	}
+	remaining := limit
+	if remaining > 0 {
+		remaining -= len(deliveries)
+		if remaining <= 0 {
+			return report, joinBounded(errs)
+		}
+	}
+	stuck, err := p.store.LeaseStuckSettlements(ctx, olderThan, leaseFor, remaining)
 	if err != nil {
 		// Batch-level failure: nothing leased. Record the stable stage in the report
 		// (so it is logged) and return the raw error separately for errors.Is/As.
 		report.Stages = map[string]int{stageLeaseQuery: 1}
 		return report, &recoveryError{stage: stageLeaseQuery, err: err}
 	}
-	report.Leased = len(stuck)
-
-	var errs []error
+	report.Leased += len(stuck)
 	for _, s := range stuck {
 		// Honor cancellation: stop taking on new work, keep what we already did, and
 		// let RunOnce log one final signal for the cycle.
@@ -136,13 +164,10 @@ func (p *Processor) finishSettlement(ctx context.Context, s store.StuckSettlemen
 		return nil
 	}
 	if !s.Activated {
-		if _, err := p.activator.Activate(ctx, inv.AnonUserID, contracts.SubscriptionPlan(inv.Plan)); err != nil {
+		if _, err := p.activator.CreditInvoice(ctx, inv); err != nil {
 			return &recoveryError{stage: stageActivate, invoiceID: inv.ID, err: err}
 		}
-		// Best-effort marker; status=settled below is the durable guard against a
-		// second period (see settle). A marker-write error must not leave the invoice
-		// pending+unactivated, which would re-activate on the next pass.
-		_ = p.store.MarkSettlementActivated(ctx, inv.ID)
+		return nil
 	}
 	if err := p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled); err != nil {
 		return &recoveryError{stage: stageSetStatus, invoiceID: inv.ID, err: err}
@@ -189,7 +214,7 @@ func (p *Processor) settle(ctx context.Context, ev model.Event) error {
 		return nil // already credited by an earlier delivery/poll
 	}
 
-	if _, err := p.activator.Activate(ctx, inv.AnonUserID, contracts.SubscriptionPlan(inv.Plan)); err != nil {
+	if _, err := p.activator.CreditInvoice(ctx, inv); err != nil {
 		// KEEP the claim on activation failure — do NOT release it. The claim (and
 		// activated_at=NULL) is exactly what the durable Reconcile pass finishes later.
 		// Releasing here would drop the invoice's "being credited" protection, and a
@@ -198,12 +223,5 @@ func (p *Processor) settle(ctx context.Context, ev model.Event) error {
 		// re-drives the activation idempotently.
 		return fmt.Errorf("payment: activate: %w", err)
 	}
-	// Activation succeeded. The marker is a best-effort optimization (it lets recovery
-	// skip re-activation if the status flip below is what crashes); the DURABLE guard
-	// against a second period is status=settled, which finishSettlement short-circuits
-	// on. So never bail on a marker-write error — bailing would leave pending +
-	// activated_at=NULL, and a single transient DB blip here (not just a crash) would
-	// then double-credit on the next recovery pass.
-	_ = p.store.MarkSettlementActivated(ctx, inv.ID)
-	return p.store.SetInvoiceStatus(ctx, inv.ID, model.StatusSettled)
+	return nil
 }

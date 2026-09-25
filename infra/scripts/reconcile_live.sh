@@ -128,21 +128,15 @@ hook_verify_exit() {
 }
 
 hook_apply() {
-  [ -n "${RECONCILE_USERS:-}" ] || { log "reconcile-live: no RECONCILE_USERS"; return 1; }
-  require_env PAIR_PSK
-  # Reuse existing on-node REALITY/hy2 state: pass ONLY the allow-list + the pair
-  # link PSK, never a keygen/rotate flag, so a reconcile never rotates secrets.
-  local vars; vars="$(mktemp)"
-  ( umask 077
-    jq -n --argjson users "$RECONCILE_USERS" --arg psk "$PAIR_PSK" \
-       --arg exip "$EXIT_IP" --argjson port "${EXIT_LINK_PORT:-8388}" \
-       '{reality_users:$users, reality_reuse_existing_key:true,
-         exit_endpoint:{server:$exip, server_port:$port, psk:$psk}}' >"$vars"
-  )
+  [ -n "${RECON_ACCESS_SNAPSHOT_FILE:-}" ] && [ -f "$RECON_ACCESS_SNAPSHOT_FILE" ] \
+    || { log "reconcile-live: no access snapshot file"; return 1; }
+  require_env RUN_ID PAIR_PSK
+  local effective_hy2_sni="${HY2_SNI:-${RL_HY2_SNI:-}}"
+  [ -n "$effective_hy2_sni" ] || { log "reconcile-live: HY2_SNI/RL_HY2_SNI missing"; return 1; }
   local rc=0
-  rl_converge "$vars" || rc=$?
-  rm -f "$vars"
-  [ "$rc" -eq 0 ] || { log "reconcile-live: converge failed"; return 1; }
+  RUN_ID="$RUN_ID" NODE="$ENTRY" ACCESS_SNAPSHOT_FILE="$RECON_ACCESS_SNAPSHOT_FILE" \
+    HY2_SNI="$effective_hy2_sni" "${HERE}/access_sync.sh" || rc=$?
+  [ "$rc" -eq 0 ] || { log "reconcile-live: access converge failed"; return 1; }
 }
 
 hook_probe() {

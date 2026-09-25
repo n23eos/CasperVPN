@@ -19,7 +19,7 @@ func sampleBundle() contracts.SubscriptionBundle {
 	return contracts.SubscriptionBundle{
 		User: contracts.User{
 			ID: "u-1", Status: contracts.UserStatusActive,
-			RealityShortID: "ab12", UUID: "00000000-0000-0000-0000-000000000001", DeviceLimit: 3,
+			RealityShortID: "ab12", UUID: "00000000-0000-0000-0000-000000000001", Hysteria2Password: "pw", DeviceLimit: 3,
 		},
 		Nodes: []contracts.Node{{
 			ID: "n-1", Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive, EntryIP: "198.51.100.10",

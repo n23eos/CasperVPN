@@ -290,6 +290,112 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /readyz:
+    get:
+      operationId: readiness
+      security: []
+      responses:
+        "200": { description: Database ready }
+        "503": { description: Database unavailable }
+
+  /v1/subscriptions/{id}/billing-state:
+    put:
+      operationId: applyBillingState
+      description: Billing/admin only. Monotonic revision fence; stale snapshots return current state; equal conflicting snapshots return 409.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/BillingState" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Role forbidden }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/users/ensure-telegram:
+    post:
+      operationId: ensureTelegram
+      description: Delivery/admin only. Creates or returns the sender account. Personal credentials are redacted.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/EnsureTelegram" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/User" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Role forbidden }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/users/{id}/ensure-subscription:
+    post:
+      operationId: ensureSubscription
+      description: Billing/admin only. Idempotent; creates an expired unpaid subscription.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/EnsureSubscription" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/Subscription" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Role forbidden }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/subscriptions/{id}/delivery-link:
+    post:
+      operationId: getDeliveryLink
+      description: Delivery/admin only. Returns the same encrypted-at-rest delivery token without rotating existing imports.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/DeliveryLink" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Role forbidden }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/subscription-tokens/resolve:
+    post:
+      operationId: resolveSubscriptionToken
+      description: Subscription/admin only. Authoritative primary or delivery token hash lookup.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/ResolveSubscriptionToken" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/SubscriptionTokenBinding" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Role forbidden }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/nodes/{id}/access-users:
+    get:
+      operationId: getNodeAccessUsers
+      description: Orchestrator/admin only. Complete eligible VLESS and Hysteria2 credentials. Lease deadline is at most five minutes and no later than the next access expiry.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/NodeAccessUsers" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Role forbidden }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
 components:
   schemas:
     Error:

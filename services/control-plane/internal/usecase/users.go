@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -62,22 +63,27 @@ func (s *UserService) Create(ctx context.Context, telegramID *int64, email *stri
 	if err != nil {
 		return contracts.User{}, err
 	}
+	hy2, err := secret.Token()
+	if err != nil {
+		return contracts.User{}, err
+	}
 	privKey, err := secret.PrivateKey()
 	if err != nil {
 		return contracts.User{}, err
 	}
 	now := s.now()
 	u := contracts.User{
-		ID:             id,
-		TelegramID:     telegramID,
-		Email:          email,
-		Status:         contracts.UserStatusActive,
-		RealityShortID: shortID,
-		UUID:           uuid,
-		PrivateKey:     privKey,
-		DeviceLimit:    defaultDeviceLimit,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                id,
+		TelegramID:        telegramID,
+		Email:             email,
+		Status:            contracts.UserStatusActive,
+		RealityShortID:    shortID,
+		UUID:              uuid,
+		PrivateKey:        privKey,
+		Hysteria2Password: hy2,
+		DeviceLimit:       defaultDeviceLimit,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if err := u.Validate(); err != nil {
 		return contracts.User{}, fmt.Errorf("%w: %s", domain.ErrValidation, err)
@@ -171,4 +177,27 @@ func (s *UserService) RotateSecrets(ctx context.Context, id, reason, actor strin
 	s.revokeUser(ctx, id, "rotate-secrets")
 	s.queue.EnqueueUser(id)
 	return updated, nil
+}
+
+// EnsureTelegram creates a unique account or returns the concurrent winner.
+func (s *UserService) EnsureTelegram(ctx context.Context, id int64) (contracts.User, error) {
+	if id <= 0 {
+		return contracts.User{}, domain.ErrValidation
+	}
+	repo, ok := s.users.(domain.TelegramUserRepo)
+	if !ok {
+		return contracts.User{}, fmt.Errorf("telegram repository unavailable")
+	}
+	u, err := repo.GetByTelegram(ctx, id)
+	if err == nil {
+		return u, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return contracts.User{}, err
+	}
+	u, err = s.Create(ctx, &id, nil)
+	if errors.Is(err, domain.ErrConflict) {
+		return repo.GetByTelegram(ctx, id)
+	}
+	return u, err
 }

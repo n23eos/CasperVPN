@@ -30,4 +30,10 @@ type Client interface {
 	// the activate/renew/expire operation. Maps to the additive
 	// PATCH /v1/subscriptions/{id}.
 	SetSubscriptionPeriod(ctx context.Context, subID string, status contracts.SubscriptionStatus, expiresAt time.Time) (contracts.Subscription, error)
+
+	// EnsureSubscription returns the user's stable subscription, creating an
+	// inactive one on first purchase. It never grants access by itself.
+	EnsureSubscription(ctx context.Context, userID string, plan contracts.SubscriptionPlan) (contracts.Subscription, error)
+	// SetBillingState applies an absolute, revision-fenced entitlement snapshot.
+	SetBillingState(ctx context.Context, subID string, state contracts.BillingState) (contracts.Subscription, error)
 }

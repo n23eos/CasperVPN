@@ -70,6 +70,7 @@ _cp_demote() {
 # explicit rollback, so the trap only fires on an interruption.
 RECON_ROLLBACK_EXIT=""
 RECON_LOCK=""
+RECON_ACCESS_SNAPSHOT_FILE=""
 reconcile_cleanup() {
   if [ -n "$RECON_ROLLBACK_EXIT" ]; then
     log "reconcile: cleanup — demoting exit ${RECON_ROLLBACK_EXIT} (interrupted after exit activation)"
@@ -77,6 +78,8 @@ reconcile_cleanup() {
     RECON_ROLLBACK_EXIT=""
   fi
   [ -n "$RECON_LOCK" ] && release_lock "$RECON_LOCK"
+  [ -z "$RECON_ACCESS_SNAPSHOT_FILE" ] || rm -f "$RECON_ACCESS_SNAPSHOT_FILE"
+  RECON_ACCESS_SNAPSHOT_FILE=""
   return 0   # a cleanup trap must never itself report failure
 }
 
@@ -117,15 +120,24 @@ reconcile_pair() {
 
 # _reconcile_after_exit <entry-id> — steps 4-7 (sync, R2 gate, probe, activate).
 _reconcile_after_exit() {
-  local entry="$1" r1 users rev1 rev2 results
-  r1="$(_cp GET "/v1/nodes/${entry}/reality-users")" || { log "reconcile: allow-list read failed"; return 1; }
-  users="$(jq -c '.users' <<<"$r1")"; rev1="$(jq -r '.revision' <<<"$r1")"
-  log "reconcile: syncing $(jq 'length' <<<"$users") users onto ${entry} (rev ${rev1:0:12}...)"
-  RECONCILE_USERS="$users" "${RECONCILE_APPLY_CMD:?RECONCILE_APPLY_CMD hook required}" \
+  local entry="$1" r1 rev1 rev2 results user_count
+  r1="$(_cp GET "/v1/nodes/${entry}/access-users")" || { log "reconcile: access snapshot read failed"; return 1; }
+  rev1="$(jq -er '.revision | select(type == "string" and length > 0)' <<<"$r1")" \
+    || { log "reconcile: access snapshot revision missing"; return 1; }
+  user_count="$(jq -er '.users | length' <<<"$r1")" \
+    || { log "reconcile: access snapshot users missing"; return 1; }
+  [ "$user_count" -gt 0 ] \
+    || { log "reconcile: empty access snapshot - refusing activation"; return 1; }
+  RECON_ACCESS_SNAPSHOT_FILE="$(mktemp)"
+  chmod 600 "$RECON_ACCESS_SNAPSHOT_FILE"
+  printf '%s' "$r1" >"$RECON_ACCESS_SNAPSHOT_FILE"
+  export RECON_ACCESS_SNAPSHOT_FILE
+  log "reconcile: syncing ${user_count} users onto ${entry} (access rev ${rev1:0:12}...)"
+  "${RECONCILE_APPLY_CMD:?RECONCILE_APPLY_CMD hook required}" \
     || { log "reconcile: node apply/converge failed"; return 1; }
 
-  rev2="$(_cp GET "/v1/nodes/${entry}/reality-users" | jq -r '.revision')" \
-    || { log "reconcile: allow-list re-read failed"; return 1; }
+  rev2="$(_cp GET "/v1/nodes/${entry}/access-users" | jq -r '.revision')" \
+    || { log "reconcile: access snapshot re-read failed"; return 1; }
   if [ "$rev2" != "$rev1" ]; then
     log "reconcile: allow-list changed during converge (${rev1:0:8} != ${rev2:0:8}) — retry, not activating"; return 1
   fi
@@ -136,7 +148,7 @@ _reconcile_after_exit() {
     log "reconcile: fewer than 2 distinct verified client transports — leaving provisioning: ${results}"; return 1
   fi
 
-  _cp POST "/v1/nodes/${entry}/activate" "$(jq -n --arg r "$rev1" '{expected_revision:$r}')" >/dev/null \
+  _cp POST "/v1/nodes/${entry}/activate" "$(jq -n --arg r "$rev1" '{expected_revision:"",expected_access_revision:$r}')" >/dev/null \
     || { log "reconcile: entry activation refused (revision race or structure)"; return 1; }
   log "reconcile: entry ${entry} ACTIVE"
 }

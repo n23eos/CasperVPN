@@ -12,7 +12,7 @@ _cp_auth() { printf 'Authorization: Bearer %s' "${CONTROL_PLANE_TOKEN:?CONTROL_P
 
 # build_node_json — emit a contracts.Node object from env vars.
 # Required: NODE_ID NODE_ROLE NODE_STATUS PROVIDER CLOUD REGION
-# Optional: ENTRY_IP EPHEMERAL_ENTRY_IP(true/false) ENTRY_NODE_ID TRANSPORTS_JSON
+# Optional: ENTRY_IP EPHEMERAL_ENTRY_IP(true/false) ENTRY_NODE_ID TRANSPORTS_JSON LABELS_JSON
 build_node_json() {
   require_env NODE_ID NODE_ROLE NODE_STATUS PROVIDER CLOUD REGION
   jq -n \
@@ -26,6 +26,7 @@ build_node_json() {
     --argjson ephemeral "${EPHEMERAL_ENTRY_IP:-false}" \
     --arg entry_node_id "${ENTRY_NODE_ID:-}" \
     --argjson transports "${TRANSPORTS_JSON:-[]}" \
+    --argjson labels "${LABELS_JSON:-{}}" \
     '{
        id: $id,
        role: $role,
@@ -35,7 +36,8 @@ build_node_json() {
        region: $region,
        entry_ip: $entry_ip,
        ephemeral_entry_ip: $ephemeral,
-       transports: $transports
+       transports: $transports,
+       labels: $labels
      }
      + (if $entry_node_id != "" then {entry_node_id: $entry_node_id} else {} end)'
 }

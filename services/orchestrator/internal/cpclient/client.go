@@ -89,3 +89,15 @@ func (c *Client) UpdateNode(ctx context.Context, n contracts.Node) (contracts.No
 	}
 	return out, nil
 }
+
+// AccessUsers fetches the authoritative leased admission snapshot for one entry.
+func (c *Client) AccessUsers(ctx context.Context, id string) (contracts.NodeAccessUsers, error) {
+	var out contracts.NodeAccessUsers
+	if err := c.hc.GetJSON(ctx, "/v1/nodes/"+url.PathEscape(id)+"/access-users", &out); err != nil {
+		return contracts.NodeAccessUsers{}, fmt.Errorf("control-plane: access users %s: %w", id, err)
+	}
+	if out.Revision == "" || out.ValidUntil.IsZero() {
+		return contracts.NodeAccessUsers{}, fmt.Errorf("control-plane: access users %s: incomplete snapshot", id)
+	}
+	return out, nil
+}

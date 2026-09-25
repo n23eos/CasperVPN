@@ -16,6 +16,7 @@ import (
 	"github.com/caspervpn/control-plane/internal/adapters/httpapi"
 	"github.com/caspervpn/control-plane/internal/adapters/memory"
 	"github.com/caspervpn/control-plane/internal/authz"
+	"github.com/caspervpn/control-plane/internal/secret"
 	"github.com/caspervpn/control-plane/internal/usecase"
 )
 
@@ -23,11 +24,12 @@ const specPath = "../../../../../packages/contracts/openapi/control-plane.yaml"
 
 // tokens used across contract tests, one per role.
 const (
-	adminTok = "t-admin"
-	orchTok  = "t-orch"
-	teleTok  = "t-tele"
-	subTok   = "t-sub"
-	billTok  = "t-bill"
+	adminTok    = "t-admin"
+	orchTok     = "t-orch"
+	teleTok     = "t-tele"
+	subTok      = "t-sub"
+	billTok     = "t-bill"
+	deliveryTok = "t-delivery"
 )
 
 func newTestRouter(t *testing.T) http.Handler {
@@ -52,16 +54,21 @@ func newTestRouterWithNodes(t *testing.T) (http.Handler, *memory.Nodes) {
 	bundle := usecase.NewBundleService(users, nodes, sets)
 	nodeSvc := usecase.NewNodeService(nodes, rot, q).WithActivator(memory.NewNodeActivator(nodes, allowRepo))
 	userSvc := usecase.NewUserService(users, rot, q)
-	subSvc := usecase.NewSubscriptionService(subs, users)
+	cipher, err := secret.NewTokenCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subSvc := usecase.NewSubscriptionService(subs, users).WithTokenCipher(cipher)
 	sigSvc := usecase.NewSignalService(nodes, sigs, nodeSvc)
 	allowSvc := usecase.NewAllowListService(nodes, allowRepo)
 
 	tokens := authz.NewTokenStore(map[string]authz.Role{
-		adminTok: authz.RoleAdmin,
-		orchTok:  authz.RoleOrchestrator,
-		teleTok:  authz.RoleTelemetry,
-		subTok:   authz.RoleSubscription,
-		billTok:  authz.RoleBilling,
+		adminTok:    authz.RoleAdmin,
+		orchTok:     authz.RoleOrchestrator,
+		teleTok:     authz.RoleTelemetry,
+		subTok:      authz.RoleSubscription,
+		billTok:     authz.RoleBilling,
+		deliveryTok: authz.RoleDelivery,
 	})
 	return httpapi.New(nodeSvc, userSvc, subSvc, bundle, sigSvc, allowSvc, tokens).Router(), nodes
 }
@@ -99,6 +106,12 @@ func TestContract_EveryFrozenOperationIsWiredAndSecured(t *testing.T) {
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 
+			if path == "/readyz" {
+				if rec.Code != 503 {
+					t.Errorf("unconfigured readiness = %d", rec.Code)
+				}
+				continue
+			}
 			if path == "/healthz" {
 				if rec.Code != http.StatusOK {
 					t.Errorf("GET /healthz = %d, want 200", rec.Code)

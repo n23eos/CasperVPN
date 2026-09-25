@@ -22,10 +22,12 @@ type Subscription struct {
 	SpeedLimitMbps    int    `json:"speed_limit_mbps"`
 	DeviceLimit       int    `json:"device_limit"`
 
-	StartsAt  time.Time  `json:"starts_at"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = open-ended
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	GraceUntil      *time.Time `json:"grace_until,omitempty"`
+	BillingRevision int64      `json:"billing_revision,omitempty"`
+	StartsAt        time.Time  `json:"starts_at"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"` // nil = open-ended
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // SubscriptionPatch is the body of PATCH /v1/subscriptions/{id} — a true

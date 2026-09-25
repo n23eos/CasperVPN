@@ -1,11 +1,15 @@
 package render
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/subscription/internal/config"
 )
+
+// ErrUnavailable prevents an outage from becoming a direct-only VPN profile.
+var ErrUnavailable = errors.New("render: no usable personal VPN transports")
 
 // Content types per representation.
 const (
@@ -27,6 +31,17 @@ func New(policy config.RoutingPolicy) *Renderer {
 
 // Render returns the payload bytes and Content-Type for the format.
 func (r *Renderer) Render(f Format, b contracts.SubscriptionBundle) ([]byte, string, error) {
+	available := false
+	for _, n := range b.Nodes {
+		for _, transport := range n.Transports {
+			if transport.Enabled && (f != FormatBase64 || transport.Type != contracts.TransportAmneziaWG) {
+				available = true
+			}
+		}
+	}
+	if !available {
+		return nil, "", ErrUnavailable
+	}
 	switch f {
 	case FormatBase64:
 		return []byte(b.ToBase64List()), CTBase64, nil

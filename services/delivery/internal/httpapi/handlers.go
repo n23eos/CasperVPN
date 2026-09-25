@@ -9,12 +9,14 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/caspervpn/delivery/internal/channel"
 	"github.com/caspervpn/platform/httpjson"
@@ -27,12 +29,17 @@ type API struct {
 	// means the admin write path is DISABLED (fail-closed): no unauthenticated
 	// caller can register channel intent. Set DELIVERY_ADMIN_TOKEN to enable it.
 	adminToken string
+	readiness  []ReadinessChecker
+}
+
+type ReadinessChecker interface {
+	Ready(ctx context.Context) error
 }
 
 // New builds the API over a channel registry. adminToken guards the admin write
 // surface; empty disables it (fail-closed).
-func New(reg *channel.Registry, adminToken string) *API {
-	return &API{reg: reg, adminToken: adminToken}
+func New(reg *channel.Registry, adminToken string, readiness ...ReadinessChecker) *API {
+	return &API{reg: reg, adminToken: adminToken, readiness: readiness}
 }
 
 // Routes registers every handler on a mux and returns it.
@@ -69,6 +76,15 @@ func (a *API) ready(w http.ResponseWriter, r *http.Request) {
 		httpjson.Write(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"status": "unready", "reason": "no healthy channel", "channels": len(health)})
 		return
+	}
+	checkCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	for _, checker := range a.readiness {
+		if err := checker.Ready(checkCtx); err != nil {
+			httpjson.Write(w, http.StatusServiceUnavailable, map[string]interface{}{
+				"status": "unready", "reason": "dependency unavailable", "channels": len(health)})
+			return
+		}
 	}
 	httpjson.Write(w, http.StatusOK, map[string]interface{}{
 		"status": "ready", "healthy_channels": healthy, "channels": len(health)})

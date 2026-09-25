@@ -34,6 +34,47 @@ func NewActivator(cp controlplane.Client, catalog *plan.Catalog, repo store.Repo
 	return &Activator{cp: cp, catalog: catalog, store: repo, now: now}
 }
 
+// CreditInvoice fixes the invoice's target period and schedule revision in the
+// durable store before calling control-plane. A retry for the same invoice loads
+// that same target, so an unknown remote result cannot add another period.
+func (a *Activator) CreditInvoice(ctx context.Context, inv model.Invoice) (contracts.Subscription, error) {
+	p, ok := a.catalog.Get(contracts.SubscriptionPlan(inv.Plan))
+	if !ok {
+		return contracts.Subscription{}, fmt.Errorf("subscription: unknown plan %q", inv.Plan)
+	}
+	var result contracts.Subscription
+	err := a.store.WithUserLock(ctx, inv.AnonUserID, func(ctx context.Context) error {
+		sub, err := a.cp.EnsureSubscription(ctx, inv.AnonUserID, contracts.SubscriptionPlan(inv.Plan))
+		if err != nil {
+			return fmt.Errorf("subscription: ensure: %w", err)
+		}
+		delivery, err := a.store.StageInvoiceCredit(ctx, inv.ID, sub.ID, inv.AnonUserID, a.now(), p.Duration, p.Grace)
+		if err != nil {
+			return fmt.Errorf("subscription: stage credit: %w", err)
+		}
+		result, err = a.Deliver(ctx, delivery)
+		return err
+	})
+	return result, err
+}
+
+// Deliver replays one absolute billing state and completes its local outbox row.
+// The revision and dates come only from the saved delivery.
+func (a *Activator) Deliver(ctx context.Context, delivery model.BillingDelivery) (contracts.Subscription, error) {
+	state := contracts.BillingState{
+		Revision: delivery.Revision, Status: contracts.SubscriptionStatus(delivery.Status),
+		ExpiresAt: delivery.ExpiresAt, GraceUntil: delivery.GraceUntil,
+	}
+	sub, err := a.cp.SetBillingState(ctx, delivery.SubID, state)
+	if err != nil {
+		return contracts.Subscription{}, fmt.Errorf("subscription: set billing state: %w", err)
+	}
+	if err := a.store.CompleteBillingDelivery(ctx, delivery.ID); err != nil {
+		return contracts.Subscription{}, fmt.Errorf("subscription: complete billing delivery: %w", err)
+	}
+	return sub, nil
+}
+
 // Activate creates or renews the subscription for an anonymous account and returns
 // the updated subscription (carrying its sub_token). Safe for both first purchase
 // and renewal.

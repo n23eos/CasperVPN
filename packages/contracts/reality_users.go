@@ -55,8 +55,9 @@ func (e NodeActivationEvidence) Valid() bool { return e == ExitDataPlaneVerified
 // converge), so a node never goes active with a stale allow-list. Evidence is
 // required for exit nodes (see ExitDataPlaneVerified) and ignored for entries.
 type NodeActivation struct {
-	ExpectedRevision string                 `json:"expected_revision"`
-	Evidence         NodeActivationEvidence `json:"evidence,omitempty"`
+	ExpectedAccessRevision string                 `json:"expected_access_revision,omitempty"`
+	ExpectedRevision       string                 `json:"expected_revision"`
+	Evidence               NodeActivationEvidence `json:"evidence,omitempty"`
 }
 
 // DistinctEnabledTransportTypes counts the DISTINCT types among enabled

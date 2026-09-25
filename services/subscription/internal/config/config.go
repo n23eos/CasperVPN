@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -24,6 +25,8 @@ const (
 
 // Config is the fully-resolved service configuration.
 type Config struct {
+	Environment   string
+	PublicBaseURL string
 	// Port is the HTTP listen port (env PORT).
 	Port string
 
@@ -72,6 +75,8 @@ type Config struct {
 func Load() (Config, error) {
 	var e envcfg.Env
 	c := Config{
+		Environment:         e.Str("ENV", "production"),
+		PublicBaseURL:       e.Str("SUBSCRIPTION_PUBLIC_BASE_URL", ""),
 		Port:                e.Str("PORT", defaultPort),
 		ControlPlaneURL:     e.Str("CONTROL_PLANE_URL", ""),
 		ControlPlaneToken:   e.Str("CONTROL_PLANE_TOKEN", ""),
@@ -91,6 +96,29 @@ func Load() (Config, error) {
 	}
 	if c.ProfileUpdateHours < 1 {
 		return Config{}, fmt.Errorf("config: PROFILE_UPDATE_INTERVAL_HOURS must be >= 1")
+	}
+	if c.Environment != "production" && c.Environment != "dev" && c.Environment != "test" {
+		return Config{}, fmt.Errorf("config: ENV must be production, dev or test")
+	}
+	if c.CacheTTL <= 0 {
+		return Config{}, fmt.Errorf("config: CACHE_TTL must be positive")
+	}
+	if c.Environment == "production" {
+		for _, required := range []struct{ name, value string }{
+			{"DATABASE_URL", c.DatabaseURL}, {"CONTROL_PLANE_URL", c.ControlPlaneURL},
+			{"CONTROL_PLANE_TOKEN", c.ControlPlaneToken}, {"INTERNAL_TOKEN", c.InternalToken},
+			{"SUBSCRIPTION_PUBLIC_BASE_URL", c.PublicBaseURL},
+		} {
+			if required.value == "" {
+				return Config{}, fmt.Errorf("config: %s required in production", required.name)
+			}
+		}
+	}
+	if c.PublicBaseURL != "" {
+		u, err := url.Parse(c.PublicBaseURL)
+		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && (c.Environment == "production" || u.Scheme != "http")) {
+			return Config{}, fmt.Errorf("config: SUBSCRIPTION_PUBLIC_BASE_URL must be an absolute HTTPS URL in production")
+		}
 	}
 
 	rp, err := LoadRoutingPolicy(path)

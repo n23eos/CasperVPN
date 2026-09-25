@@ -17,6 +17,7 @@ func (h *Handler) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", h.healthz)
+	r.Get("/readyz", h.readyz)
 
 	// Role sets. Reads are open to any authenticated service; writes are scoped.
 	anyService := []authz.Role{authz.RoleAdmin, authz.RoleOrchestrator, authz.RoleTelemetry, authz.RoleSubscription, authz.RoleBilling}
@@ -26,6 +27,12 @@ func (h *Handler) Router() http.Handler {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(h.authenticate)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleDelivery)).Post("/users/ensure-telegram", h.ensureTelegram)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleBilling)).Post("/users/{id}/ensure-subscription", h.ensureSubscription)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleBilling)).Put("/subscriptions/{id}/billing-state", h.billingState)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleDelivery)).Post("/subscriptions/{id}/delivery-link", h.deliveryLink)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleSubscription)).Post("/subscription-tokens/resolve", h.resolveToken)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleOrchestrator)).Get("/nodes/{id}/access-users", h.accessUsers)
 
 		// Nodes (dynamic registry).
 		r.Group(func(r chi.Router) {

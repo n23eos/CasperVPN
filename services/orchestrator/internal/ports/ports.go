@@ -35,6 +35,15 @@ type ControlPlaneClient interface {
 	GetNode(ctx context.Context, id string) (contracts.Node, error)
 	// UpdateNode PATCHes the full Node object (the control-plane replaces it).
 	UpdateNode(ctx context.Context, n contracts.Node) (contracts.Node, error)
+	AccessUsers(ctx context.Context, nodeID string) (contracts.NodeAccessUsers, error)
+}
+
+// ProvisionedPair identifies a fully converged entry/exit run. NodeUp returns
+// only after guarded activation succeeds for both nodes.
+type ProvisionedPair struct {
+	RunID   string
+	EntryID string
+	ExitID  string
 }
 
 // Provisioner drives the node lifecycle (infra/scripts). Implementations MUST
@@ -46,11 +55,14 @@ type ControlPlaneClient interface {
 // result via ControlPlaneClient afterwards instead of duplicating the writes.
 type Provisioner interface {
 	// NodeUp provisions a fresh entry+exit pair in the given placement.
-	NodeUp(ctx context.Context, region, cloud string) error
+	NodeUp(ctx context.Context, region, cloud string) (ProvisionedPair, error)
 	// NodeRotate replaces the node's ephemeral entry IP and re-keys REALITY.
-	NodeRotate(ctx context.Context, nodeID string) error
+	NodeRotate(ctx context.Context, node contracts.Node) error
 	// NodeDown drains and tears a node down.
-	NodeDown(ctx context.Context, nodeID string) error
+	NodeDown(ctx context.Context, node contracts.Node) error
+	// SyncAccess converges one active entry from an authoritative, leased access
+	// snapshot. Implementations must remove absent users from both transport families.
+	SyncAccess(ctx context.Context, node contracts.Node, snapshot contracts.NodeAccessUsers) error
 }
 
 // Prober actively checks a node and renders an authoritative verdict. Real

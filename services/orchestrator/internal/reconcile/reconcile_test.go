@@ -63,6 +63,9 @@ func (m *mockCP) UpdateNode(_ context.Context, n contracts.Node) (contracts.Node
 	m.nodes[n.ID] = n
 	return n, nil
 }
+func (m *mockCP) AccessUsers(context.Context, string) (contracts.NodeAccessUsers, error) {
+	return contracts.NodeAccessUsers{Revision: "access-r1", ValidUntil: now.Add(5 * time.Minute)}, nil
+}
 
 type provCall struct {
 	op     string // up / rotate / down
@@ -76,6 +79,7 @@ type mockProv struct {
 	upErr    error
 	rotErr   error
 	downErr  error
+	upPair   ports.ProvisionedPair
 	onUp     func()
 	onRotate func(nodeID string)
 	onDown   func(nodeID string)
@@ -85,34 +89,41 @@ func (m *mockProv) rec(op, arg string) {
 	*m.seq++
 	m.calls = append(m.calls, provCall{op: op, arg: arg, atTime: *m.seq})
 }
-func (m *mockProv) NodeUp(_ context.Context, region, cloud string) error {
+func (m *mockProv) NodeUp(_ context.Context, region, cloud string) (ports.ProvisionedPair, error) {
 	m.rec("up", region+"/"+cloud)
 	if m.upErr != nil {
-		return m.upErr
+		return ports.ProvisionedPair{}, m.upErr
 	}
 	if m.onUp != nil {
 		m.onUp()
 	}
-	return nil
+	if m.upPair.EntryID == "" {
+		m.upPair = ports.ProvisionedPair{RunID: "run-new", EntryID: "new-entry", ExitID: "new-exit"}
+	}
+	return m.upPair, nil
 }
-func (m *mockProv) NodeRotate(_ context.Context, nodeID string) error {
-	m.rec("rotate", nodeID)
+func (m *mockProv) NodeRotate(_ context.Context, node contracts.Node) error {
+	m.rec("rotate", node.ID)
 	if m.rotErr != nil {
 		return m.rotErr
 	}
 	if m.onRotate != nil {
-		m.onRotate(nodeID)
+		m.onRotate(node.ID)
 	}
 	return nil
 }
-func (m *mockProv) NodeDown(_ context.Context, nodeID string) error {
-	m.rec("down", nodeID)
+func (m *mockProv) NodeDown(_ context.Context, node contracts.Node) error {
+	m.rec("down", node.ID)
 	if m.downErr != nil {
 		return m.downErr
 	}
 	if m.onDown != nil {
-		m.onDown(nodeID)
+		m.onDown(node.ID)
 	}
+	return nil
+}
+func (m *mockProv) SyncAccess(_ context.Context, node contracts.Node, _ contracts.NodeAccessUsers) error {
+	m.rec("sync", node.ID)
 	return nil
 }
 
@@ -219,6 +230,7 @@ func TestAuthoritativeBlockRotatesNode(t *testing.T) {
 	prov.onRotate = func(nodeID string) { // simulate node_rotate.sh patching the CP
 		n := cp.nodes[nodeID]
 		n.EntryIP = "198.51.100.7"
+		n.Status = contracts.NodeStatusActive
 		cp.nodes[nodeID] = n
 	}
 
@@ -240,6 +252,12 @@ func TestFieldNoiseNeverTouchesInfra(t *testing.T) {
 	tel := &mockTelemetry{recs: blockedRecs("node-1", contracts.RecommendationCorroborated)}
 	cp := &mockCP{nodes: map[string]contracts.Node{"node-1": activeNode("node-1")}}
 	prov := &mockProv{}
+	prov.onUp = func() {
+		cp.nodes["new-entry"] = activeNode("new-entry")
+		ex := activeNode("new-exit")
+		ex.Role = contracts.NodeRoleExit
+		cp.nodes["new-exit"] = ex
+	}
 
 	if _, err := newLoop(tel, cp, prov, nil, Options{}).Cycle(context.Background()); err != nil {
 		t.Fatalf("Cycle() error: %v", err)

@@ -65,8 +65,8 @@ func userinfo(used, total uint64, expireUnix int64) string {
 // operator-supplied UI strings.
 func HappMetaFor(sub contracts.Subscription, user contracts.User, updateHours int, title, announce, supportURL, webURL string) HappMeta {
 	var expire int64
-	if sub.ExpiresAt != nil {
-		expire = sub.ExpiresAt.Unix()
+	if until := sub.AccessUntil(); until != nil {
+		expire = until.Unix()
 	}
 	return HappMeta{
 		ProfileUpdateHours: updateHours,

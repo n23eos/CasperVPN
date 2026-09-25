@@ -10,7 +10,7 @@ import (
 // the given password + insecure flag.
 func hy2Bundle(password string, insecure bool) SubscriptionBundle {
 	return SubscriptionBundle{
-		User: User{ID: "u", Status: UserStatusActive, RealityShortID: "ab12", UUID: "uuid-1", DeviceLimit: 1},
+		User: User{Hysteria2Password: password, ID: "u", Status: UserStatusActive, RealityShortID: "ab12", UUID: "uuid-1", DeviceLimit: 1},
 		Nodes: []Node{{
 			ID: "n", Role: NodeRoleCombined, Status: NodeStatusActive, EntryIP: "1.2.3.4",
 			Transports: []Transport{{

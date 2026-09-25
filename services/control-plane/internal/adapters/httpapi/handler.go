@@ -3,7 +3,10 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/caspervpn/control-plane/internal/authz"
@@ -19,6 +22,7 @@ type Handler struct {
 	signals *usecase.SignalService
 	allow   *usecase.AllowListService
 	tokens  *authz.TokenStore
+	ready   func(context.Context) error
 }
 
 // New builds a Handler.
@@ -40,7 +44,13 @@ func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 
 // decodeJSON reads and strictly decodes a JSON body.
 func decodeJSON(r *http.Request, dst any) error {
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.DisallowUnknownFields()
-	return dec.Decode(dst)
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("request must contain one JSON value")
+	}
+	return nil
 }

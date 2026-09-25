@@ -21,6 +21,7 @@ import (
 	"github.com/caspervpn/control-plane/internal/config"
 	"github.com/caspervpn/control-plane/internal/domain"
 	"github.com/caspervpn/control-plane/internal/migrate"
+	"github.com/caspervpn/control-plane/internal/secret"
 	"github.com/caspervpn/control-plane/internal/seed"
 	"github.com/caspervpn/control-plane/internal/usecase"
 )
@@ -84,7 +85,11 @@ func main() {
 
 	nodeSvc := usecase.NewNodeService(nodeStore, rotStore, queue)
 	userSvc := usecase.NewUserService(userStore, rotStore, queue).WithRevoker(revoker)
-	subSvc := usecase.NewSubscriptionService(subStore, userStore).WithRevoker(revoker)
+	cipher, err := secret.NewTokenCipher(cfg.SubscriptionTokenKey)
+	if err != nil {
+		logger.Fatal("invalid subscription token encryption key")
+	}
+	subSvc := usecase.NewSubscriptionService(subStore, userStore).WithRevoker(revoker).WithTokenCipher(cipher)
 	signalSvc := usecase.NewSignalService(nodeStore, signalStore, nodeSvc)
 	// UserStore's EligibleRealityUsers does the eligibility join in one query.
 	allowSvc := usecase.NewAllowListService(nodeStore, userStore)
@@ -104,12 +109,15 @@ func main() {
 	if cfg.Env == "dev" {
 		logger.Printf("WARNING: dev env; ensure CONTROL_PLANE_TOKENS is set for non-local use")
 	}
-	handler := httpapi.New(nodeSvc, userSvc, subSvc, bundleSvc, signalSvc, allowSvc, tokens)
+	handler := httpapi.New(nodeSvc, userSvc, subSvc, bundleSvc, signalSvc, allowSvc, tokens).WithReadiness(pool.Ping)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler.Router(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {

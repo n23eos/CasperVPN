@@ -180,9 +180,10 @@
     "NodeActivation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["expected_revision"],
+      "anyOf": [{"required": ["expected_revision"]}, {"required": ["expected_access_revision"]}],
       "description": "Body of POST /v1/nodes/{id}/activate. The control-plane activates only if the current eligibility revision equals expected_revision (guards against a ban/rotation racing the converge). For exit nodes, evidence is required.",
       "properties": {
+        "expected_access_revision": { "type": "string", "description": "Combined VLESS and Hysteria2 admission revision; required for Hysteria2 entries." },
         "expected_revision": { "type": "string", "description": "Allow-list revision the reconciler synced onto the node." },
         "evidence": { "type": "string", "enum": ["exit_data_plane_verified"], "description": "Reconciler attestation after an authenticated probe. Required to activate an exit; ignored for entries." }
       }
@@ -199,6 +200,7 @@
         "status": { "$ref": "#/$defs/UserStatus" },
         "reality_short_id": { "type": "string", "description": "User's own REALITY short-id (per-user isolation)." },
         "uuid": { "type": "string", "description": "User's own VLESS UUID." },
+        "hysteria2_password": { "type": "string", "description": "Personal Hysteria2 authentication secret." },
         "private_key": { "type": "string", "description": "Server-side secret; omitted from client-facing payloads." },
         "subscription_id": { "type": "string" },
         "device_limit": { "type": "integer", "minimum": 0 },
@@ -222,6 +224,8 @@
         "traffic_limit_bytes": { "type": "integer", "minimum": 0, "description": "0 = unlimited." },
         "speed_limit_mbps": { "type": "integer", "minimum": 0 },
         "device_limit": { "type": "integer", "minimum": 0 },
+        "billing_revision": { "type": "integer", "minimum": 0 },
+        "grace_until": { "type": "string", "format": "date-time" },
         "starts_at": { "type": "string", "format": "date-time" },
         "expires_at": { "type": "string", "format": "date-time" },
         "created_at": { "type": "string", "format": "date-time" },
@@ -236,6 +240,149 @@
       "properties": {
         "status": { "$ref": "#/$defs/SubscriptionStatus" },
         "expires_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "BillingState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "status",
+        "expires_at",
+        "grace_until"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "$ref": "#/$defs/SubscriptionStatus"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "grace_until": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "EnsureTelegram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "telegram_id"
+      ],
+      "properties": {
+        "telegram_id": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "EnsureSubscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan"
+      ],
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/SubscriptionPlan"
+        }
+      }
+    },
+    "DeliveryLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token",
+        "subscription_id"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "subscription_id": {
+          "type": "string"
+        }
+      }
+    },
+    "ResolveSubscriptionToken": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token_hash"
+      ],
+      "properties": {
+        "token_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "SubscriptionTokenBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_id",
+        "subscription_id"
+      ],
+      "properties": {
+        "user_id": {
+          "type": "string"
+        },
+        "subscription_id": {
+          "type": "string"
+        }
+      }
+    },
+    "AccessUser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uuid",
+        "short_id",
+        "hysteria2_password"
+      ],
+      "properties": {
+        "uuid": {
+          "type": "string"
+        },
+        "short_id": {
+          "type": "string"
+        },
+        "hysteria2_password": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "NodeAccessUsers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "valid_until",
+        "users"
+      ],
+      "properties": {
+        "revision": {
+          "type": "string"
+        },
+        "valid_until": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccessUser"
+          }
+        }
       }
     },
 

@@ -14,6 +14,10 @@ import (
 // ErrNotFound is returned when a lookup misses.
 var ErrNotFound = errors.New("store: not found")
 
+// ErrConflict reports an idempotency key reused for different parameters or a
+// compare-and-swap against stale state.
+var ErrConflict = errors.New("store: conflict")
+
 // StuckSettlement identifies an invoice that was claimed for crediting but whose
 // settlement never completed (the process died between the claim commit and the
 // remote activation / status flip). Activated reports whether the remote activation
@@ -101,8 +105,31 @@ type Repository interface {
 	// cannot be buried by a stale post-deadline negative.
 	ClearNegativeCheck(ctx context.Context, invoiceID string) error
 
+	// Invoice creation is a durable two-step operation. ReserveInvoiceIntent fixes
+	// the provider and provider order id before the remote call. BeginInvoiceCreate
+	// atomically changes reserved -> creating. CompleteInvoiceCreate stores the
+	// provider response and ready state together.
+	ReserveInvoiceIntent(ctx context.Context, intent model.InvoiceIntent) (model.InvoiceIntent, bool, error)
+	BeginInvoiceCreate(ctx context.Context, idempotencyKey string) (bool, error)
+	CompleteInvoiceCreate(ctx context.Context, idempotencyKey string, inv model.Invoice) error
+	FailInvoiceCreate(ctx context.Context, idempotencyKey string) error
+	GetInvoiceIntent(ctx context.Context, idempotencyKey string) (model.InvoiceIntent, error)
+
+	// StageInvoiceCredit atomically stores the invoice's fixed entitlement target
+	// and advances the local schedule revision. Repeated calls for one invoice return
+	// the same delivery. StageScheduleTransition does the same for expiry changes,
+	// guarded by the revision read under the caller's per-user lock.
+	StageInvoiceCredit(ctx context.Context, invoiceID, subID, anonUserID string, now time.Time, duration, grace time.Duration) (model.BillingDelivery, error)
+	StageScheduleTransition(ctx context.Context, subID string, expectedRevision int64, status string, now time.Time) (model.BillingDelivery, bool, error)
+	LeaseBillingDeliveries(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) ([]model.BillingDelivery, error)
+	CompleteBillingDelivery(ctx context.Context, deliveryID string) error
+
 	// Expiry schedule index (billing-owned; no PII).
 	UpsertSchedule(ctx context.Context, s model.Schedule) error
 	GetSchedule(ctx context.Context, subID string) (model.Schedule, error)
 	DueSchedules(ctx context.Context, now time.Time) ([]model.Schedule, error)
+
+	// Ping verifies the selected durable backend for readiness. Memory returns nil
+	// and is permitted only in explicit dev/test mode by main.
+	Ping(ctx context.Context) error
 }

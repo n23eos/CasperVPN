@@ -40,3 +40,14 @@ func (s *AllowListService) ForNode(ctx context.Context, nodeID string) (contract
 		Users:    users,
 	}, nil
 }
+
+func (s *AllowListService) AccessForNode(ctx context.Context, id string) (contracts.NodeAccessUsers, error) {
+	if _, err := s.nodes.Get(ctx, id); err != nil {
+		return contracts.NodeAccessUsers{}, err
+	}
+	a, ok := s.allow.(domain.AccessListRepo)
+	if !ok {
+		return contracts.NodeAccessUsers{}, domain.ErrConflict
+	}
+	return a.EligibleAccessUsers(ctx)
+}

@@ -157,22 +157,29 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   # Env-prefix vars are read by reality_sync_node as shell vars; bash passes them
   # to the function (SC2097/2098 assume POSIX sh, where it differs).
   # shellcheck disable=SC2097,SC2098
+  ENTRY_LABELS="$(jq -cn --arg run "$RUN_ID" --arg ws "$TF_WORKSPACE" --arg peer "$EXIT_ID" \
+    '{"orchestrator.run_id":$run,"orchestrator.tf_workspace":$ws,"orchestrator.peer_node_id":$peer}')"
   NODE_ID="${ENTRY_ID}" NODE_ROLE="entry" NODE_STATUS="provisioning" \
     PROVIDER="${ENTRY_CLOUD}" CLOUD="${ENTRY_CLOUD}" REGION="${ENTRY_REGION}" \
     ENTRY_IP="${ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
     REALITY_PUBLIC_KEY="$ENTRY_PUB" REALITY_SHORT_IDS="$ENTRY_SIDS" \
     REALITY_SERVER_NAMES="$REALITY_SERVER_NAMES" REALITY_DEST="$REALITY_DEST" \
     HY2_PASSWORD="$HY2_PASSWORD" HY2_SNI="${HY2_SNI:-}" HY2_INSECURE="$HY2_INSECURE" \
+    LABELS_JSON="$ENTRY_LABELS" \
     reality_sync_node
 
   # Exit: plain inventory node, no client transport (see comment above), also
   # provisioning until the reconciler blesses the pair. Register with the EXIT's own
   # cloud/region (it is a different provider than the entry), not the entry's.
   # shellcheck disable=SC2097,SC2098
+  EXIT_LABELS="$(jq -cn --arg run "$RUN_ID" --arg ws "$TF_WORKSPACE" --arg peer "$ENTRY_ID" \
+    '{"orchestrator.run_id":$run,"orchestrator.tf_workspace":$ws,"orchestrator.peer_node_id":$peer}')"
   NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \
     PROVIDER="${EXIT_CLOUD}" CLOUD="${EXIT_CLOUD}" REGION="${EXIT_REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
+    LABELS_JSON="$EXIT_LABELS" \
     cp_register_node "$(NODE_ID="${EXIT_ID}" NODE_ROLE="exit" NODE_STATUS="provisioning" \
       PROVIDER="${EXIT_CLOUD}" CLOUD="${EXIT_CLOUD}" REGION="${EXIT_REGION}" ENTRY_NODE_ID="${ENTRY_ID}" \
+      LABELS_JSON="$EXIT_LABELS" \
       build_node_json)"
 else
   log "CONTROL_PLANE_URL unset — skipping registration"

@@ -27,6 +27,7 @@ type SubscriptionService struct {
 	subs    domain.SubscriptionRepo
 	users   domain.UserRepo
 	revoker domain.SubscriptionRevoker // optional; nil => no propagation
+	cipher  *secret.TokenCipher
 	now     func() time.Time
 }
 
@@ -48,6 +49,10 @@ func (s *SubscriptionService) WithRevoker(r domain.SubscriptionRevoker) *Subscri
 // Create issues a subscription for an existing user and returns the one-time
 // plaintext token alongside the stored (hashed) record.
 func (s *SubscriptionService) Create(ctx context.Context, userID string, plan contracts.SubscriptionPlan) (domain.SubscriptionWithToken, error) {
+	return s.create(ctx, userID, plan, false)
+}
+
+func (s *SubscriptionService) create(ctx context.Context, userID string, plan contracts.SubscriptionPlan, inactive bool) (domain.SubscriptionWithToken, error) {
 	if !plan.Valid() {
 		return domain.SubscriptionWithToken{}, fmt.Errorf("%w: unknown plan %q", domain.ErrValidation, plan)
 	}
@@ -72,6 +77,10 @@ func (s *SubscriptionService) Create(ctx context.Context, userID string, plan co
 		StartsAt:  now,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if inactive {
+		sub.Status = contracts.SubscriptionStatusExpired
+		sub.ExpiresAt = &now
 	}
 	applyPlanLimits(&sub, plan)
 	if err := sub.Validate(); err != nil {
@@ -107,6 +116,9 @@ func (s *SubscriptionService) Patch(ctx context.Context, id string, patch contra
 	existing, err := s.subs.Get(ctx, id)
 	if err != nil {
 		return contracts.Subscription{}, err
+	}
+	if existing.BillingRevision > 0 && !patch.IsZero() {
+		return contracts.Subscription{}, domain.ErrConflict
 	}
 	if patch.IsZero() {
 		existing.Token = ""
@@ -152,9 +164,6 @@ func (s *SubscriptionService) RotateToken(ctx context.Context, id string) (domai
 		return domain.SubscriptionWithToken{}, err
 	}
 	existing.UpdatedAt = s.now()
-	if err := s.subs.Update(ctx, existing); err != nil {
-		return domain.SubscriptionWithToken{}, err
-	}
 	// Old link dies immediately; the new one starts resolving right away.
 	s.revokeSubscription(ctx, id)
 	if s.revoker != nil {

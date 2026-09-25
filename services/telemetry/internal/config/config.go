@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/caspervpn/platform/envcfg"
@@ -102,6 +103,16 @@ func Load() (Config, error) {
 	}
 	if err := e.Err(); err != nil {
 		return Config{}, err
+	}
+	mode := e.Str("ENV", "production")
+	if mode != "production" && mode != "dev" && mode != "test" {
+		return Config{}, fmt.Errorf("config: ENV must be production, dev or test")
+	}
+	if mode == "production" && (cfg.DatabaseURL == "" || cfg.InternalToken == "") {
+		return Config{}, fmt.Errorf("config: DATABASE_URL and TELEMETRY_INTERNAL_TOKEN required in production")
+	}
+	if cfg.Window <= 0 || cfg.Retention <= 0 || cfg.PruneEvery <= 0 || cfg.RatePerSec < 1 || cfg.RateBurst < 1 || cfg.GlobalRate < 1 || cfg.GlobalBurst < 1 || cfg.MaxBatch < 1 {
+		return Config{}, fmt.Errorf("config: durations, rates and batch sizes must be positive")
 	}
 	return cfg, nil
 }

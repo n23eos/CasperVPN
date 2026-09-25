@@ -13,12 +13,13 @@ const (
 	RoleTelemetry    Role = "telemetry"
 	RoleSubscription Role = "subscription"
 	RoleBilling      Role = "billing"
+	RoleDelivery     Role = "delivery"
 )
 
 // ParseRole validates a role string.
 func ParseRole(s string) (Role, bool) {
 	switch Role(s) {
-	case RoleAdmin, RoleOrchestrator, RoleTelemetry, RoleSubscription, RoleBilling:
+	case RoleAdmin, RoleOrchestrator, RoleTelemetry, RoleSubscription, RoleBilling, RoleDelivery:
 		return Role(s), true
 	}
 	return "", false
