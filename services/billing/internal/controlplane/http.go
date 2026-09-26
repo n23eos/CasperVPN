@@ -96,3 +96,16 @@ func (c *HTTPClient) SetSubscriptionPeriod(ctx context.Context, subID string, st
 	err := c.do(ctx, http.MethodPatch, "/v1/subscriptions/"+subID, body, &s)
 	return s, err
 }
+
+func (c *HTTPClient) EnsureSubscription(ctx context.Context, userID string, plan contracts.SubscriptionPlan) (contracts.Subscription, error) {
+	body := contracts.EnsureSubscription{Plan: plan}
+	var sub contracts.Subscription
+	err := c.do(ctx, http.MethodPost, "/v1/users/"+userID+"/ensure-subscription", body, &sub)
+	return sub, err
+}
+
+func (c *HTTPClient) SetBillingState(ctx context.Context, subID string, state contracts.BillingState) (contracts.Subscription, error) {
+	var sub contracts.Subscription
+	err := c.do(ctx, http.MethodPut, "/v1/subscriptions/"+subID+"/billing-state", state, &sub)
+	return sub, err
+}

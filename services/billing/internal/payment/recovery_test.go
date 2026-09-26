@@ -202,6 +202,14 @@ func (s *cancelAfterFirstStore) SetInvoiceStatus(ctx context.Context, id string,
 	return err
 }
 
+func (s *cancelAfterFirstStore) CompleteBillingDelivery(ctx context.Context, id string) error {
+	err := s.Memory.CompleteBillingDelivery(ctx, id)
+	if s.n++; s.n == 1 {
+		s.cancel()
+	}
+	return err
+}
+
 // The strong form of condition 5: a partial result committed BEFORE the cancel must
 // survive — one invoice settled, the cycle flagged Canceled, the rest untouched.
 func TestReconcile_CancelAfterFirstKeepsPartial(t *testing.T) {

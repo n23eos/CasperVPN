@@ -35,7 +35,9 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("DRAIN_GRACE", "1h")
 	t.Setenv("MAX_ACTIONS_PER_CYCLE", "3")
 	t.Setenv("TELEMETRY_URL", "http://telemetry:8085")
+	t.Setenv("TELEMETRY_TOKEN", "telemetry-token")
 	t.Setenv("CONTROL_PLANE_URL", "http://control-plane:8081")
+	t.Setenv("CONTROL_PLANE_TOKEN", "control-plane-token")
 
 	cfg, err := Load()
 	if err != nil {

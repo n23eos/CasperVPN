@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -22,12 +23,15 @@ type memSettlement struct {
 // Memory is an in-memory Repository. Safe for concurrent use. All state is lost
 // on restart — fine for the MVP/tests, not for production (see docs/billing.md).
 type Memory struct {
-	mu        sync.Mutex
-	invoices  map[string]model.Invoice
-	events    map[string]struct{}       // "provider|externalID" processed to completion
-	settled   map[string]*memSettlement // invoiceID currently claimed/credited
-	schedules map[string]model.Schedule
-	now       func() time.Time
+	mu                sync.Mutex
+	invoices          map[string]model.Invoice
+	events            map[string]struct{}       // "provider|externalID" processed to completion
+	settled           map[string]*memSettlement // invoiceID currently claimed/credited
+	schedules         map[string]model.Schedule
+	deliveries        map[string]model.BillingDelivery
+	invoiceDeliveries map[string]string
+	invoiceIntents    map[string]model.InvoiceIntent
+	now               func() time.Time
 
 	userLocksMu sync.Mutex
 	userLocks   map[string]*sync.Mutex // per-user lock (process-local; NOT cross-instance)
@@ -56,14 +60,17 @@ func NewMemoryWithClock(now func() time.Time) *Memory {
 		now = time.Now
 	}
 	return &Memory{
-		invoices:      make(map[string]model.Invoice),
-		events:        make(map[string]struct{}),
-		settled:       make(map[string]*memSettlement),
-		schedules:     make(map[string]model.Schedule),
-		now:           now,
-		userLocks:     make(map[string]*sync.Mutex),
-		negativeCheck: make(map[string]time.Time),
-		pollLeases:    make(map[string]*memLease),
+		invoices:          make(map[string]model.Invoice),
+		events:            make(map[string]struct{}),
+		settled:           make(map[string]*memSettlement),
+		schedules:         make(map[string]model.Schedule),
+		deliveries:        make(map[string]model.BillingDelivery),
+		invoiceDeliveries: make(map[string]string),
+		invoiceIntents:    make(map[string]model.InvoiceIntent),
+		now:               now,
+		userLocks:         make(map[string]*sync.Mutex),
+		negativeCheck:     make(map[string]time.Time),
+		pollLeases:        make(map[string]*memLease),
 	}
 }
 
@@ -297,9 +304,200 @@ func (m *Memory) ClearNegativeCheck(_ context.Context, invoiceID string) error {
 	return nil
 }
 
+func (m *Memory) ReserveInvoiceIntent(_ context.Context, intent model.InvoiceIntent) (model.InvoiceIntent, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.invoiceIntents[intent.IdempotencyKey]; ok {
+		if existing.RequestHash != intent.RequestHash {
+			return model.InvoiceIntent{}, false, ErrConflict
+		}
+		return existing, false, nil
+	}
+	if intent.CreatedAt.IsZero() {
+		intent.CreatedAt = m.now()
+	}
+	intent.State = "reserved"
+	m.invoiceIntents[intent.IdempotencyKey] = intent
+	return intent, true, nil
+}
+
+func (m *Memory) BeginInvoiceCreate(_ context.Context, key string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	intent, ok := m.invoiceIntents[key]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if intent.State != "reserved" {
+		return false, nil
+	}
+	intent.State = "creating"
+	m.invoiceIntents[key] = intent
+	return true, nil
+}
+
+func (m *Memory) CompleteInvoiceCreate(_ context.Context, key string, inv model.Invoice) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	intent, ok := m.invoiceIntents[key]
+	if !ok {
+		return ErrNotFound
+	}
+	if intent.OrderID != inv.ID || intent.Provider != inv.Provider {
+		return ErrConflict
+	}
+	m.invoices[inv.ID] = inv
+	intent.State = "ready"
+	m.invoiceIntents[key] = intent
+	return nil
+}
+
+func (m *Memory) FailInvoiceCreate(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	intent, ok := m.invoiceIntents[key]
+	if !ok {
+		return ErrNotFound
+	}
+	intent.State = "failed"
+	m.invoiceIntents[key] = intent
+	return nil
+}
+
+func (m *Memory) GetInvoiceIntent(_ context.Context, key string) (model.InvoiceIntent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	intent, ok := m.invoiceIntents[key]
+	if !ok {
+		return model.InvoiceIntent{}, ErrNotFound
+	}
+	return intent, nil
+}
+
+func (m *Memory) StageInvoiceCredit(_ context.Context, invoiceID, subID, anonUserID string, now time.Time, duration, grace time.Duration) (model.BillingDelivery, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if deliveryID, ok := m.invoiceDeliveries[invoiceID]; ok {
+		return m.deliveries[deliveryID], nil
+	}
+	inv, ok := m.invoices[invoiceID]
+	if !ok {
+		return model.BillingDelivery{}, ErrNotFound
+	}
+	if inv.AnonUserID != anonUserID {
+		return model.BillingDelivery{}, ErrConflict
+	}
+	sched, exists := m.schedules[subID]
+	base := now
+	revision := int64(1)
+	if exists {
+		if sched.ExpiresAt.After(base) {
+			base = sched.ExpiresAt
+		}
+		revision = sched.Revision + 1
+	}
+	delivery := model.BillingDelivery{
+		ID: "invoice:" + invoiceID, InvoiceID: invoiceID, SubID: subID,
+		AnonUserID: anonUserID, Revision: revision, Plan: inv.Plan,
+		Status:    string(contracts.SubscriptionStatusActive),
+		ExpiresAt: base.Add(duration), GraceUntil: base.Add(duration).Add(grace), CreatedAt: now,
+	}
+	m.schedules[subID] = model.Schedule{
+		SubID: subID, AnonUserID: anonUserID, Revision: revision,
+		Plan: delivery.Plan, Status: delivery.Status,
+		ExpiresAt: delivery.ExpiresAt, GraceUntil: delivery.GraceUntil,
+	}
+	m.deliveries[delivery.ID] = delivery
+	m.invoiceDeliveries[invoiceID] = delivery.ID
+	return delivery, nil
+}
+
+func (m *Memory) StageScheduleTransition(_ context.Context, subID string, expectedRevision int64, status string, now time.Time) (model.BillingDelivery, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sched, ok := m.schedules[subID]
+	if !ok {
+		return model.BillingDelivery{}, false, ErrNotFound
+	}
+	if sched.Revision != expectedRevision {
+		return model.BillingDelivery{}, false, nil
+	}
+	revision := sched.Revision + 1
+	delivery := model.BillingDelivery{
+		ID: fmt.Sprintf("schedule:%s:%d", subID, revision), SubID: subID,
+		AnonUserID: sched.AnonUserID, Revision: revision, Plan: sched.Plan, Status: status,
+		ExpiresAt: sched.ExpiresAt, GraceUntil: sched.GraceUntil, CreatedAt: now,
+	}
+	sched.Revision = revision
+	sched.Status = status
+	m.schedules[subID] = sched
+	m.deliveries[delivery.ID] = delivery
+	return delivery, true, nil
+}
+
+func (m *Memory) LeaseBillingDeliveries(_ context.Context, olderThan time.Time, leaseFor time.Duration, limit int) ([]model.BillingDelivery, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	var candidates []model.BillingDelivery
+	for _, delivery := range m.deliveries {
+		if !delivery.DeliveredAt.IsZero() || !delivery.CreatedAt.Before(olderThan) {
+			continue
+		}
+		if settlement := m.settled["delivery:"+delivery.ID]; settlement != nil && settlement.leasedUntil.After(now) {
+			continue
+		}
+		candidates = append(candidates, delivery)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
+			return candidates[i].ID < candidates[j].ID
+		}
+		return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
+	})
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	for _, delivery := range candidates {
+		m.settled["delivery:"+delivery.ID] = &memSettlement{leasedUntil: now.Add(leaseFor)}
+	}
+	return candidates, nil
+}
+
+func (m *Memory) CompleteBillingDelivery(_ context.Context, deliveryID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delivery, ok := m.deliveries[deliveryID]
+	if !ok {
+		return ErrNotFound
+	}
+	if delivery.DeliveredAt.IsZero() {
+		delivery.DeliveredAt = m.now()
+		m.deliveries[deliveryID] = delivery
+		if delivery.InvoiceID != "" {
+			inv, ok := m.invoices[delivery.InvoiceID]
+			if !ok {
+				return ErrNotFound
+			}
+			inv.Status = model.StatusSettled
+			m.invoices[delivery.InvoiceID] = inv
+		}
+	}
+	delete(m.settled, "delivery:"+deliveryID)
+	return nil
+}
+
 func (m *Memory) UpsertSchedule(_ context.Context, s model.Schedule) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if current, ok := m.schedules[s.SubID]; ok {
+		if current.Revision > s.Revision {
+			s.Revision = current.Revision
+		}
+		if s.Plan == "" {
+			s.Plan = current.Plan
+		}
+	}
 	m.schedules[s.SubID] = s
 	return nil
 }
@@ -330,3 +528,5 @@ func (m *Memory) DueSchedules(_ context.Context, now time.Time) ([]model.Schedul
 	}
 	return out, nil
 }
+
+func (m *Memory) Ping(context.Context) error { return nil }

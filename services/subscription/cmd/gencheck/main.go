@@ -33,7 +33,7 @@ func main() {
 	bundle := contracts.SubscriptionBundle{
 		User: contracts.User{
 			ID: "u-check", Status: contracts.UserStatusActive,
-			RealityShortID: "ab12", UUID: "00000000-0000-0000-0000-000000000001",
+			RealityShortID: "ab12", UUID: "00000000-0000-0000-0000-000000000001", Hysteria2Password: "pw",
 		},
 		Nodes: []contracts.Node{{
 			ID: "n-check", Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive,

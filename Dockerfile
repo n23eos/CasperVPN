@@ -1,7 +1,7 @@
 # Shared build image for every CasperVPN Go service.
 # Pass the service name via build arg; the whole repo is the context so go.work resolves.
 #   docker build --build-arg SERVICE=control-plane .
-ARG GO_VERSION=1.22
+ARG GO_VERSION=1.27.1
 FROM golang:${GO_VERSION}-alpine AS build
 ARG SERVICE
 WORKDIR /src
@@ -16,11 +16,11 @@ COPY services/delivery/go.mod services/delivery/go.sum* services/delivery/
 COPY services/billing/go.mod services/billing/go.sum* services/billing/
 COPY services/telemetry/go.mod services/telemetry/go.sum* services/telemetry/
 COPY services/orchestrator/go.mod services/orchestrator/go.sum* services/orchestrator/
-RUN go mod download all || true
+RUN go mod download all
 COPY . .
 # Build the selected service's entrypoint using the workspace.
 # -trimpath + stripped symbols: reproducible paths, smaller binary.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app ./services/${SERVICE}/cmd/${SERVICE}
+RUN CGO_ENABLED=0 GOMAXPROCS=1 GOGC=20 GOMEMLIMIT=384MiB go build -p 1 -trimpath -ldflags="-s -w" -o /out/app ./services/${SERVICE}/cmd/${SERVICE}
 
 # nonroot tag: distroless defaults to uid 0; none of the services need root
 # (they bind high ports and touch no host paths).

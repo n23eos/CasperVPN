@@ -15,12 +15,37 @@ source "${HERE}/control_plane.sh"
 source "${HERE}/reality_sync.sh"
 # shellcheck source=hy2_lifecycle.sh
 source "${HERE}/hy2_lifecycle.sh"
+# shellcheck source=run_manifest.sh
+source "${HERE}/run_manifest.sh"
 
 require_cmd terraform ansible-playbook ansible jq curl
-require_env NODE SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST
+require_env RUN_ID NODE SSH_PUBKEY REALITY_SERVER_NAMES REALITY_DEST CONTROL_PLANE_URL CONTROL_PLANE_TOKEN
 ROOT="$(repo_root)"
 TF_DIR="${ROOT}/${TF_ENV_DIR_DEFAULT}"
 ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
+
+# Bind the CP node to its durable run and EXISTING Terraform workspace before
+# reading or mutating state. Rotation must never use whichever workspace happened
+# to be selected by a previous operator command.
+# NODE is validated by require_env and intentionally names the CP node.
+# shellcheck disable=SC2153
+require_manifest_node "$RUN_ID" "$NODE" entry
+TF_WORKSPACE="$(manifest_field "$RUN_ID" '.tf_workspace')"
+[ "$TF_WORKSPACE" != "default" ] || die "manifest workspace is 'default' - refusing rotation"
+export TF_WORKSPACE
+terraform -chdir="${TF_DIR}" init -input=false >/dev/null
+tf_select_existing_workspace "${TF_DIR}"
+MANIFEST_RAW_ID="$(manifest_field "$RUN_ID" '.entry.raw_id')"
+MANIFEST_CLOUD="$(manifest_field "$RUN_ID" '.entry.cloud')"
+MANIFEST_REGION="$(manifest_field "$RUN_ID" '.entry.region')"
+STATE_RAW_ID="$(terraform -chdir="${TF_DIR}" output -raw entry_id)" \
+  || die "cannot read current entry_id from terraform"
+STATE_CLOUD="$(terraform -chdir="${TF_DIR}" output -raw entry_cloud)" \
+  || die "cannot read current entry_cloud from terraform"
+[ "$STATE_RAW_ID" = "$MANIFEST_RAW_ID" ] \
+  || die "entry identity mismatch: state=${STATE_RAW_ID}, manifest=${MANIFEST_RAW_ID}"
+[ "$STATE_CLOUD" = "$MANIFEST_CLOUD" ] \
+  || die "entry cloud mismatch: state=${STATE_CLOUD}, manifest=${MANIFEST_CLOUD}"
 
 # ===========================================================================
 # PREFLIGHT — read all state and validate EVERY secret BEFORE touching infra.
@@ -89,11 +114,13 @@ terraform -chdir="${TF_DIR}" apply -auto-approve -input=false \
   -replace="module.entry_vm.hcloud_server.this"
 
 NEW_ENTRY_IP="$(terraform -chdir="${TF_DIR}" output -raw entry_ip)"
+NEW_ENTRY_RAW_ID="$(terraform -chdir="${TF_DIR}" output -raw entry_id)"
 [ -n "${NEW_ENTRY_IP}" ] || die "no new entry_ip after replace"
+[ -n "${NEW_ENTRY_RAW_ID}" ] || die "no new entry_id after replace"
 [ "${NEW_ENTRY_IP}" != "${OLD_ENTRY_IP}" ] || die "entry IP did not change — rotation failed"
 log "new entry IP: ${NEW_ENTRY_IP}"
 
-printf '[entry]\n%s ansible_host=%s node_id=%s\n' "${NODE}" "${NEW_ENTRY_IP}" "${NODE}" >"${INV}"
+printf '[entry]\n%s ansible_host=%s node_id=%s node_role=entry\n' "${NEW_ENTRY_RAW_ID}" "${NEW_ENTRY_IP}" "${NODE}" >"${INV}"
 retry 10 ansible -i "${INV}" entry -m ping >/dev/null
 ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-up.yml"     -e target=entry -e "@${VARS_FILE}"
 ansible-playbook -i "${INV}" "${ANSIBLE_DIR}/playbooks/node-rotate.yml" -e target=entry -e "@${VARS_FILE}"
@@ -118,7 +145,7 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
   # back to active once ready (see docs/FIRST-WORKING-USER.md). Leaving it active
   # here would advertise a node that authenticates nobody.
   NODE_ID="${NODE}" NODE_ROLE="entry" NODE_STATUS="provisioning" \
-    PROVIDER="${PROVIDER:-hetzner}" CLOUD="${CLOUD:-hetzner}" REGION="${REGION:-unknown}" \
+    PROVIDER="${MANIFEST_CLOUD}" CLOUD="${MANIFEST_CLOUD}" REGION="${MANIFEST_REGION}" \
     ENTRY_IP="${NEW_ENTRY_IP}" EPHEMERAL_ENTRY_IP="true" \
     REALITY_PUBLIC_KEY="${NEW_PUB}" REALITY_SHORT_IDS="${NEW_SIDS}" \
     REALITY_SERVER_NAMES="${REALITY_SERVER_NAMES}" REALITY_DEST="${REALITY_DEST}" \
@@ -126,7 +153,8 @@ if [ -n "${CONTROL_PLANE_URL:-}" ]; then
     reality_sync_node
   log "control-plane updated for ${NODE}: entry_ip=${NEW_ENTRY_IP}, REALITY pub=${NEW_PUB:0:12}... (status=provisioning until user allow-list re-synced)"
 else
-  log "CONTROL_PLANE_URL unset — skipping control-plane update"
+  die "CONTROL_PLANE_URL unset - refusing to leave rotated node untracked"
 fi
 
-log "rotation done: ${NODE} moved ${OLD_ENTRY_IP:-none} -> ${NEW_ENTRY_IP}"
+update_manifest_entry "$RUN_ID" "$NEW_ENTRY_RAW_ID" "$NEW_ENTRY_IP"
+log "rotation staged: ${NODE} moved ${OLD_ENTRY_IP:-none} -> ${NEW_ENTRY_IP}; manifest updated, guarded reconcile required"

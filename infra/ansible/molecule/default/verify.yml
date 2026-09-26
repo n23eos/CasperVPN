@@ -63,11 +63,51 @@
         executable: /bin/bash
       register: tls_probe
       changed_when: false
-      failed_when: false
+      failed_when: tls_probe.rc != 0
 
-    - name: report TLS probe outcome
-      ansible.builtin.debug:
-        msg: "REALITY listener TLS probe rc={{ tls_probe.rc }} (0 = handshake bytes seen)"
+    - name: Write deliberately invalid hysteria2 TLS files
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: "not-a-valid-pem\n"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - /tmp/casper-invalid-hy2.crt
+        - /tmp/casper-invalid-hy2.key
+
+    - name: Prove sing-box rejects invalid hysteria2 TLS material
+      block:
+        - name: Enable hysteria2 with invalid TLS material
+          ansible.builtin.set_fact:
+            hysteria2_users:
+              - password: "molecule-personal-password"
+            transports: >-
+              {{ transports | combine({'hysteria2':
+                 transports.hysteria2 | combine({
+                   'enabled': true,
+                   'tls_sni': 'invalid.test',
+                   'tls_cert_path': '/tmp/casper-invalid-hy2.crt',
+                   'tls_key_path': '/tmp/casper-invalid-hy2.key'
+                 })}, recursive=True) }}
+
+        - name: Run the real transport role against invalid TLS
+          ansible.builtin.include_role:
+            name: transports
+
+        - name: Mark invalid TLS as incorrectly accepted
+          ansible.builtin.set_fact:
+            invalid_tls_rejected: false
+      rescue:
+        - name: Record fail-closed TLS rejection
+          ansible.builtin.set_fact:
+            invalid_tls_rejected: true
+
+    - name: Invalid hysteria2 TLS is a hard failure
+      ansible.builtin.assert:
+        that:
+          - invalid_tls_rejected | default(false) | bool
+        fail_msg: "The real transports role accepted malformed hysteria2 TLS material."
 
     - name: health report script + timer installed
       ansible.builtin.stat:

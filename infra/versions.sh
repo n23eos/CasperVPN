@@ -5,4 +5,4 @@
 # it by test/infra/versions-pin-guard.sh (run in CI) so the two can never drift.
 # To bump: change SINGBOX_VERSION here AND the role default in the same commit; the
 # guard fails the build otherwise.
-SINGBOX_VERSION=1.11.11
+SINGBOX_VERSION=1.14.2

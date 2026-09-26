@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/platform/httpjson"
@@ -47,6 +50,10 @@ func (s *Server) handleSub(w http.ResponseWriter, r *http.Request) {
 	if dec, err := url.PathUnescape(token); err == nil {
 		token = dec
 	}
+	if len(token) > 512 {
+		httpjson.Error(w, http.StatusBadRequest, "invalid token")
+		return
+	}
 	if r.URL.Query().Get("deeplink") == "1" {
 		s.serveDeepLink(w, r, token)
 		return
@@ -63,22 +70,43 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, token
 		Region:   q.Get("region"),
 		Platform: contracts.Platform(q.Get("platform")),
 	}
-	cacheKey := cacheFormatKey(format, params)
-
-	if e, ok := s.cache.Get(token, cacheKey); ok {
-		writeCached(w, e)
-		return
-	}
-
 	res, err := s.resolver.Resolve(r.Context(), token)
 	if err != nil {
 		writeResolveError(w, err)
 		return
 	}
 	filtered := personalize.Filter(res.Bundle, res.Subscription.Plan, params)
+	filtered.Bundle, err = personalize.PublicBundle(filtered.Bundle)
+	if err != nil {
+		httpjson.Error(w, http.StatusServiceUnavailable, "VPN temporarily unavailable")
+		return
+	}
+	// Revalidate current authorization and credentials before any cache hit.
+	// Exclude the render timestamp so identical authoritative snapshots can reuse
+	// a payload, while revocation, expiry, rotation and fleet changes cannot.
+	snapshotBundle := filtered.Bundle
+	snapshotBundle.GeneratedAt = time.Time{}
+	snapshot, err := json.Marshal(struct {
+		Bundle       contracts.SubscriptionBundle
+		Subscription contracts.Subscription
+	}{snapshotBundle, res.Subscription})
+	if err != nil {
+		httpjson.Error(w, http.StatusInternalServerError, "render failed")
+		return
+	}
+	digest := sha256.Sum256(snapshot)
+	cacheKey := cacheFormatKey(format, params) + ":" + hex.EncodeToString(digest[:])
+	if e, ok := s.cache.Get(token, cacheKey); ok {
+		writeCached(w, e)
+		return
+	}
 
 	body, ct, err := s.renderer.Render(format, filtered.Bundle)
 	if err != nil {
+		if errors.Is(err, render.ErrUnavailable) {
+			httpjson.Error(w, http.StatusServiceUnavailable, "VPN temporarily unavailable")
+			return
+		}
 		httpjson.Error(w, http.StatusInternalServerError, "render failed")
 		return
 	}
@@ -104,6 +132,11 @@ func (s *Server) serveNodes(w http.ResponseWriter, r *http.Request, token string
 		Platform: contracts.Platform(r.URL.Query().Get("platform")),
 	}
 	filtered := personalize.Filter(res.Bundle, res.Subscription.Plan, params)
+	filtered.Bundle, err = personalize.PublicBundle(filtered.Bundle)
+	if err != nil {
+		httpjson.Error(w, http.StatusServiceUnavailable, "VPN temporarily unavailable")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(filtered.Bundle)
@@ -117,11 +150,14 @@ func (s *Server) serveDeepLink(w http.ResponseWriter, r *http.Request, token str
 		token = dec
 	}
 	// Confirm the token is real before minting a link.
-	if _, _, err := s.idx.Lookup(r.Context(), token); err != nil {
-		httpjson.Error(w, http.StatusUnauthorized, "unknown or revoked token")
+	if _, err := s.resolver.Resolve(r.Context(), token); err != nil {
+		writeResolveError(w, err)
 		return
 	}
 	subURL := requestSubscriptionURL(r, token)
+	if s.cfg.PublicBaseURL != "" {
+		subURL = strings.TrimRight(s.cfg.PublicBaseURL, "/") + "/sub/" + url.PathEscape(token)
+	}
 	link := render.HappAddDeepLink(subURL)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -143,6 +179,8 @@ func (s *Server) happHeaders(sub contracts.Subscription, user contracts.User) ma
 
 // writeCached emits a cache entry (headers + body).
 func writeCached(w http.ResponseWriter, e cache.Entry) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	for k, v := range e.Headers {
 		w.Header().Set(k, v)
 	}

@@ -1,14 +1,14 @@
 // Go workspace for the CasperVPN monorepo.
-// Floor is Go 1.22 (matches CI and the golang:1.22 Docker builders); bump freely.
-go 1.22
+// Release builds use the pinned supported toolchain below.
+go 1.27.1
 
 use (
 	./packages/contracts
 	./packages/platform
-	./services/control-plane
-	./services/subscription
-	./services/delivery
 	./services/billing
-	./services/telemetry
+	./services/control-plane
+	./services/delivery
 	./services/orchestrator
+	./services/subscription
+	./services/telemetry
 )

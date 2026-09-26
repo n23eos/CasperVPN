@@ -9,9 +9,20 @@ SERVICES := services/control-plane \
 	services/orchestrator
 
 # All Go modules (contracts is a library — no main to emit).
-MODULES := packages/contracts $(SERVICES)
+MODULES := packages/contracts packages/platform $(SERVICES)
 
 BIN := bin
+.DEFAULT_GOAL := all
+COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo 'docker compose' || echo docker-compose)
+
+.PHONY: release-check launch-preflight
+## release-check: full local acceptance including isolated Postgres and fake Telegram
+release-check:
+	@bash scripts/release-check.sh
+
+## launch-preflight: validate private production settings without external calls
+launch-preflight:
+	@python3 scripts/launch.py preflight
 
 .PHONY: all build test lint vet fmt tidy up down clean help e2e-guards e2e-first-user e2e-real-node e2e-sync-merge e2e-hy2-rotation e2e-hy2-guards e2e-transport-probe e2e-probe-gate e2e-reconcile-state e2e-reconcile-signal e2e-user-removal e2e-reconcile \
 	node-up node-rotate node-down infra-validate infra-fmt infra-syntax infra-molecule infra-nocode infra-guards gate0
@@ -76,11 +87,11 @@ tidy:
 
 ## up: start local dev stack (postgres + services)
 up:
-	docker-compose -f docker-compose.dev.yml up --build -d
+	$(COMPOSE) -f docker-compose.dev.yml up --build -d
 
 ## down: stop local dev stack
 down:
-	docker-compose -f docker-compose.dev.yml down
+	$(COMPOSE) -f docker-compose.dev.yml down
 
 ## e2e-guards: all pure-shell e2e guards (no cloud, no docker, no sing-box) — the CI-cheap subset
 e2e-guards: e2e-hy2-guards e2e-probe-gate e2e-reconcile-state e2e-reconcile-signal
@@ -121,7 +132,7 @@ e2e-reconcile-signal:
 e2e-reconcile-state:
 	@test/e2e/reconcile-state-guards.sh
 
-## e2e-user-removal: ban removes a user's REALITY access after converge+restart (opt-in)
+## e2e-user-removal: local real VLESS + Hysteria2 revoke, second user remains connected
 e2e-user-removal:
 	@test/e2e/user-removal.sh
 

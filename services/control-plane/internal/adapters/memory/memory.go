@@ -10,6 +10,7 @@ import (
 
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/domain"
+	"github.com/caspervpn/control-plane/internal/secret"
 )
 
 // Nodes is an in-memory NodeRepo.
@@ -128,6 +129,7 @@ func (r *Nodes) ListActive(_ context.Context) ([]contracts.Node, error) {
 type Users struct {
 	mu    sync.Mutex
 	users map[string]contracts.User
+	subs  *Subscriptions
 }
 
 // NewUsers builds an empty user store.
@@ -138,6 +140,13 @@ func (r *Users) Create(_ context.Context, u contracts.User) error {
 	defer r.mu.Unlock()
 	if _, ok := r.users[u.ID]; ok {
 		return domain.ErrConflict
+	}
+	if u.TelegramID != nil {
+		for _, existing := range r.users {
+			if existing.TelegramID != nil && *existing.TelegramID == *u.TelegramID {
+				return domain.ErrConflict
+			}
+		}
 	}
 	r.users[u.ID] = u
 	return nil
@@ -173,6 +182,21 @@ func (r *Users) RotateSecrets(_ context.Context, id, shortID, uuid, privKey stri
 	u.RealityShortID = shortID
 	u.UUID = uuid
 	u.PrivateKey = privKey
+	hy2, err := secret.Token()
+	if err != nil {
+		return contracts.User{}, err
+	}
+	u.Hysteria2Password = hy2
+	if r.subs != nil {
+		r.subs.mu.Lock()
+		for sid, sub := range r.subs.subs {
+			if sub.UserID == id {
+				r.subs.hashes[sid] = "revoked:" + hy2
+				delete(r.subs.delivery, sid)
+			}
+		}
+		r.subs.mu.Unlock()
+	}
 	r.users[id] = u
 	return u, nil
 }
@@ -191,21 +215,24 @@ func (r *Users) AllActiveIDs(_ context.Context) ([]string, error) {
 
 // Subscriptions is an in-memory SubscriptionRepo.
 type Subscriptions struct {
-	mu     sync.Mutex
-	subs   map[string]contracts.Subscription
-	hashes map[string]string
-	users  *Users // for CreateAndLink's atomic create+link (wire with WithUsers)
+	mu            sync.Mutex
+	subs          map[string]contracts.Subscription
+	billingHashes map[string]string
+	delivery      map[string]domain.DeliveryToken
+	hashes        map[string]string
+	users         *Users // for CreateAndLink's atomic create+link (wire with WithUsers)
 }
 
 // NewSubscriptions builds an empty subscription store.
 func NewSubscriptions() *Subscriptions {
-	return &Subscriptions{subs: map[string]contracts.Subscription{}, hashes: map[string]string{}}
+	return &Subscriptions{subs: map[string]contracts.Subscription{}, hashes: map[string]string{}, delivery: map[string]domain.DeliveryToken{}, billingHashes: map[string]string{}}
 }
 
 // WithUsers wires the user store so CreateAndLink can link atomically. Returns the
 // store for chaining. Process-local only — NOT cross-instance safe (see docs/billing).
 func (r *Subscriptions) WithUsers(u *Users) *Subscriptions {
 	r.users = u
+	u.subs = r
 	return r
 }
 
@@ -266,6 +293,9 @@ func (r *Subscriptions) Update(_ context.Context, s contracts.Subscription) erro
 	if _, ok := r.subs[s.ID]; !ok {
 		return domain.ErrNotFound
 	}
+	if r.subs[s.ID].BillingRevision > 0 {
+		return domain.ErrConflict
+	}
 	stored := s
 	stored.Token = "" // never persist plaintext
 	r.subs[s.ID] = stored
@@ -279,6 +309,7 @@ func (r *Subscriptions) UpdateTokenHash(_ context.Context, id, tokenHash, _ stri
 		return domain.ErrNotFound
 	}
 	r.hashes[id] = tokenHash
+	delete(r.delivery, id)
 	return nil
 }
 
@@ -436,7 +467,7 @@ func (a *AllowList) EligibleRealityUsers(_ context.Context) ([]contracts.Reality
 		if !ok || !servable(sub.Status) {
 			continue
 		}
-		if sub.ExpiresAt != nil && !sub.ExpiresAt.After(now) {
+		if sub.AccessUntil() != nil && !sub.AccessUntil().After(now) {
 			continue
 		}
 		out = append(out, contracts.RealityUser{UUID: u.UUID, ShortID: u.RealityShortID})
@@ -468,6 +499,12 @@ func NewNodeActivator(nodes *Nodes, allow *AllowList) *NodeActivator {
 }
 
 func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
+	return a.activate(ctx, id, expectedRevision, "", evidence)
+}
+func (a *NodeActivator) ActivateAccess(ctx context.Context, id, revision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
+	return a.activate(ctx, id, "", revision, evidence)
+}
+func (a *NodeActivator) activate(ctx context.Context, id, expectedRevision, accessRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
 	a.nodes.mu.Lock()
 	defer a.nodes.mu.Unlock()
 	n, ok := a.nodes.nodes[id]
@@ -500,15 +537,28 @@ func (a *NodeActivator) Activate(ctx context.Context, id, expectedRevision strin
 		if !exitActive {
 			return contracts.Node{}, prev, domain.ErrConflict
 		}
-		users, err := a.allow.EligibleRealityUsers(ctx)
-		if err != nil {
-			return contracts.Node{}, prev, err
+		requireAccess := accessRevision != ""
+		for _, t := range n.Transports {
+			if t.Enabled && t.Type == contracts.TransportHysteria2 {
+				requireAccess = true
+			}
 		}
-		if users == nil {
-			users = []contracts.RealityUser{}
-		}
-		if contracts.RealityUsersRevision(users) != expectedRevision {
-			return contracts.Node{}, prev, domain.ErrConflict
+		if requireAccess {
+			snapshot, err := a.allow.EligibleAccessUsers(ctx)
+			if err != nil {
+				return contracts.Node{}, prev, err
+			}
+			if accessRevision == "" || snapshot.Revision != accessRevision {
+				return contracts.Node{}, prev, domain.ErrConflict
+			}
+		} else {
+			users, err := a.allow.EligibleRealityUsers(ctx)
+			if err != nil {
+				return contracts.Node{}, prev, err
+			}
+			if contracts.RealityUsersRevision(users) != expectedRevision {
+				return contracts.Node{}, prev, domain.ErrConflict
+			}
 		}
 	}
 	n.Status = contracts.NodeStatusActive

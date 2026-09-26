@@ -16,20 +16,24 @@ ok()  { echo "  ok: $1"; pass=$((pass+1)); }
 bad() { echo "  FAIL: $1" >&2; fail=$((fail+1)); }
 
 # --- mock control-plane -------------------------------------------------------
-# Note: _cp GET runs inside $(...) — a subshell — so the reality-users call
+# Note: _cp GET runs inside $(...) - a subshell - so the access-users call
 # counter is kept in a FILE (survives subshells). Reads of RU2_REV work because a
 # subshell inherits the parent's variables; only WRITES would not propagate.
 RU_CALL_FILE="$(mktemp)"
-reset() { ACTIVATED=(); DEMOTED=(); : >"$RU_CALL_FILE"; FAIL_DEMOTE=""; FAIL_ACTIVATE=""; FAIL_CP_TIMEOUT=""; RU2_REV="R1"; }
+reset() { ACTIVATED=(); DEMOTED=(); ENTRY_ACTIVATION_BODY=""; : >"$RU_CALL_FILE"; FAIL_DEMOTE=""; FAIL_ACTIVATE=""; FAIL_CP_TIMEOUT=""; RU2_REV="R1"; }
 _cp() {
-  local m="$1" p="$2"
+  local m="$1" p="$2" body="${3:-}"
   # Simulate a hung control-plane: the bounded curl exits 22 (timeout), which the
   # real _cp maps to return 22. Any matching call fails as a timeout would.
   if [ -n "${FAIL_CP_TIMEOUT:-}" ] && [[ "$m $p" == $FAIL_CP_TIMEOUT ]]; then return 22; fi
   case "$m $p" in
-    "GET "*"/reality-users")
+    "GET "*"/access-users")
       local n; n=$(( $(wc -l <"$RU_CALL_FILE" 2>/dev/null || echo 0) + 1 )); echo x >>"$RU_CALL_FILE"
-      if [ "$n" -ge 2 ]; then echo "{\"revision\":\"${RU2_REV}\",\"users\":[]}"; else echo '{"revision":"R1","users":[{"uuid":"u","short_id":"s"}]}'; fi
+      if [ "$n" -ge 2 ]; then
+        echo "{\"revision\":\"${RU2_REV}\",\"valid_until\":\"2999-01-01T00:00:00Z\",\"users\":[{\"uuid\":\"u\",\"short_id\":\"s\",\"hysteria2_password\":\"hp\"}]}"
+      else
+        echo '{"revision":"R1","valid_until":"2999-01-01T00:00:00Z","users":[{"uuid":"u","short_id":"s","hysteria2_password":"hp"}]}'
+      fi
       return 0 ;;
     "GET /v1/nodes/"*) echo '{"id":"n","role":"entry","status":"active","transports":[]}'; return 0 ;;
     "POST /v1/nodes/"*"/demote")
@@ -38,6 +42,7 @@ _cp() {
     "POST /v1/nodes/"*"/activate")
       local id="${p#/v1/nodes/}"; id="${id%/activate}"
       [ "$FAIL_ACTIVATE" = "$id" ] && return 1
+      [ "$id" = en ] && ENTRY_ACTIVATION_BODY="$body"
       ACTIVATED+=("$id"); return 0 ;;
   esac
   return 0
@@ -70,7 +75,7 @@ has en "${ACTIVATED[@]}" && bad "entry activated despite probe failure" || ok "e
 RECONCILE_PROBE_CMD=probe_good
 
 # --- 2c. a control-plane timeout after exit activation rolls the exit back -----
-reset; FAIL_CP_TIMEOUT="GET *reality-users"
+reset; FAIL_CP_TIMEOUT="GET *access-users"
 reconcile_pair en ex >/dev/null 2>&1 && bad "reconcile succeeded despite a CP timeout"
 has ex "${ACTIVATED[@]}" && ok "exit activated before the CP timeout (step 2 reached)" || bad "exit not activated"
 has en "${ACTIVATED[@]}" && bad "entry activated despite CP timeout" || ok "entry NOT activated on CP timeout"
@@ -87,6 +92,9 @@ reset
 if reconcile_pair en ex >/dev/null 2>&1; then
   { has ex "${ACTIVATED[@]}" && has en "${ACTIVATED[@]}"; } && ok "clean run activates exit then entry" || bad "clean run missing activations: ${ACTIVATED[*]}"
 else bad "clean run failed"; fi
+jq -e '.expected_access_revision == "R1"' <<<"$ENTRY_ACTIVATION_BODY" >/dev/null 2>&1 \
+  && ok "entry activation is fenced by access revision" \
+  || bad "entry activation omitted expected_access_revision: $ENTRY_ACTIVATION_BODY"
 
 # --- 4b. signal/crash after exit activation -> cleanup trap rolls exit back ----
 reset; RECON_ROLLBACK_EXIT="ex"; RECON_LOCK=""

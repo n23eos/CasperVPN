@@ -10,7 +10,7 @@ import (
 // the given password + insecure flag.
 func hy2Bundle(password string, insecure bool) SubscriptionBundle {
 	return SubscriptionBundle{
-		User: User{ID: "u", Status: UserStatusActive, RealityShortID: "ab12", UUID: "uuid-1", DeviceLimit: 1},
+		User: User{Hysteria2Password: password, ID: "u", Status: UserStatusActive, RealityShortID: "ab12", UUID: "uuid-1", DeviceLimit: 1},
 		Nodes: []Node{{
 			ID: "n", Role: NodeRoleCombined, Status: NodeStatusActive, EntryIP: "1.2.3.4",
 			Transports: []Transport{{
@@ -57,5 +57,24 @@ func TestHysteria2_Base64URICarriesPassword(t *testing.T) {
 	}
 	if !strings.Contains(joined, "insecure=1") {
 		t.Errorf("e2e insecure flag must appear in the URI: %q", joined)
+	}
+}
+
+func TestHysteria2_PersonalCredentialNeverFallsBack(t *testing.T) {
+	b := hy2Bundle("personal-a", false)
+	b.Nodes[0].Transports[0].Hysteria2.Password = "shared-node-password"
+	raw, _ := base64.StdEncoding.DecodeString(b.ToBase64List())
+	if strings.Contains(string(raw), "shared-node-password") || !strings.Contains(string(raw), "personal-a") {
+		t.Fatal("URI not personalized")
+	}
+	if b.ToSingBox().Outbounds[0]["password"] != "personal-a" {
+		t.Fatal("sing-box not personalized")
+	}
+	if !strings.Contains(string(b.ToClashMetaYAML()), "personal-a") {
+		t.Fatal("clash not personalized")
+	}
+	b.User.Hysteria2Password = ""
+	if len(b.ToSingBox().Outbounds) != 0 || b.ToBase64List() != "" || strings.Contains(string(b.ToClashMetaYAML()), "password") {
+		t.Fatal("missing personal credential fell back to shared password")
 	}
 }

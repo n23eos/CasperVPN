@@ -1,0 +1,24 @@
+{
+    email {$TLS_EMAIL}
+    admin off
+}
+
+{$PUBLIC_HOST} {
+    # No access log: subscription URLs carry bearer credentials.
+    header {
+        Referrer-Policy no-referrer
+        X-Content-Type-Options nosniff
+        Cache-Control no-store
+        -Server
+    }
+    request_body {
+        max_size 1MB
+    }
+    handle /sub/* {
+        reverse_proxy subscription:8082
+    }
+    handle /v1/webhooks/btcpay {
+        reverse_proxy billing:8084
+    }
+    respond 404
+}

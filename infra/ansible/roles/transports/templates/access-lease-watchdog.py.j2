@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+import datetime
+import json
+import pathlib
+import subprocess
+import sys
+
+lease_path = pathlib.Path("{{ access_lease_file }}")
+
+def deny(reason: str) -> int:
+    subprocess.run(["systemctl", "stop", "sing-box"], check=False)
+    print(f"access lease denied: {reason}", file=sys.stderr)
+    return 1
+
+try:
+    payload = json.loads(lease_path.read_text(encoding="utf-8"))
+    revision = payload["revision"]
+    raw_deadline = payload["valid_until"]
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("missing revision")
+    if not isinstance(raw_deadline, str) or not raw_deadline:
+        raise ValueError("missing valid_until")
+    deadline = datetime.datetime.fromisoformat(raw_deadline.replace("Z", "+00:00"))
+    if deadline.tzinfo is None or deadline.utcoffset() is None:
+        raise ValueError("valid_until must include a timezone")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if deadline <= now:
+        raise ValueError(f"expired at {raw_deadline}")
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    raise SystemExit(deny(str(exc)))
+
+raise SystemExit(0)

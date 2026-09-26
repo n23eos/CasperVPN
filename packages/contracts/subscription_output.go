@@ -99,7 +99,7 @@ func (b SubscriptionBundle) transportURI(n Node, t Transport, addr string) strin
 
 	case TransportHysteria2:
 		p := t.Hysteria2
-		if p == nil {
+		if p == nil || b.User.Hysteria2Password == "" {
 			return ""
 		}
 		q := url.Values{}
@@ -110,7 +110,7 @@ func (b SubscriptionBundle) transportURI(n Node, t Transport, addr string) strin
 		}
 		q.Set("insecure", boolQ(p.Insecure))
 		return fmt.Sprintf("hysteria2://%s@%s:%d?%s#%s",
-			url.QueryEscape(p.Password), addr, t.Port, q.Encode(), tag)
+			url.QueryEscape(b.User.Hysteria2Password), addr, t.Port, q.Encode(), tag)
 
 	case TransportShadowsocks2022:
 		p := t.Shadowsocks2022
@@ -187,12 +187,12 @@ func (b SubscriptionBundle) singBoxOutbound(n Node, t Transport, addr string) ma
 		}
 	case TransportHysteria2:
 		p := t.Hysteria2
-		if p == nil {
+		if p == nil || b.User.Hysteria2Password == "" {
 			return nil
 		}
 		o := map[string]interface{}{
 			"type": "hysteria2", "tag": t.Tag, "server": addr, "server_port": t.Port,
-			"password": p.Password,
+			"password": b.User.Hysteria2Password,
 			"tls":      map[string]interface{}{"enabled": true, "server_name": p.SNI, "insecure": p.Insecure},
 		}
 		if p.Obfs != "" {
@@ -278,14 +278,14 @@ func (b SubscriptionBundle) clashProxy(sb *strings.Builder, t Transport, addr st
 		line("      ", "short-id", yq(b.User.RealityShortID))
 	case TransportHysteria2:
 		p := t.Hysteria2
-		if p == nil {
+		if p == nil || b.User.Hysteria2Password == "" {
 			return
 		}
 		line("  - ", "name", yq(t.Tag))
 		line("    ", "type", "hysteria2")
 		line("    ", "server", yq(addr))
 		line("    ", "port", strconv.Itoa(t.Port))
-		line("    ", "password", yq(p.Password))
+		line("    ", "password", yq(b.User.Hysteria2Password))
 		line("    ", "sni", yq(p.SNI))
 		if p.Obfs != "" {
 			line("    ", "obfs", yq(p.Obfs))

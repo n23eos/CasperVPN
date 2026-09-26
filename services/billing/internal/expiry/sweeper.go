@@ -36,21 +36,35 @@ func (s *Sweeper) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, sched := range due {
-		next := transition(sched, now)
-		if next == "" || next == sched.Status {
-			continue
-		}
-		if _, err := s.cp.SetSubscriptionPeriod(ctx, sched.SubID, contracts.SubscriptionStatus(next), sched.ExpiresAt); err != nil {
-			continue // transient; retried next run
-		}
-		sched.Status = next
-		_ = s.store.UpsertSchedule(ctx, model.Schedule{
-			SubID:      sched.SubID,
-			AnonUserID: sched.AnonUserID,
-			Status:     next,
-			ExpiresAt:  sched.ExpiresAt,
-			GraceUntil: sched.GraceUntil,
+	billingCP, ok := s.cp.(controlplane.BillingClient)
+	if !ok {
+		return nil
+	}
+	for _, snapshot := range due {
+		_ = s.store.WithUserLock(ctx, snapshot.AnonUserID, func(ctx context.Context) error {
+			// The due list is only a hint. Renewal may have advanced this schedule
+			// while the sweeper waited for the same per-user lock.
+			sched, err := s.store.GetSchedule(ctx, snapshot.SubID)
+			if err != nil {
+				return err
+			}
+			next := transition(sched, now)
+			if next == "" || next == sched.Status {
+				return nil
+			}
+			delivery, staged, err := s.store.StageScheduleTransition(ctx, sched.SubID, sched.Revision, next, now)
+			if err != nil || !staged {
+				return err
+			}
+			_, err = billingCP.SetBillingState(ctx, delivery.SubID, contracts.BillingState{
+				Revision: delivery.Revision, Plan: contracts.SubscriptionPlan(delivery.Plan),
+				Status:    contracts.SubscriptionStatus(delivery.Status),
+				ExpiresAt: delivery.ExpiresAt, GraceUntil: delivery.GraceUntil,
+			})
+			if err != nil {
+				return err // durable outbox recovery retries this exact revision
+			}
+			return s.store.CompleteBillingDelivery(ctx, delivery.ID)
 		})
 	}
 	return nil

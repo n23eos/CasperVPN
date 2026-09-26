@@ -50,3 +50,10 @@ docs/live-run-runbook.md
 services/*/.plan.md
 .hallmark/
 \!notes/
+
+# Generated production settings and database backups
+.launch/
+backups/
+*.dump
+__pycache__/
+*.pyc

@@ -36,8 +36,22 @@ type App struct {
 	EphemeralKeys bool
 }
 
+type buildOptions struct {
+	readiness []httpapi.ReadinessChecker
+}
+
+type Option func(*buildOptions)
+
+func WithReadiness(checkers ...httpapi.ReadinessChecker) Option {
+	return func(options *buildOptions) { options.readiness = append(options.readiness, checkers...) }
+}
+
 // Build assembles an App from config.
-func Build(cfg config.Config) (*App, error) {
+func Build(cfg config.Config, opts ...Option) (*App, error) {
+	var options buildOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	signer, verifier, ephemeralSign, err := buildSigning(cfg)
 	if err != nil {
 		return nil, err
@@ -57,7 +71,7 @@ func Build(cfg config.Config) (*App, error) {
 		Signer:        signer,
 		Verifier:      verifier,
 		Sealer:        sealer,
-		Handler:       httpapi.New(reg, cfg.AdminToken).Routes(),
+		Handler:       httpapi.New(reg, cfg.AdminToken, options.readiness...).Routes(),
 		EphemeralKeys: ephemeralSign || ephemeralSeal,
 	}
 	return app, nil

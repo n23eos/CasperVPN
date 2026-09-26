@@ -35,6 +35,9 @@ func singBoxDocument(b contracts.SubscriptionBundle, p config.RoutingPolicy) ([]
 			map[string]interface{}{"type": "direct", "tag": config.TagDirect},
 		)
 		route["final"] = p.SingBox.Final
+		if len(p.SingBox.DefaultDomainResolver) > 0 {
+			route["default_domain_resolver"] = p.SingBox.DefaultDomainResolver
+		}
 		if len(p.SingBox.Rules) > 0 {
 			route["rules"] = p.SingBox.Rules
 		}

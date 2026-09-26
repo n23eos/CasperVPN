@@ -1,0 +1,12 @@
+[Unit]
+Description=Check CasperVPN access snapshot lease
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=casper-access-lease-watchdog.service
+
+[Install]
+WantedBy=timers.target

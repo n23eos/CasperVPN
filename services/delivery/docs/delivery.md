@@ -54,15 +54,16 @@ sealed(directory). Персональные `uuid`/`reality_short_id`/токен
   `MaxAPI`) → мессенджер-канал сам по себе избыточен по двум сетям.
 - **Аутентификация:** subscription-ссылка выдаётся в приватный чат опознанному
   `TelegramID` — это легитимный аутентифицированный путь для секрета.
-- **Rate-limit / антиспам:** token-bucket на юзера + глобально; дубль одинаковой
-  команды в cooldown-окно дропается **без** траты токена (флуд не истощает бакет и
-  не размножает ответы). Ключи бакетов — в памяти с TTL-эвикцией (без утечки памяти).
+- **Rate-limit / антиспам:** token-bucket на пользователя; дубль команды в
+  cooldown-окно не создаёт новый ответ. Повтор того же update после временной
+  ошибки разрешён. Завершённые update дедуплицируются в PostgreSQL.
 - **Угрозы:** блок домена api.telegram.org → остаётся Max + прочие каналы; сам
   Telegram может быть замедлен → клиент не зависит от одного мессенджера. Секретов в
   публичный канал не уходит; подпись защищает от бот-двойника.
-- **Ограничения:** бот-команды требуют внешнего `SubProvider` (клиент
-  subscription-сервиса) — инъектится при интеграции, в delivery захардкожена только
-  форма ответа, без доменов.
+- **Self-service:** long polling принимает только приватные сообщения. `/start`
+  создаёт или находит Telegram user через control-plane, `/pay` создаёт invoice с
+  idempotency key от Telegram update, `/get` проверяет entitlement и получает
+  постоянный delivery token без ротации ссылки.
 
 ### 2. DoH / DNS TXT — `internal/channel/dns`
 
@@ -127,11 +128,28 @@ sealed(directory). Персональные `uuid`/`reality_short_id`/токен
 ## HTTP-поверхность (`internal/httpapi`, по `openapi/delivery.yaml`)
 
 - `GET /healthz` — liveness.
+- `GET /readyz` - readiness хотя бы одного канала, а при включённом боте также
+  PostgreSQL и успешного Telegram polling.
 - `GET /v1/channels` — список каналов + health.
 - `POST /v1/channels` — валидация дескриптора канала (живое подключение каналов —
   из конфига на старте, не из неаутентифицированного POST).
 - `GET /d/{channel}/{token}` — отдать блоб, который канал держит для токена
   (base64). **Проверку подписи делает клиент**, delivery только перевозит.
+
+## Конфигурация self-service
+
+В `ENV=production` бот обязателен и требует `DATABASE_URL`,
+`DELIVERY_CONTROL_PLANE_BASE`, `DELIVERY_CONTROL_PLANE_TOKEN`,
+`DELIVERY_BILLING_BASE`, `DELIVERY_BILLING_TOKEN`, `DELIVERY_TELEGRAM_BASE`,
+`DELIVERY_TELEGRAM_TOKEN`, `DELIVERY_PUBLIC_SUBSCRIPTION_BASE`,
+`DELIVERY_SIGN_SEED` и `DELIVERY_SEAL_KEY`. Публичная subscription base и
+Telegram base должны использовать HTTPS. В `ENV=dev` и `ENV=test` бот включается
+явно через `DELIVERY_BOT_ENABLED=true`; HTTP разрешён для локальных fake endpoint.
+
+Опциональные настройки: `DELIVERY_BOT_DEFAULT_PLAN` (по умолчанию `basic`),
+`DELIVERY_BOT_DEFAULT_CURRENCY` (по умолчанию `XMR`),
+`DELIVERY_HTTP_TIMEOUT`, `DELIVERY_TELEGRAM_POLL_TIMEOUT` и
+`DELIVERY_RETRY_DELAY`.
 
 ## Соответствие критериям [АНТИ-БЛОК]
 

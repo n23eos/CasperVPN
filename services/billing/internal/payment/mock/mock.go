@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/caspervpn/billing/internal/idgen"
@@ -25,6 +26,8 @@ type Gateway struct {
 	currencies map[string]bool
 	ttl        time.Duration
 	now        func() time.Time
+	invoices   map[string]model.Invoice
+	mu         sync.Mutex
 }
 
 // New builds a mock gateway that settles the given currencies.
@@ -38,6 +41,7 @@ func New(secret string, currencies []string) *Gateway {
 		currencies: set,
 		ttl:        30 * time.Minute,
 		now:        time.Now,
+		invoices:   make(map[string]model.Invoice),
 	}
 }
 
@@ -52,9 +56,12 @@ func (g *Gateway) CreateInvoice(_ context.Context, req model.CreateInvoiceReques
 	if !g.currencies[req.Currency] {
 		return model.Invoice{}, fmt.Errorf("mock: unsupported currency %q", req.Currency)
 	}
-	id := idgen.New()
+	id := req.OrderID
+	if id == "" {
+		id = idgen.New()
+	}
 	now := g.now()
-	return model.Invoice{
+	inv := model.Invoice{
 		ID:                id,
 		Provider:          name,
 		AnonUserID:        req.AnonUserID,
@@ -66,7 +73,18 @@ func (g *Gateway) CreateInvoice(_ context.Context, req model.CreateInvoiceReques
 		Status:            model.StatusPending,
 		CreatedAt:         now,
 		ExpiresAt:         now.Add(g.ttl),
-	}, nil
+	}
+	g.mu.Lock()
+	g.invoices[id] = inv
+	g.mu.Unlock()
+	return inv, nil
+}
+
+func (g *Gateway) LookupInvoice(_ context.Context, req model.CreateInvoiceRequest) (model.Invoice, bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	inv, ok := g.invoices[req.OrderID]
+	return inv, ok, nil
 }
 
 // webhookPayload is the mock's on-the-wire webhook body.

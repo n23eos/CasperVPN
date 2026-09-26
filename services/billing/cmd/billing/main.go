@@ -37,12 +37,16 @@ const serviceName = "billing"
 func main() {
 	log.SetPrefix(serviceName + ": ")
 
-	catalog := loadCatalog()
-	repo, closeStore := newStore()
+	mode, ok := normalizeMode(os.Getenv("ENV"))
+	if !ok {
+		log.Fatalf("config: ENV must be production, dev, or test")
+	}
+	catalog := loadCatalog(mode)
+	repo, closeStore := newStore(mode)
 	defer closeStore()
 
 	var e envcfg.Env
-	registry := buildRegistry(&e)
+	registry := buildRegistry(&e, mode)
 
 	// No compiled-in default for the control-plane endpoint: it belongs in config
 	// (docker-compose / deploy env), and billing cannot activate subscriptions
@@ -60,6 +64,8 @@ func main() {
 	staleThreshold := e.Duration("SETTLEMENT_STALE_THRESHOLD", 2*time.Minute)
 	sweepInterval := e.Duration("BILLING_SWEEP_INTERVAL", time.Minute)
 	pollInterval := e.Duration("BILLING_POLL_INTERVAL", 30*time.Second)
+	operationTimeout := e.Duration("BILLING_OPERATION_TIMEOUT", 2*time.Minute)
+	requestTimeout := e.Duration("BILLING_REQUEST_TIMEOUT", 30*time.Second)
 	port := e.Str("PORT", "8084")
 	if err := e.Err(); err != nil {
 		log.Fatalf("config: %v", err)
@@ -67,8 +73,19 @@ func main() {
 	if cpURL == "" {
 		log.Fatalf("config: CONTROL_PLANE_URL is required (billing activates subscriptions via the control-plane); set it to the control-plane base URL, e.g. http://control-plane:8081")
 	}
+	if operationTimeout <= 0 || requestTimeout <= 0 {
+		log.Fatalf("config: BILLING_OPERATION_TIMEOUT and BILLING_REQUEST_TIMEOUT must be positive")
+	}
 
-	cp := controlplane.NewHTTPClient(cpURL, os.Getenv("CONTROL_PLANE_TOKEN"))
+	cpToken := os.Getenv("CONTROL_PLANE_TOKEN")
+	invoiceToken := os.Getenv("BILLING_INTERNAL_TOKEN")
+	if mode == "production" && cpToken == "" {
+		log.Fatalf("config: CONTROL_PLANE_TOKEN is required in production")
+	}
+	if mode == "production" && invoiceToken == "" {
+		log.Fatalf("config: BILLING_INTERNAL_TOKEN is required in production")
+	}
+	cp := controlplane.NewHTTPClient(cpURL, cpToken)
 	activator := subscription.NewActivator(cp, catalog, repo, time.Now)
 	processor := payment.NewProcessor(repo, activator, replayWindow, time.Now)
 	if registryHasOnChain(registry) {
@@ -91,21 +108,30 @@ func main() {
 
 	// Background loops: expiry sweep + settlement polling.
 	go runLoop(ctx, "sweeper", sweepInterval, func() {
-		if err := sweeper.RunOnce(ctx); err != nil {
+		runCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+		defer cancel()
+		if err := sweeper.RunOnce(runCtx); err != nil {
 			log.Printf("sweeper: %v", err)
 		}
 	})
 	go runLoop(ctx, "poller", pollInterval, func() {
-		if err := poller.RunOnce(ctx); err != nil {
+		runCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+		defer cancel()
+		if err := poller.RunOnce(runCtx); err != nil {
 			log.Printf("poller: %v", err)
 		}
 	})
 
-	api := httpapi.New(registry, processor, repo, catalog)
+	api := httpapi.NewWithConfig(registry, processor, repo, catalog, httpapi.Config{
+		InvoiceToken: invoiceToken, RequireInvoiceAuth: mode == "production",
+	})
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.Routes(),
+		Handler:           withRequestTimeout(api.Routes(), requestTimeout),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      requestTimeout,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -139,7 +165,7 @@ func registryHasOnChain(reg *payment.Registry) bool {
 	return false
 }
 
-func buildRegistry(e *envcfg.Env) *payment.Registry {
+func buildRegistry(e *envcfg.Env, mode string) *payment.Registry {
 	reg := payment.NewRegistry()
 
 	if base := os.Getenv("BTCPAY_BASE_URL"); base != "" {
@@ -160,11 +186,17 @@ func buildRegistry(e *envcfg.Env) *payment.Registry {
 	}
 
 	if secret := os.Getenv("BILLING_MOCK_SECRET"); secret != "" {
+		if mode != "dev" && mode != "test" {
+			log.Fatalf("config: BILLING_MOCK_SECRET is allowed only with ENV=dev or ENV=test")
+		}
 		reg.Register(mock.New(secret, splitCSV(e.Str("BILLING_MOCK_CURRENCIES", "BTC,XMR"))))
 		log.Printf("registered gateway: mock (dev)")
 	}
 
 	if len(reg.Gateways()) == 0 {
+		if mode == "production" {
+			log.Fatalf("config: at least one non-mock payment gateway is required in production")
+		}
 		log.Printf("WARNING: no payment gateways configured; invoice creation will fail")
 	}
 	return reg
@@ -173,9 +205,12 @@ func buildRegistry(e *envcfg.Env) *payment.Registry {
 // newStore selects the persistence backend: Postgres when DATABASE_URL is set
 // (durable — invoices survive restarts), otherwise the in-memory store for
 // dev/offline. It returns a close func the caller defers to release the pool.
-func newStore() (store.Repository, func()) {
+func newStore(mode string) (store.Repository, func()) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
+		if mode == "production" {
+			log.Fatalf("config: DATABASE_URL is required in production")
+		}
 		log.Printf("WARNING: DATABASE_URL unset; using in-memory store (state lost on restart)")
 		return store.NewMemory(), func() {}
 	}
@@ -183,13 +218,22 @@ func newStore() (store.Repository, func()) {
 	if err != nil {
 		log.Fatalf("connect postgres: %v", err)
 	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		log.Fatalf("connect postgres: readiness ping failed: %v", err)
+	}
 	log.Printf("using postgres store")
 	return store.NewPostgres(pool), pool.Close
 }
 
-func loadCatalog() *plan.Catalog {
+func loadCatalog(mode string) *plan.Catalog {
 	path := os.Getenv("BILLING_PLAN_CATALOG")
 	if path == "" {
+		if mode == "production" {
+			log.Fatalf("config: BILLING_PLAN_CATALOG is required in production")
+		}
 		log.Printf("WARNING: BILLING_PLAN_CATALOG unset; no plans priced")
 		return plan.NewCatalog()
 	}
@@ -227,4 +271,25 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeMode(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "production", "prod":
+		return "production", true
+	case "dev":
+		return "dev", true
+	case "test":
+		return "test", true
+	default:
+		return "", false
+	}
+}
+
+func withRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

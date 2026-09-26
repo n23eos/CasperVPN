@@ -23,6 +23,11 @@ grep -q 'RECONCILE_VERIFY_EXIT=hook_verify_exit' infra/scripts/reconcile_live.sh
   && grep -q 'RECONCILE_APPLY_CMD=hook_apply' infra/scripts/reconcile_live.sh \
   && grep -q 'RECONCILE_PROBE_CMD=hook_probe' infra/scripts/reconcile_live.sh \
   && ok "main wires all three live hooks" || bad "hooks not wired in main"
+if grep -q '\.type == "vless_reality"' infra/scripts/reconcile_live.sh infra/scripts/reconcile_fleet_access.sh; then
+  bad "transport comparison uses union key instead of canonical enum"
+else
+  ok "VLESS transport comparisons use canonical vless-reality enum"
+fi
 
 # --- echo contract: strict, fail-closed ---
 [ "$(echo_observed_ip '{"ip":"203.0.113.9"}')" = "203.0.113.9" ] && ok "echo parses {\"ip\":..}" || bad "echo parse"
@@ -49,27 +54,47 @@ grep -qF "$PAIR_PSK" "$SSH_LOG" && bad "PSK leaked into ssh argv" || ok "PSK nev
 rm -f "$SSH_LOG"
 
 # --- hook_probe: >=2 distinct verified transports gate ---
-export RL_VLESS_UUID=u RL_VLESS_SHORT_ID=ab RL_VLESS_PUBKEY=pk RL_REALITY_SNI=sni.test
-export RL_HY2_PASSWORD=pw RL_HY2_SNI=sni.test
+IDENTITY_SNAPSHOT="$(mktemp)"
+printf '%s' '{"users":[{"uuid":"canonical-user","short_id":"aa","hysteria2_password":"canonical-hy2"}]}' >"$IDENTITY_SNAPSHOT"
+export RECON_ACCESS_SNAPSHOT_FILE="$IDENTITY_SNAPSHOT" ENTRY=cloud:entry
+cp_get_node() {
+  printf '%s' '{"transports":[
+    {"enabled":true,"type":"vless-reality","vless_reality":{"public_key":"canonical-pub","server_names":["canonical-sni.test"]}},
+    {"enabled":true,"type":"hysteria2","hysteria2":{"sni":"canonical-hy2.test"}}]}'
+}
+if rl_load_probe_identity \
+   && [ "$RL_VLESS_PUBKEY" = canonical-pub ] \
+   && [ "$RL_HY2_PASSWORD" = canonical-hy2 ]; then
+  ok "probe identity loads canonical transport enums and personal credentials"
+else
+  bad "probe identity rejected canonical transport fixture"
+fi
+rm -f "$IDENTITY_SNAPSHOT"
+PROBE_HY2=true
+rl_load_probe_identity() {
+  export RL_VLESS_UUID=u RL_VLESS_SHORT_ID=ab RL_VLESS_PUBKEY=pk RL_REALITY_SNI=sni.test RL_HY2_SNI=sni.test
+  if [ "$PROBE_HY2" = true ]; then export RL_HY2_PASSWORD=pw; else unset RL_HY2_PASSWORD; fi
+}
 rl_run_client_probe() { _rl_probe_verdict "$1" true true; }   # both transports verified
 res="$(hook_probe)"
 [ "$(jq 'length' <<<"$res")" = 2 ] && ok "probe emits both transports" || bad "probe did not emit 2: $res"
 transport_gate "$res" && ok "gate passes with 2 verified transports" || bad "gate rejected 2 verified"
 # only one transport -> gate fails closed
 rl_run_client_probe() { _rl_probe_verdict "$1" true true; }
-unset RL_HY2_PASSWORD    # hy2 client can't build -> only vless
+PROBE_HY2=false          # hy2 client can't build -> only vless
 res1="$(hook_probe)"
 transport_gate "$res1" && bad "gate passed with <2 transports" || ok "gate fails closed with <2 transports"
-export RL_HY2_PASSWORD=pw
+PROBE_HY2=true
 
 # --- hook_apply: reuses on-node state, never rotates secrets ---
 VARS_SEEN="$(mktemp)"
-rl_converge() { cp "$1" "$VARS_SEEN"; return 0; }
-export RECONCILE_USERS='[{"uuid":"u","short_id":"ab"}]'
+RECON_ACCESS_SNAPSHOT_FILE="$(mktemp)"; export RECON_ACCESS_SNAPSHOT_FILE
+export RUN_ID=run-test ENTRY=cloud:entry
+printf '%s' '{"revision":"r1","valid_until":"2999-01-01T00:00:00Z","users":[{"uuid":"u","short_id":"ab","hysteria2_password":"pw"}]}' >"$RECON_ACCESS_SNAPSHOT_FILE"
+rl_sync_access() { cp "$1" "$VARS_SEEN"; return 0; }
 ( hook_apply ) >/dev/null 2>&1 && ok "apply converges" || bad "apply failed"
-jq -e '.reality_reuse_existing_key == true' "$VARS_SEEN" >/dev/null 2>&1 && ok "apply reuses existing REALITY key" || bad "apply did not set reuse-existing"
-if grep -qiE 'rotate|keygen|new_key' "$VARS_SEEN"; then bad "apply vars request a rotation"; else ok "apply requests no key/password rotation"; fi
-rm -f "$VARS_SEEN"
+jq -e '.revision == "r1" and .users[0].hysteria2_password == "pw"' "$VARS_SEEN" >/dev/null 2>&1 && ok "apply uses the authoritative access snapshot" || bad "apply did not use access snapshot"
+rm -f "$VARS_SEEN" "$RECON_ACCESS_SNAPSHOT_FILE"
 
 echo "reconcile-live-guard: ${pass} ok, ${fail} fail"
 [ "$fail" = 0 ]

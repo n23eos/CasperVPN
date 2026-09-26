@@ -1,105 +1,84 @@
 # CasperVPN
 
-Централизованный VPN-сервис с подпиской, устойчивый к DPI-блокировкам класса
-ТСПУ/РКН. Живучесть — за счёт **разнообразия транспортов и петли обратной связи**,
-а не «шифрования посильнее»: выживает трафик, мимикрирующий под разрешённый HTTPS/
-HTTP-3, и система, которая умеет переключаться, а не один протокол.
+CasperVPN предоставляет backend VPN-сервиса с подпиской. Приватный Telegram-бот
+создаёт аккаунт, выдаёт ссылку на оплату и постоянную ссылку подписки.
+Поддерживаемый запуск использует персональные VLESS REALITY и Hysteria2.
+Входные и выходные ноды разделены, внутренний Shadowsocks-2022 связывает их.
+Пользователь подключается через внешнее клиентское приложение.
 
-Ядро на всех нодах — **sing-box** ([ADR-002](docs/decisions/ADR-002-singbox-core.md)).
-Клиенты — **внешние** (Happ / sing-box-совместимые) через per-user subscription URL;
-свои приложения не пишем ([ADR-003](docs/decisions/ADR-003-external-clients-happ.md)).
+**Подготовка запуска:** [инструкция оператора](docs/LAUNCH.md),
+[результаты проверок и ограничения](docs/LAUNCH-VERIFICATION.md),
+[изменение OpenSpec](openspec/changes/launch-readiness/).
+Локальный приёмочный сценарий реализован. Перед публичными продажами нужен
+закрытый пилот на реальной инфраструктуре. Устойчивость к конкретным сетям
+и DPI локальными тестами не доказана.
 
-Источник истины по архитектуре — [`architecture.md`](architecture.md); контракты —
-[`docs/contracts.md`](docs/contracts.md); решения — [`docs/decisions/`](docs/decisions/).
+[English version](README.md) | [Сайт](https://n23eos.github.io/CasperVPN/ru.html)
 
-**Сайт** — [n23eos.github.io/CasperVPN/ru.html](https://n23eos.github.io/CasperVPN/ru.html)
-([in English](https://n23eos.github.io/CasperVPN/)).
+## Что входит в подготовленный запуск
 
-English version — [README.md](README.md).
+- Персональные VLESS и Hysteria2 с истечением, grace и отзывом доступа.
+- Постоянная ссылка после рестарта, продления и восстановления базы.
+- Устойчивое начисление оплаты: повтор webhook, retry и запоздавший ответ
+  не должны начислять один оплаченный период дважды.
+- Приватные команды Telegram `/start`, `/pay`, `/get` с постоянной
+  дедупликацией обновлений.
+- Обновление доступа каждые две минуты. При истечении lease на ноде
+  watchdog останавливает доступ; срок lease не превышает пяти минут.
+- Автоматика опирается на аутентифицированные проверки инфраструктуры.
+  Публичные клиентские отчёты доступны как статистика.
 
-## Лицензия
-
-**Двойное лицензирование:**
-
-- **AGPLv3** ([LICENSE](LICENSE)) — бесплатно, включая коммерческое
-  использование, но при запуске модифицированной версии как сетевого сервиса
-  вы обязаны открыть исходники на тех же условиях.
-- **Коммерческая лицензия** — для закрытого кода / SaaS без обязательств AGPL.
-  См. [COMMERCIAL.md](COMMERCIAL.md) или пишите на <mns.nicholas@gmail.com>.
-
-## Требование [АНТИ-БЛОК] (к каждому сервису)
-
-1. **Много транспортов одновременно, не монокультура** — нода несёт несколько
-   `Transport`; клиент переключается (VLESS-REALITY / Hysteria2 / AmneziaWG /
-   Shadowsocks-2022).
-2. **Быстрая ротация и entry ≠ exit** — атака на entry не палит exit.
-3. **Per-user изоляция** — персональные `reality_short_id`/`uuid`/ключ.
-   ⚠️ Сейчас энфорсится только для **VLESS-REALITY**; hysteria2/shadowsocks-2022/
-   amnezia-wg пока несут узловые (общие) креды (см. `architecture.md`,
-   `docs/wave-2/`).
-4. **Петля обратной связи** — анонимные `FieldSignal` + `HealthEvent` превращают
-   «где заблокировали» в новые конфиги/домены.
-5. **Ноль хардкода** — ни домена мимикрии, ни IP в коде; только из конфига/БД.
+JSON-профиль и конфигурации нод проверены на **sing-box 1.14.2**.
+Старая версия 1.11.11 этот JSON не поддерживает. Base64 и Clash сохранены;
+перед пилотом нужно проверить конкретное приложение. AmneziaWG не входит
+в поддерживаемый публичный профиль. Поля тарифных квот сами по себе
+не ограничивают трафик, скорость и число устройств.
 
 ## Сервисы
 
-Монорепо на Go workspace (`go.work`): `packages/contracts` + `packages/platform` + 6 сервисов. Каждый —
-отдельный модуль `github.com/caspervpn/<name>`.
+В Go workspace восемь модулей: contracts, platform и шесть сервисов.
 
-| Сервис | Порт (dev) | Роль |
-|--------|-----------|------|
-| `control-plane` | 8081 | реестр нод, per-user REALITY id/секреты, сборка конфигов, guarded activation |
-| `subscription` | 8082 | per-user subscription URL, рендер base64/sing-box/clash, ротация токена |
-| `delivery` | 8083 | мультиканальная доставка (HTTPS/DoH/Telegram/GitHub raw/DNS TXT) |
-| `billing` | 8084 | подписки, квоты, крипта-биллинг ([ADR-004](docs/decisions/ADR-004-crypto-billing.md)) |
-| `telemetry` | 8085 | приём анонимных FieldSignal + HealthEvent |
-| `orchestrator` | 8086 | provision/ротация нод (Terraform+Ansible), детект блокировок, автозамена |
+| Сервис | Dev-порт | Назначение |
+|--------|----------|------------|
+| control-plane | 8081 | Аккаунты, права доступа, секреты и активация нод |
+| subscription | 8082 | Проверка права доступа и формирование профилей |
+| delivery | 8083 | Telegram-бот и доставка ссылки |
+| billing | 8084 | BTCPay, устойчивое начисление и истечение подписок |
+| telemetry | 8085 | Клиентские наблюдения и проверки здоровья |
+| orchestrator | 8086 | Terraform/Ansible, создание и замена нод |
 
-`packages/contracts/` — **заморожен**: Go-типы + JSON Schema + OpenAPI, единый
-источник для 6 команд. Менять только аддитивно и синхронно (см. `docs/contracts.md`).
+Orchestrator требует Linux host с Terraform/Ansible и сохранёнными manifests.
+Его HTTP Docker-образ сам по себе не исполняет облачные операции.
+Контракты расширяются согласованно в Go, JSON Schema и OpenAPI.
+История архитектуры: [architecture.md](architecture.md) и
+[docs/decisions](docs/decisions/). Для эксплуатации использовать текущую
+инструкцию запуска.
 
-## Сборка и тесты
+## Сборка и приёмка
 
-```bash
-make build    # собрать все модули
-make test     # тесты по всем модулям (-race)
-make vet      # go vet
-make fmt      # gofmt -w
-make up       # docker compose: postgres + сервисы (dev)
-make down     # остановить стек
+Нужен **Go 1.27.1**. Для полной приёмки также нужны Docker, Compose, Python 3,
+golangci-lint 2.14.0, govulncheck 1.8.0, OpenSpec 1.13.0, jq и openssl.
+
+```sh
+make build
+make vet
+make test             # Восемь модулей, race detector
+make lint LINT_STRICT=1
+make release-check    # Интеграция, реальные транспорты, restore, проверки безопасности
 ```
 
-Go floor **1.20** (потолок из решения — 1.23). Docker-образы — `golang:1.22`.
-Опциональные e2e (docker; часть требует операторский `REALITY_DEST`):
-`make e2e-first-user`, `e2e-real-node`, `e2e-transport-probe`, `e2e-reconcile`.
-Инфра-гварды без облака: `make infra-guards`.
+Приёмка использует локальные имитаторы внешних API. Облачные ресурсы,
+настоящие сообщения Telegram и платежи не создаются. Настройки, приватный
+запуск, проверка нод, публикация, backup и откат описаны в runbook.
+Для разработки `make up` и `make down` используют `docker-compose.dev.yml`.
 
-## Репозиторий
+## Безопасность и лицензия
 
-```
-packages/contracts/   заморожённые типы/схемы/OpenAPI (единый контракт)
-packages/platform/    общий плюмбинг сервисов: envcfg / httpx / httpjson (не заморожен)
-services/<name>/       6 сервисов (control-plane, subscription, delivery, billing, telemetry, orchestrator)
-infra/                 Terraform + Ansible флота; scripts/ (node lifecycle, preflight, gate0)
-test/e2e/              docker e2e + pure-shell guards
-test/infra/            pure-shell guards для live-lifecycle (без облака)
-docs/                  контракты, ADR, операторские runbook'и
-web/admin/             панель оператора (плейсхолдер)
-```
+Секреты находятся в env или secret manager. Настройки запуска, backup
+и личные `!notes` исключены из Git. Dev-пароли предназначены только
+для локальной разработки. Публичный edge открывает получение подписки
+и точный BTCPay webhook; внутренние API остаются приватными.
 
-## Статус
-
-- **Billing reliability** — Postgres-интеграция, денежные гонки и наблюдаемость
-  восстановления закрыты (тесты под `-race`). Baseline заморожен.
-- **VPS-apply** — код готов и в main (preflight, изолированный workspace, cost-safe
-  teardown, live reconcile wrapper, GATE-0 preflight — `make gate0`,
-  [docs/GATE-0-preflight.md](docs/GATE-0-preflight.md)). Живого apply на VPS ещё не
-  было; orchestrator fleet-loop OFF (`DRY_RUN=true`, `PROBE_ENABLED=false`) до
-  закрытия #3/#7/#8. См. [docs/FIRST-WORKING-USER.md](docs/FIRST-WORKING-USER.md).
-
-## Безопасность
-
-Секреты — только env/secret manager, никогда в коде и деплой-скриптах. Dev-креды в
-`docker-compose.dev.yml` — только для локалки. Формат коммитов:
-`<type>: <описание>` (feat/fix/refactor/docs/test/chore/perf/ci).
-Правила для агентов и людей — [`CLAUDE.md`](CLAUDE.md).
+Двойная лицензия: [AGPLv3](LICENSE) и [коммерческая](COMMERCIAL.md).
+Условия указаны в соответствующих файлах. Инструкции работы с репозиторием:
+[CLAUDE.md](CLAUDE.md).

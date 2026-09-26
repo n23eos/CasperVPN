@@ -13,13 +13,7 @@ import (
 
 // Plan limits (0 = unlimited). Kept here, not hardcoded per-request; NO card or
 // payment data is modeled — billing is a separate service (Agent E).
-const (
-	basicTrafficLimitBytes uint64 = 100 * 1024 * 1024 * 1024 // 100 GiB fair-use
-	basicSpeedLimitMbps           = 50
-	basicDeviceLimit              = 2
-	unlimitedDeviceLimit          = 5
-	tokenPrefixLen                = 8
-)
+const tokenPrefixLen = 8
 
 // SubscriptionService owns entitlements. It never stores the subscription token
 // in the clear — only its hash — and returns the plaintext once at creation.
@@ -27,6 +21,7 @@ type SubscriptionService struct {
 	subs    domain.SubscriptionRepo
 	users   domain.UserRepo
 	revoker domain.SubscriptionRevoker // optional; nil => no propagation
+	cipher  *secret.TokenCipher
 	now     func() time.Time
 }
 
@@ -48,6 +43,10 @@ func (s *SubscriptionService) WithRevoker(r domain.SubscriptionRevoker) *Subscri
 // Create issues a subscription for an existing user and returns the one-time
 // plaintext token alongside the stored (hashed) record.
 func (s *SubscriptionService) Create(ctx context.Context, userID string, plan contracts.SubscriptionPlan) (domain.SubscriptionWithToken, error) {
+	return s.create(ctx, userID, plan, false)
+}
+
+func (s *SubscriptionService) create(ctx context.Context, userID string, plan contracts.SubscriptionPlan, inactive bool) (domain.SubscriptionWithToken, error) {
 	if !plan.Valid() {
 		return domain.SubscriptionWithToken{}, fmt.Errorf("%w: unknown plan %q", domain.ErrValidation, plan)
 	}
@@ -73,7 +72,11 @@ func (s *SubscriptionService) Create(ctx context.Context, userID string, plan co
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	applyPlanLimits(&sub, plan)
+	if inactive {
+		sub.Status = contracts.SubscriptionStatusExpired
+		sub.ExpiresAt = &now
+	}
+	domain.ApplyPlanLimits(&sub, plan)
 	if err := sub.Validate(); err != nil {
 		return domain.SubscriptionWithToken{}, fmt.Errorf("%w: %s", domain.ErrValidation, err)
 	}
@@ -108,6 +111,9 @@ func (s *SubscriptionService) Patch(ctx context.Context, id string, patch contra
 	if err != nil {
 		return contracts.Subscription{}, err
 	}
+	if existing.BillingRevision > 0 && !patch.IsZero() {
+		return contracts.Subscription{}, domain.ErrConflict
+	}
 	if patch.IsZero() {
 		existing.Token = ""
 		return existing, nil
@@ -131,6 +137,13 @@ func (s *SubscriptionService) Patch(ctx context.Context, id string, patch contra
 
 // Cancel sets status=canceled and revokes the token downstream.
 func (s *SubscriptionService) Cancel(ctx context.Context, id string) (contracts.Subscription, error) {
+	if repo, ok := s.subs.(domain.SubscriptionCanceler); ok {
+		sub, err := repo.CancelSubscription(ctx, id)
+		if err == nil {
+			s.revokeSubscription(ctx, id)
+		}
+		return sub, err
+	}
 	canceled := contracts.SubscriptionStatusCanceled
 	return s.Patch(ctx, id, contracts.SubscriptionPatch{Status: &canceled})
 }
@@ -152,9 +165,6 @@ func (s *SubscriptionService) RotateToken(ctx context.Context, id string) (domai
 		return domain.SubscriptionWithToken{}, err
 	}
 	existing.UpdatedAt = s.now()
-	if err := s.subs.Update(ctx, existing); err != nil {
-		return domain.SubscriptionWithToken{}, err
-	}
 	// Old link dies immediately; the new one starts resolving right away.
 	s.revokeSubscription(ctx, id)
 	if s.revoker != nil {
@@ -194,17 +204,4 @@ func (s *SubscriptionService) Get(ctx context.Context, id string) (contracts.Sub
 	}
 	sub.Token = ""
 	return sub, nil
-}
-
-func applyPlanLimits(sub *contracts.Subscription, plan contracts.SubscriptionPlan) {
-	switch plan {
-	case contracts.SubscriptionPlanBasic:
-		sub.TrafficLimitBytes = basicTrafficLimitBytes
-		sub.SpeedLimitMbps = basicSpeedLimitMbps
-		sub.DeviceLimit = basicDeviceLimit
-	case contracts.SubscriptionPlanUnlimited:
-		sub.TrafficLimitBytes = 0
-		sub.SpeedLimitMbps = 0
-		sub.DeviceLimit = unlimitedDeviceLimit
-	}
 }

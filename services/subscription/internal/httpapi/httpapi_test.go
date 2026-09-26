@@ -63,7 +63,7 @@ func newTestServer(t testing.TB) (*Server, *controlplane.Memory) {
 	}
 
 	m := controlplane.NewMemory()
-	m.PutUser(contracts.User{ID: "u1", Status: contracts.UserStatusActive, RealityShortID: "ab12", UUID: "uuid-1", UsedBytes: 42})
+	m.PutUser(contracts.User{ID: "u1", Status: contracts.UserStatusActive, RealityShortID: "ab12", UUID: "uuid-1", Hysteria2Password: "p", UsedBytes: 42})
 	future := fixedNow.Add(24 * time.Hour)
 	past := fixedNow.Add(-24 * time.Hour)
 	m.PutSubscription(contracts.Subscription{ID: "s1", UserID: "u1", Plan: contracts.SubscriptionPlanUnlimited, Status: contracts.SubscriptionStatusActive, Token: "tok-good", ExpiresAt: &future, TrafficLimitBytes: 0})
@@ -218,12 +218,12 @@ func TestCacheInvalidationWashesBlockedNode(t *testing.T) {
 		t.Fatalf("setup: want 2 nodes")
 	}
 
-	// n2 goes blocked upstream. Without invalidation the cache still serves it.
+	// n2 goes blocked upstream. Fresh state must beat a lost callback.
 	m.SetNodes([]contracts.Node{multiNode("n1", contracts.NodeStatusActive)})
 	cached := do(t, h, http.MethodGet, "/sub/tok-good", nil, nil)
 	rawCached, _ := base64.StdEncoding.DecodeString(cached.Body.String())
-	if strings.Count(string(rawCached), "vless://") != 2 {
-		t.Errorf("expected stale cached response with 2 nodes")
+	if strings.Count(string(rawCached), "vless://") != 1 {
+		t.Errorf("stale node survived authoritative snapshot check")
 	}
 
 	// Control-plane signals the block -> rebuild.
@@ -274,6 +274,7 @@ func FuzzSubToken(f *testing.F) {
 		h.ServeHTTP(w, r)
 		switch w.Code {
 		case http.StatusOK, http.StatusUnauthorized, http.StatusNotFound, http.StatusGone,
+			http.StatusTooManyRequests,
 			http.StatusMethodNotAllowed, http.StatusMovedPermanently, http.StatusPermanentRedirect,
 			http.StatusBadRequest, http.StatusRequestURITooLong:
 		default:

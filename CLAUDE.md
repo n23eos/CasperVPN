@@ -27,8 +27,8 @@ make up               # docker compose: postgres + сервисы
 make down             # остановить стек
 ```
 
-- Go floor — **1.22** (синхронно с CI и Docker-образами `golang:1.22`; потолок из
-  решения — 1.23, поднять `go`-директиву можно свободно).
+- Go 1.27.1 используется в go.work, модулях, CI и Docker. Полная локальная
+  приёмка: `make release-check`. Текущий запуск: `docs/LAUNCH.md`.
 - Каждый сервис — отдельный модуль `github.com/caspervpn/<name>`, тянет
   `contracts` через `go.work` + `replace` (без внешнего реестра).
 - Порты в dev: control-plane 8081, subscription 8082, delivery 8083, billing 8084,
@@ -78,10 +78,10 @@ make down             # остановить стек
    `ephemeral_entry_ip`, `role`/`entry_node_id`. Атака на entry не должна палить exit.
 3. **Per-user изоляция.** Оперируй персональными `User.reality_short_id`/`uuid`/ключ.
    Блок/бан одного юзера не должен палить остальных на общей ноде.
-   ⚠️ **Сейчас энфорсится только для VLESS-REALITY.** hysteria2/shadowsocks-2022/
-   amnezia-wg в подписке пока несут узловые (общие) креды — см. границу в
-   `architecture.md` и `docs/wave-2/TZ-per-user-isolation.md`. Не заявлять полную
-   изоляцию, пока это ТЗ не выкачено.
+   В launch-readiness реализован персональный доступ VLESS и Hysteria2.
+   Shadowsocks связывает entry и exit, общий пароль не выдаётся клиентам.
+   AmneziaWG не входит в поддерживаемый публичный профиль. Готовность
+   реального запуска подтверждается отдельным live пилотом.
 4. **Петля обратной связи.** Пиши/потребляй `FieldSignal` (анонимно, без PII) и
    `HealthEvent`, чтобы «где что заблокировали» превращалось в новые конфиги/домены.
 5. **Ноль хардкода.** Ни одного домена мимикрии и ни одного IP в коде — только

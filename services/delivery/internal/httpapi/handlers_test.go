@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,5 +186,20 @@ func TestReadyz(t *testing.T) {
 	empty.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz with no channels = %d, want 503", rec.Code)
+	}
+}
+
+type failingReadiness struct{}
+
+func (failingReadiness) Ready(context.Context) error { return errors.New("secret dependency detail") }
+
+func TestReadyzFailsWhenDependencyIsUnavailable(t *testing.T) {
+	reg := channel.NewRegistry()
+	reg.Add(&memChannel{kind: channel.KindTelegram, m: map[string][]byte{}}, 0)
+	api := New(reg, testAdminToken, failingReadiness{})
+	rec := httptest.NewRecorder()
+	api.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "secret dependency detail") {
+		t.Fatalf("readyz must fail without leaking dependency errors: %d %s", rec.Code, rec.Body.String())
 	}
 }

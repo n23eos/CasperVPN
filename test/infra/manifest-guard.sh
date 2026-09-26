@@ -39,6 +39,13 @@ p="$(write_manifest)"
 [ "$(manifest_field run-test '.exit.cloud')" = "vultr" ] && ok "exit cloud is vultr (not entry cloud)" || bad "exit cloud"
 [ "$(manifest_field run-test '.exit.region')" = "waw" ] && ok "exit region is exit-region" || bad "exit region"
 [ "$(manifest_field run-test '.tf_workspace')" = "ws-run-test" ] && ok "records workspace" || bad "workspace"
+[ "$(manifest_run_for_node hetzner:e1)" = "run-test" ] && ok "finds unique run by CP node id" || bad "node manifest lookup"
+( require_manifest_node run-test wrong-node entry ) >/dev/null 2>&1 && bad "accepted CP node outside manifest" || ok "rejects CP node mismatch"
+( require_manifest_node run-test vultr:x1 exit ) >/dev/null 2>&1 && ok "accepts exact manifest exit" || bad "rejected manifest exit"
+update_manifest_entry run-test e2 192.0.2.2
+[ "$(manifest_field run-test '.entry.raw_id')" = e2 ] && [ "$(manifest_field run-test '.entry.ip')" = 192.0.2.2 ] \
+  && ok "rotation atomically refreshes manifest entry identity" || bad "manifest entry update"
+[ "$(perms "$p")" = "600" ] && ok "manifest stays 0600 after update" || bad "updated manifest perms"
 if grep -qiE 'psk|secret|private|token|password' "$p"; then bad "manifest appears to leak a secret"; else ok "manifest carries no secrets"; fi
 ( manifest_field no-such-run '.entry.cp_id' ) >/dev/null 2>&1 && bad "read a missing manifest" || ok "missing manifest fails closed"
 

@@ -35,9 +35,11 @@ func (m *mockTelemetry) ReportHealth(_ context.Context, ev contracts.HealthEvent
 }
 
 type mockCP struct {
-	nodes   map[string]contracts.Node
-	updates []contracts.Node
-	listErr error
+	nodes     map[string]contracts.Node
+	updates   []contracts.Node
+	listErr   error
+	access    contracts.NodeAccessUsers
+	accessErr error
 }
 
 func (m *mockCP) ListNodes(context.Context, ports.NodeFilter) ([]contracts.Node, error) {
@@ -63,6 +65,15 @@ func (m *mockCP) UpdateNode(_ context.Context, n contracts.Node) (contracts.Node
 	m.nodes[n.ID] = n
 	return n, nil
 }
+func (m *mockCP) AccessUsers(context.Context, string) (contracts.NodeAccessUsers, error) {
+	if m.accessErr != nil {
+		return contracts.NodeAccessUsers{}, m.accessErr
+	}
+	if m.access.Revision == "" {
+		return contracts.NodeAccessUsers{Revision: "access-r1", ValidUntil: now.Add(5 * time.Minute)}, nil
+	}
+	return m.access, nil
+}
 
 type provCall struct {
 	op     string // up / rotate / down
@@ -76,43 +87,53 @@ type mockProv struct {
 	upErr    error
 	rotErr   error
 	downErr  error
+	upPair   ports.ProvisionedPair
 	onUp     func()
 	onRotate func(nodeID string)
 	onDown   func(nodeID string)
+	synced   []contracts.NodeAccessUsers
 }
 
 func (m *mockProv) rec(op, arg string) {
 	*m.seq++
 	m.calls = append(m.calls, provCall{op: op, arg: arg, atTime: *m.seq})
 }
-func (m *mockProv) NodeUp(_ context.Context, region, cloud string) error {
+func (m *mockProv) NodeUp(_ context.Context, region, cloud string) (ports.ProvisionedPair, error) {
 	m.rec("up", region+"/"+cloud)
 	if m.upErr != nil {
-		return m.upErr
+		return ports.ProvisionedPair{}, m.upErr
 	}
 	if m.onUp != nil {
 		m.onUp()
 	}
-	return nil
+	if m.upPair.EntryID == "" {
+		m.upPair = ports.ProvisionedPair{RunID: "run-new", EntryID: "new-entry", ExitID: "new-exit"}
+	}
+	return m.upPair, nil
 }
-func (m *mockProv) NodeRotate(_ context.Context, nodeID string) error {
-	m.rec("rotate", nodeID)
+func (m *mockProv) NodeRotate(_ context.Context, node contracts.Node) error {
+	m.rec("rotate", node.ID)
 	if m.rotErr != nil {
 		return m.rotErr
 	}
 	if m.onRotate != nil {
-		m.onRotate(nodeID)
+		m.onRotate(node.ID)
 	}
 	return nil
 }
-func (m *mockProv) NodeDown(_ context.Context, nodeID string) error {
-	m.rec("down", nodeID)
+func (m *mockProv) NodeDown(_ context.Context, node contracts.Node) error {
+	m.rec("down", node.ID)
 	if m.downErr != nil {
 		return m.downErr
 	}
 	if m.onDown != nil {
-		m.onDown(nodeID)
+		m.onDown(node.ID)
 	}
+	return nil
+}
+func (m *mockProv) SyncAccess(_ context.Context, node contracts.Node, snapshot contracts.NodeAccessUsers) error {
+	m.rec("sync", node.ID)
+	m.synced = append(m.synced, snapshot)
 	return nil
 }
 
@@ -219,6 +240,7 @@ func TestAuthoritativeBlockRotatesNode(t *testing.T) {
 	prov.onRotate = func(nodeID string) { // simulate node_rotate.sh patching the CP
 		n := cp.nodes[nodeID]
 		n.EntryIP = "198.51.100.7"
+		n.Status = contracts.NodeStatusActive
 		cp.nodes[nodeID] = n
 	}
 
@@ -258,6 +280,12 @@ func TestProbeConfirmationEnablesRotation(t *testing.T) {
 	tel := &mockTelemetry{recs: blockedRecs("node-1", contracts.RecommendationCorroborated)}
 	cp := &mockCP{nodes: map[string]contracts.Node{"node-1": activeNode("node-1")}}
 	prov := &mockProv{}
+	prov.onRotate = func(nodeID string) {
+		n := cp.nodes[nodeID]
+		n.EntryIP = "198.51.100.8"
+		n.Status = contracts.NodeStatusActive
+		cp.nodes[nodeID] = n
+	}
 	prober := &mockProber{status: contracts.HealthBlocked}
 
 	if _, err := newLoop(tel, cp, prov, prober, Options{ProbeEnabled: true}).Cycle(context.Background()); err != nil {
@@ -276,9 +304,19 @@ func TestProbeConfirmationEnablesRotation(t *testing.T) {
 func TestReplaceProvisionsBeforeDraining(t *testing.T) {
 	n := activeNode("node-1")
 	n.EphemeralEntryIP = false // static entry → replace, not rotate
+	entryID := n.ID
+	oldExit := activeNode("old-exit")
+	oldExit.Role = contracts.NodeRoleExit
+	oldExit.EntryNodeID = &entryID
 	tel := &mockTelemetry{recs: blockedRecs("node-1", contracts.RecommendationAuthoritative)}
-	cp := &mockCP{nodes: map[string]contracts.Node{"node-1": n}}
+	cp := &mockCP{nodes: map[string]contracts.Node{"node-1": n, "old-exit": oldExit}}
 	prov := &mockProv{}
+	prov.onUp = func() {
+		cp.nodes["new-entry"] = activeNode("new-entry")
+		ex := activeNode("new-exit")
+		ex.Role = contracts.NodeRoleExit
+		cp.nodes["new-exit"] = ex
+	}
 
 	if _, err := newLoop(tel, cp, prov, nil, Options{}).Cycle(context.Background()); err != nil {
 		t.Fatalf("Cycle() error: %v", err)
@@ -289,6 +327,9 @@ func TestReplaceProvisionsBeforeDraining(t *testing.T) {
 	got := cp.nodes["node-1"]
 	if got.Status != contracts.NodeStatusDraining {
 		t.Fatalf("old node status = %s, want draining", got.Status)
+	}
+	if got := cp.nodes["old-exit"].Status; got != contracts.NodeStatusDraining {
+		t.Fatalf("old exit status = %s, want draining", got)
 	}
 	if _, err := time.Parse(time.RFC3339, got.Labels[policy.DrainStartedLabel]); err != nil {
 		t.Fatalf("drain label missing/bad: %q", got.Labels[policy.DrainStartedLabel])
@@ -352,6 +393,12 @@ func TestScheduledRotationSurvivesTelemetryOutage(t *testing.T) {
 	tel := &mockTelemetry{recsErr: errors.New("telemetry down")}
 	cp := &mockCP{nodes: map[string]contracts.Node{"node-1": n}}
 	prov := &mockProv{}
+	prov.onRotate = func(nodeID string) {
+		rotated := cp.nodes[nodeID]
+		rotated.EntryIP = "198.51.100.9"
+		rotated.Status = contracts.NodeStatusActive
+		cp.nodes[nodeID] = rotated
+	}
 
 	rep, err := newLoop(tel, cp, prov, nil, Options{}).Cycle(context.Background())
 	if err != nil {
@@ -359,6 +406,96 @@ func TestScheduledRotationSurvivesTelemetryOutage(t *testing.T) {
 	}
 	if rep.Executed != 1 || len(prov.calls) != 1 || prov.calls[0].op != "rotate" {
 		t.Fatalf("calls = %+v, want scheduled rotate despite telemetry outage", prov.calls)
+	}
+	if next := cp.nodes["node-1"].RotateAfter; next == nil || !next.After(now) {
+		t.Fatalf("next rotate_after = %v, want future", next)
+	}
+}
+
+func TestAccessSyncRemovesOnlyRevokedUser(t *testing.T) {
+	n := activeNode("entry-1")
+	cp := &mockCP{
+		nodes: map[string]contracts.Node{n.ID: n},
+		access: contracts.NodeAccessUsers{
+			Revision: "access-b-only", ValidUntil: now.Add(5 * time.Minute),
+			Users: []contracts.AccessUser{{UUID: "user-b", ShortID: "bb", Hysteria2Password: "hy2-b"}},
+		},
+	}
+	prov := &mockProv{}
+	rep, err := newLoop(&mockTelemetry{}, cp, prov, nil, Options{AccessSyncEnabled: true}).Cycle(context.Background())
+	if err != nil {
+		t.Fatalf("Cycle() error: %v", err)
+	}
+	if rep.AccessSynced != 1 || len(prov.synced) != 1 {
+		t.Fatalf("access sync count = %d, snapshots=%d", rep.AccessSynced, len(prov.synced))
+	}
+	if got := prov.synced[0].Users; len(got) != 1 || got[0].UUID != "user-b" || got[0].Hysteria2Password != "hy2-b" {
+		t.Fatalf("synced users = %+v, want only user-b with personal hy2", got)
+	}
+}
+
+func TestAccessSyncRefreshesLeaseWhenRevisionIsUnchanged(t *testing.T) {
+	n := activeNode("entry-1")
+	cp := &mockCP{
+		nodes: map[string]contracts.Node{n.ID: n},
+		access: contracts.NodeAccessUsers{
+			Revision: "same-credentials", ValidUntil: now.Add(4 * time.Minute),
+			Users: []contracts.AccessUser{{UUID: "user-b", ShortID: "bb", Hysteria2Password: "hy2-b"}},
+		},
+	}
+	prov := &mockProv{}
+	loop := newLoop(&mockTelemetry{}, cp, prov, nil, Options{AccessSyncEnabled: true})
+	if _, err := loop.Cycle(context.Background()); err != nil {
+		t.Fatalf("first Cycle() error: %v", err)
+	}
+	cp.access.ValidUntil = now.Add(5 * time.Minute)
+	if _, err := loop.Cycle(context.Background()); err != nil {
+		t.Fatalf("second Cycle() error: %v", err)
+	}
+	if len(prov.synced) != 2 {
+		t.Fatalf("synced snapshots = %d, want two lease refreshes", len(prov.synced))
+	}
+	if prov.synced[0].Revision != prov.synced[1].Revision || !prov.synced[1].ValidUntil.After(prov.synced[0].ValidUntil) {
+		t.Fatalf("lease refreshes = %+v", prov.synced)
+	}
+}
+
+func TestExpiredAccessSnapshotFailsBeforeLifecycleActions(t *testing.T) {
+	n := activeNode("entry-1")
+	cp := &mockCP{
+		nodes:  map[string]contracts.Node{n.ID: n},
+		access: contracts.NodeAccessUsers{Revision: "expired", ValidUntil: now.Add(-time.Second)},
+	}
+	prov := &mockProv{}
+	_, err := newLoop(&mockTelemetry{}, cp, prov, nil, Options{AccessSyncEnabled: true}).Cycle(context.Background())
+	if err == nil {
+		t.Fatal("Cycle() accepted an expired access snapshot")
+	}
+	if len(prov.calls) != 0 {
+		t.Fatalf("expired snapshot caused side effects: %+v", prov.calls)
+	}
+}
+
+func TestReplacementNotDrainedUntilNewPairActive(t *testing.T) {
+	n := activeNode("node-1")
+	n.EphemeralEntryIP = false
+	cp := &mockCP{nodes: map[string]contracts.Node{"node-1": n}}
+	prov := &mockProv{}
+	prov.onUp = func() {
+		entry := activeNode("new-entry")
+		entry.Status = contracts.NodeStatusProvisioning
+		cp.nodes[entry.ID] = entry
+		exit := activeNode("new-exit")
+		exit.Role = contracts.NodeRoleExit
+		exit.Status = contracts.NodeStatusActive
+		cp.nodes[exit.ID] = exit
+	}
+	_, err := newLoop(&mockTelemetry{recs: blockedRecs("node-1", contracts.RecommendationAuthoritative)}, cp, prov, nil, Options{}).Cycle(context.Background())
+	if err == nil {
+		t.Fatal("Cycle() accepted a non-active replacement")
+	}
+	if got := cp.nodes["node-1"].Status; got != contracts.NodeStatusActive {
+		t.Fatalf("old node status = %s, want active", got)
 	}
 }
 

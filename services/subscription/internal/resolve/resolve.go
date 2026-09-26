@@ -50,7 +50,10 @@ type Resolved struct {
 func (r *Resolver) Resolve(ctx context.Context, token string) (Resolved, error) {
 	userID, subID, err := r.idx.Lookup(ctx, token)
 	if err != nil {
-		return Resolved{}, ErrUnknownToken
+		if errors.Is(err, controlplane.ErrNotFound) {
+			return Resolved{}, ErrUnknownToken
+		}
+		return Resolved{}, err
 	}
 
 	sub, err := r.cp.GetSubscription(ctx, subID)
@@ -104,7 +107,7 @@ func (r *Resolver) checkSubscription(s contracts.Subscription) error {
 	default: // canceled, expired
 		return ErrExpired
 	}
-	if s.ExpiresAt != nil && !s.ExpiresAt.After(r.now()) {
+	if until := s.AccessUntil(); until != nil && !until.After(r.now()) {
 		return ErrExpired
 	}
 	return nil

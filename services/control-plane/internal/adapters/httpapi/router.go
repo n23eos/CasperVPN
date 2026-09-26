@@ -17,15 +17,22 @@ func (h *Handler) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", h.healthz)
+	r.Get("/readyz", h.readyz)
 
 	// Role sets. Reads are open to any authenticated service; writes are scoped.
 	anyService := []authz.Role{authz.RoleAdmin, authz.RoleOrchestrator, authz.RoleTelemetry, authz.RoleSubscription, authz.RoleBilling}
 	nodeWriters := []authz.Role{authz.RoleAdmin, authz.RoleOrchestrator}
-	accountWriters := []authz.Role{authz.RoleAdmin, authz.RoleBilling}
+	accountWriters := []authz.Role{authz.RoleAdmin}
 	accountReaders := []authz.Role{authz.RoleAdmin, authz.RoleBilling, authz.RoleSubscription}
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(h.authenticate)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleDelivery)).Post("/users/ensure-telegram", h.ensureTelegram)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleBilling)).Post("/users/{id}/ensure-subscription", h.ensureSubscription)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleBilling)).Put("/subscriptions/{id}/billing-state", h.billingState)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleDelivery)).Post("/subscriptions/{id}/delivery-link", h.deliveryLink)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleSubscription)).Post("/subscription-tokens/resolve", h.resolveToken)
+		r.With(requireRole(authz.RoleAdmin, authz.RoleOrchestrator)).Get("/nodes/{id}/access-users", h.accessUsers)
 
 		// Nodes (dynamic registry).
 		r.Group(func(r chi.Router) {
@@ -56,7 +63,7 @@ func (h *Handler) Router() http.Handler {
 		// Subscriptions (entitlement only — no card/payment data here).
 		r.Group(func(r chi.Router) {
 			r.With(requireRole(accountWriters...)).Post("/subscriptions", h.createSubscription)
-			r.With(requireRole(accountReaders...)).Get("/subscriptions/{id}", h.getSubscription)
+			r.With(requireRole(authz.RoleAdmin, authz.RoleBilling, authz.RoleSubscription, authz.RoleDelivery)).Get("/subscriptions/{id}", h.getSubscription)
 			// Additive Wave-2 endpoints (TZ-contract-changes §1–2): billing
 			// activation/renewal + leaked-link revocation.
 			r.With(requireRole(accountWriters...)).Patch("/subscriptions/{id}", h.patchSubscription)

@@ -54,11 +54,26 @@ func main() {
 	if err != nil {
 		log.Fatalf("%s: token index: %v", serviceName, err)
 	}
+	localIndex := tokenIndex
+	if cp, ok := provider.(*controlplane.HTTPClient); ok {
+		tokenIndex = &controlplane.AuthoritativeIndex{TokenIndex: localIndex, CP: cp}
+	}
 
 	resolver := resolve.New(tokenIndex, provider, time.Now)
 	renderer := render.New(cfg.Routing)
 	payloadCache := cache.New(cfg.CacheTTL, time.Now)
 	srv := httpapi.New(cfg, resolver, renderer, payloadCache, tokenIndex, time.Now)
+	srv.Ready = func(ctx context.Context) error {
+		if ready, ok := localIndex.(interface{ Ready(context.Context) error }); ok {
+			if err := ready.Ready(ctx); err != nil {
+				return err
+			}
+		}
+		if ready, ok := provider.(interface{ Ready(context.Context) error }); ok {
+			return ready.Ready(ctx)
+		}
+		return nil
+	}
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -103,6 +118,9 @@ func newTokenIndex(cfg config.Config, mem *controlplane.Memory) (controlplane.To
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {

@@ -50,6 +50,7 @@ type Event struct {
 // CreateInvoiceRequest is the semantic input to a gateway's CreateInvoice. Amount
 // is resolved from the plan catalog before the gateway is called.
 type CreateInvoiceRequest struct {
+	OrderID    string
 	AnonUserID string
 	Plan       string
 	Currency   string
@@ -62,7 +63,41 @@ type CreateInvoiceRequest struct {
 type Schedule struct {
 	SubID      string    `json:"sub_id"`
 	AnonUserID string    `json:"anon_user_id"`
+	Revision   int64     `json:"revision"`
+	Plan       string    `json:"plan"`
 	Status     string    `json:"status"` // contracts.SubscriptionStatus value
 	ExpiresAt  time.Time `json:"expires_at"`
 	GraceUntil time.Time `json:"grace_until"`
+}
+
+// BillingDelivery is an absolute, durable entitlement update. Its target period
+// and revision are fixed before any control-plane call, so every retry sends the
+// same side effect after a timeout or crash.
+type BillingDelivery struct {
+	ID          string
+	InvoiceID   string
+	SubID       string
+	AnonUserID  string
+	Revision    int64
+	Plan        string
+	Status      string
+	ExpiresAt   time.Time
+	GraceUntil  time.Time
+	CreatedAt   time.Time
+	DeliveredAt time.Time
+}
+
+// InvoiceIntent is the durable reservation behind an Idempotency-Key. The stable
+// OrderID is sent to the provider and later used to recover an ambiguous create.
+type InvoiceIntent struct {
+	IdempotencyKey string
+	RequestHash    string
+	OrderID        string
+	Provider       string
+	AnonUserID     string
+	Plan           string
+	Currency       string
+	Amount         string
+	State          string // reserved|creating|ready|failed
+	CreatedAt      time.Time
 }

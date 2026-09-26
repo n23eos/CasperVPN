@@ -22,10 +22,11 @@ type limiter struct {
 }
 
 type userState struct {
-	tokens   float64
-	lastSeen time.Time
-	lastCmd  string
-	lastCmdT time.Time
+	tokens       float64
+	lastSeen     time.Time
+	lastCmd      string
+	lastCmdT     time.Time
+	lastUpdateID int64
 }
 
 // newLimiter builds a limiter. now is injectable for deterministic tests.
@@ -46,7 +47,7 @@ func newLimiter(ratePerSec, burst int, cooldown time.Duration, now func() time.T
 // allow reports whether a command from userID with text cmd may be served now.
 // It rejects when the token bucket is empty (rate limit) OR the same command was
 // served within the cooldown (antispam de-dup).
-func (l *limiter) allow(userID int64, cmd string) bool {
+func (l *limiter) allow(userID int64, cmd string, updateID int64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -55,6 +56,12 @@ func (l *limiter) allow(userID int64, cmd string) bool {
 	if s == nil {
 		s = &userState{tokens: l.burst, lastSeen: now}
 		l.buckets[userID] = s
+	}
+	// Retrying the same durable update after a temporary dependency or send
+	// failure must not be swallowed by the in-memory cooldown.
+	if updateID > 0 && updateID == s.lastUpdateID {
+		s.lastSeen = now
+		return true
 	}
 
 	// Refill.
@@ -80,6 +87,7 @@ func (l *limiter) allow(userID int64, cmd string) bool {
 	s.tokens--
 	s.lastCmd = cmd
 	s.lastCmdT = now
+	s.lastUpdateID = updateID
 	l.evictLocked(now)
 	return true
 }

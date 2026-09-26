@@ -19,7 +19,7 @@ func sampleBundle() contracts.SubscriptionBundle {
 	return contracts.SubscriptionBundle{
 		User: contracts.User{
 			ID: "u-1", Status: contracts.UserStatusActive,
-			RealityShortID: "ab12", UUID: "00000000-0000-0000-0000-000000000001", DeviceLimit: 3,
+			RealityShortID: "ab12", UUID: "00000000-0000-0000-0000-000000000001", Hysteria2Password: "pw", DeviceLimit: 3,
 		},
 		Nodes: []contracts.Node{{
 			ID: "n-1", Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive, EntryIP: "198.51.100.10",
@@ -121,6 +121,71 @@ func TestRenderSingBoxGolden(t *testing.T) {
 		t.Error("sing-box output missing dns block (split-tunnel)")
 	}
 	checkGolden(t, "subscription.singbox.json", body)
+}
+
+// The current client schema requires typed DNS servers and an explicit dial
+// resolver. Keep the split-tunnel DNS detours intact during schema migrations.
+func TestRenderSingBoxModernDNS(t *testing.T) {
+	policy := testPolicy(t)
+	body, _, err := New(policy).Render(FormatSingBox, sampleBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		DNS struct {
+			Servers []map[string]interface{} `json:"servers"`
+			Final   string                   `json:"final"`
+		} `json:"dns"`
+		Route struct {
+			Resolver map[string]interface{} `json:"default_domain_resolver"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.DNS.Servers) != 2 {
+		t.Fatalf("DNS servers = %d, want both tunneled and direct resolvers", len(doc.DNS.Servers))
+	}
+	wantDetour := map[string]string{"proxy-dns": config.TagProxy, "direct-dns": config.TagDirect}
+	for _, server := range doc.DNS.Servers {
+		tag, _ := server["tag"].(string)
+		if server["type"] != "https" || server["server"] == "" || server["server"] == nil {
+			t.Errorf("DNS server %q must use modern HTTPS fields: %v", tag, server)
+		}
+		if _, legacy := server["address"]; legacy {
+			t.Errorf("DNS server %q has removed legacy address field", tag)
+		}
+		if expected, ok := wantDetour[tag]; !ok || server["detour"] != expected {
+			t.Errorf("DNS server %q detour = %v, want %q", tag, server["detour"], expected)
+		}
+		delete(wantDetour, tag)
+	}
+	if len(wantDetour) != 0 {
+		t.Errorf("missing DNS detours: %v", wantDetour)
+	}
+	if doc.Route.Resolver["server"] != doc.DNS.Final || doc.Route.Resolver["strategy"] != "prefer_ipv4" {
+		t.Errorf("default dial resolver = %v, want final DNS %q with prefer_ipv4", doc.Route.Resolver, doc.DNS.Final)
+	}
+}
+
+func TestRenderSingBoxDomainResolverUsesPolicy(t *testing.T) {
+	policy := testPolicy(t)
+	policy.SingBox.DefaultDomainResolver = map[string]interface{}{"server": "direct-dns", "strategy": "ipv4_only"}
+	body, _, err := New(policy).Render(FormatSingBox, sampleBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Route struct {
+			Resolver map[string]interface{} `json:"default_domain_resolver"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Route.Resolver["server"] != "direct-dns" || doc.Route.Resolver["strategy"] != "ipv4_only" {
+		t.Fatalf("configured domain resolver lost: %v", doc.Route.Resolver)
+	}
 }
 
 func TestRenderClashGolden(t *testing.T) {

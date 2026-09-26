@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -23,9 +24,16 @@ type querier interface {
 
 // Connect opens a pgx pool against dsn and verifies connectivity.
 func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: new pool: %w", err)
+		return nil, fmt.Errorf("postgres: invalid database connection configuration")
+	}
+	cfg.MaxConns = 8
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.MaxConnLifetime = 30 * time.Minute
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: cannot create connection pool")
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()

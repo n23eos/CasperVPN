@@ -3,6 +3,7 @@ package ingest
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -185,11 +186,10 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, maxBytes int64, dst in
 // clientOrigin returns the coarse origin used ONLY to derive an ephemeral
 // rate-limit token. Never logged, never stored.
 func clientOrigin(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
+	// This internal service has no trusted forwarding proxy configuration.
+	// Arbitrary headers and ephemeral source ports cannot mint new buckets.
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }

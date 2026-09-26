@@ -8,6 +8,16 @@
 > добавлен `/readyz`; resolver получил опциональный anti-rollback max-age по
 > `Artifact.IssuedAt` с failover на свежий канал.
 
+> **Обновление 2026-09-25:** подключён self-service Telegram runtime. Long polling
+> принимает только private chat и identity из sender ID. `/start`, `/pay` и
+> `/get` используют control-plane и billing HTTP API с bounded body и retry.
+> PostgreSQL хранит cursor и dedup update между рестартами. `/get` проверяет
+> entitlement через `AccessUntil()` и запрашивает стабильный delivery token без
+> ротации. Production config требует БД, service tokens, bot token, HTTPS public
+> URL и постоянные signing/seal keys. Проверено: `go test -race -p 1
+> ./services/delivery/...`, `go vet ./services/delivery/...`, Postgres integration
+> `go test -count=1 -tags integration ./services/delivery/internal/botstore`.
+
 ## Стадия: НЕ «всё готово»
 
 Завершена **чётко очерченная стадия**: медиа-независимое ядро (артефакт + подпись +
@@ -39,11 +49,6 @@
 ## ❌ НЕ сделано / заглушки (следующая фаза)
 
 **Интеграция с соседями (главное):**
-- **`SubProvider` не реализован** — бот знает форму ответа, но источник
-  subscription-ссылок (клиент к `services/subscription`) не подключён. Бот выдаёт
-  ссылку только с инъецированным провайдером.
-- **Приём апдейтов бота не подключён** — `HandleUpdate` есть, но нет long-poll/webhook
-  цикла, который его кормит. Бот пока не «живой».
 - **Цикл обновления directory отсутствует** — нет шедулера, который пересобирает
   `Directory` из control-plane/БД и `Broadcast`-ит по всем каналам при
   ротации/блоке. `Publisher.Broadcast` есть, но его никто не вызывает.
@@ -74,7 +79,6 @@
   интеграции с LB. Админский `POST /v1/channels` теперь закрыт bearer-токеном.
 - Стего: один статичный шаблон cover, без ротации; низкая ёмкость, хрупкость
   (описано в docs). Не «продакшн-хардненно».
-- Нет персистентности/БД в delivery.
 
 ## 🔭 Что отслеживать потом
 
@@ -101,3 +105,8 @@ Prod-переменные: `DELIVERY_SIGN_SEED` (b64 32B ed25519 seed),
 `DELIVERY_SEAL_KEY` (b64 32B), `DELIVERY_VERIFY_KEYS` (`id:pub,...`),
 `DELIVERY_TELEGRAM_BASE/TOKEN`, `DELIVERY_MAX_BASE/TOKEN`,
 `DELIVERY_ADMIN_TOKEN`, `DELIVERY_ARTIFACT_MAX_AGE`.
+
+Self-service дополнительно требует `ENV=production`, `DATABASE_URL`,
+`DELIVERY_CONTROL_PLANE_BASE/TOKEN`, `DELIVERY_BILLING_BASE/TOKEN`,
+`DELIVERY_PUBLIC_SUBSCRIPTION_BASE` и `DELIVERY_BOT_ENABLED=true`. В dev/test бот
+включается только явно; HTTP разрешён для локальных fake endpoint.

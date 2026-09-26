@@ -1,114 +1,81 @@
 # CasperVPN
 
-**CasperVPN is a Go backend for running a subscription VPN service that survives state-level DPI filtering.** Traffic imitates allowed HTTPS and HTTP-3, blocked nodes rotate automatically, and a feedback loop turns reports of what got blocked where into new configs and domains. Each node runs sing-box and carries several transports at once (VLESS-REALITY, Hysteria2, AmneziaWG, Shadowsocks-2022), so a client switches instead of depending on one protocol. Clients are external sing-box apps that subscribe through a per-user URL, so no custom client ships with it. Six services in a Go workspace, dual-licensed under AGPLv3 and a commercial license.
+CasperVPN is a Go backend for a subscription VPN service. A private Telegram
+bot handles onboarding, payment links and a persistent subscription URL.
+The supported launch profile gives each user personal VLESS REALITY and
+Hysteria2 credentials. Entry and exit nodes are separate; Shadowsocks-2022
+connects them internally. Clients are external apps, with no custom app shipped.
 
-<div align="center">
+**Launch preparation:** [operator runbook](docs/LAUNCH.md),
+[verification and limits](docs/LAUNCH-VERIFICATION.md),
+[OpenSpec change](openspec/changes/launch-readiness/).
+The local acceptance path is implemented. A controlled live pilot is required
+before public paid use; resistance to particular networks or DPI systems has
+not been established by local tests.
 
-[![Star on GitHub](https://img.shields.io/github/stars/n23eos/CasperVPN?style=for-the-badge&logo=github&label=Star%20this%20repo&color=FFD700&labelColor=1a1a1a)](https://github.com/n23eos/CasperVPN)
+[Русская версия](README.ru.md) | [Website](https://n23eos.github.io/CasperVPN/)
 
-</div>
+## Supported launch behavior
 
-Survivability comes from **transport diversity and feedback**, not "stronger
-encryption": multiple protocols per node, fast rotation, and clients that
-switch — not a single protocol monoculture.
+- Personal VLESS and Hysteria2 access, including expiry, grace and revocation.
+- Stable subscription links after restart, renewal and database restoration.
+- Durable invoice credit and versioned billing delivery to prevent repeated
+  webhooks, retries and delayed responses from granting duplicate periods.
+- Private Telegram `/start`, `/pay`, `/get` with durable update deduplication.
+- Access snapshots refreshed every two minutes, with a node watchdog that
+  stops access when a lease expires (at most five minutes).
+- Fleet actions rely on authenticated infrastructure checks. Public client
+  reports are advisory and cannot independently authorize node actions.
 
-- Core on every node — **sing-box** ([ADR-002](docs/decisions/ADR-002-singbox-core.md)).
-- Clients are **external** (Happ / any sing-box-compatible app) via per-user
-  subscription URL; we don't ship our own apps ([ADR-003](docs/decisions/ADR-003-external-clients-happ.md)).
-- Architecture source of truth — [`architecture.md`](architecture.md); contracts —
-  [`docs/contracts.md`](docs/contracts.md); decisions — [`docs/decisions/`](docs/decisions/).
-
-**Website** — [n23eos.github.io/CasperVPN](https://n23eos.github.io/CasperVPN/)
-([по-русски](https://n23eos.github.io/CasperVPN/ru.html)).
-
-Русская версия — [README.ru.md](README.ru.md).
-
-## License
-
-**Dual-licensed:**
-
-- **AGPLv3** ([LICENSE](LICENSE)) — free, including commercial use, but if you
-  run a modified version as a network service you must open-source it under
-  the same terms.
-- **Commercial license** — for closed-source / SaaS use without AGPL
-  obligations. See [COMMERCIAL.md](COMMERCIAL.md) or email
-  <mns.nicholas@gmail.com>.
-
-## The [ANTI-BLOCK] requirement (applies to every service)
-
-1. **Many transports at once, no monoculture** — a node carries several
-   `Transport`s; the client switches (VLESS-REALITY / Hysteria2 / AmneziaWG /
-   Shadowsocks-2022).
-2. **Fast rotation and entry ≠ exit** — attacking an entry node must not
-   expose the exit.
-3. **Per-user isolation** — personal `reality_short_id`/`uuid`/keys.
-   ⚠️ Currently enforced only for **VLESS-REALITY**; hysteria2 /
-   shadowsocks-2022 / amnezia-wg still carry node-level (shared) credentials
-   (see `architecture.md`, `docs/wave-2/`).
-4. **Feedback loop** — anonymous `FieldSignal` + `HealthEvent` turn "blocked
-   where" into new configs/domains.
-5. **Zero hardcode** — no mimicry domain and no IP in code; config/DB only.
+Generated sing-box JSON and node configs are tested with **sing-box 1.14.2**.
+This JSON does not support the old 1.11.11 DNS schema. Base64 and Clash remain
+available; verify the actual client app before the pilot. AmneziaWG is not
+part of the supported public launch profile. Plan metadata does not enforce
+traffic, speed or device quotas.
 
 ## Services
 
-Go workspace monorepo (`go.work`): `packages/contracts` + `packages/platform` + 6 services. Each is
-a separate module `github.com/caspervpn/<name>`.
+Eight Go workspace modules: contracts, platform and six services.
 
-| Service | Port (dev) | Role |
-|---------|-----------|------|
-| `control-plane` | 8081 | node registry, per-user REALITY ids/secrets, config assembly, guarded activation |
-| `subscription` | 8082 | per-user subscription URL, base64/sing-box/clash rendering, token rotation |
-| `delivery` | 8083 | multi-channel delivery (HTTPS/DoH/Telegram/GitHub raw/DNS TXT) |
-| `billing` | 8084 | subscriptions, quotas, crypto billing ([ADR-004](docs/decisions/ADR-004-crypto-billing.md)) |
-| `telemetry` | 8085 | ingest of anonymous FieldSignal + HealthEvent |
-| `orchestrator` | 8086 | node provision/rotation (Terraform+Ansible), block detection, auto-replacement |
+| Service | Dev port | Role |
+|---------|----------|------|
+| control-plane | 8081 | Accounts, entitlement, credentials, fleet and guarded activation |
+| subscription | 8082 | Authorized profile rendering and subscription links |
+| delivery | 8083 | Telegram onboarding and subscription delivery |
+| billing | 8084 | BTCPay invoices, durable credit and expiry |
+| telemetry | 8085 | Client observations and authenticated health events |
+| orchestrator | 8086 | Terraform/Ansible node lifecycle and replacement |
 
-`packages/contracts/` is **frozen**: Go types + JSON Schema + OpenAPI — the
-single source for 6 teams. Change only additively and in sync
-(see `docs/contracts.md`).
+The orchestrator needs a Linux host with Terraform/Ansible and persistent
+manifests. Its HTTP Docker image alone cannot execute cloud operations.
+Contracts are changed additively in Go, JSON Schema and OpenAPI together.
+Historical architecture and decisions are in [architecture.md](architecture.md)
+and [docs/decisions](docs/decisions/); use the launch runbook for current operation.
 
-## Build and test
+## Build and verify
 
-```bash
-make build    # build all modules
-make test     # tests across all modules (-race)
-make vet      # go vet
-make fmt      # gofmt -w
-make up       # docker compose: postgres + services (dev)
-make down     # stop the stack
+Use **Go 1.27.1**. The full gate also needs Docker, Compose, Python 3,
+golangci-lint 2.14.0, govulncheck 1.8.0, OpenSpec 1.13.0, jq and openssl.
+
+```sh
+make build
+make vet
+make test             # All eight modules, race detector
+make lint LINT_STRICT=1
+make release-check    # Local integration, real transports, restore, security checks
 ```
 
-Go floor **1.20** (decision ceiling — 1.23). Docker images — `golang:1.22`.
-Optional e2e (docker; some need an operator `REALITY_DEST`):
-`make e2e-first-user`, `e2e-real-node`, `e2e-transport-probe`, `e2e-reconcile`.
-Infra guards without cloud: `make infra-guards`.
+The release gate uses local test providers. It creates no cloud resources and
+sends no real Telegram messages or payments. See the runbook for configuration,
+private startup, fleet acceptance, publication, backup and rollback.
+Development helpers `make up` and `make down` use `docker-compose.dev.yml`.
 
-## Repository layout
+## Security and license
 
-```
-packages/contracts/   frozen types/schemas/OpenAPI (the single contract)
-packages/platform/    shared service plumbing: envcfg / httpx / httpjson (not frozen)
-services/<name>/       6 services (control-plane, subscription, delivery, billing, telemetry, orchestrator)
-infra/                 fleet Terraform + Ansible; scripts/ (node lifecycle, preflight, gate0)
-test/e2e/              docker e2e + pure-shell guards
-test/infra/            pure-shell guards for live lifecycle (no cloud)
-docs/                  contracts, ADRs, operator runbooks
-web/admin/             operator panel (placeholder)
-```
+Secrets belong in environment files or a secret manager. Generated launch
+settings, backups and private `!notes` are ignored by Git. Development
+credentials are for local use only. The public edge exposes subscription
+retrieval and the exact BTCPay webhook; internal APIs stay private.
 
-## Status
-
-- **Billing reliability** — Postgres integration, money races and recovery
-  observability closed (tests under `-race`). Baseline frozen.
-- **VPS apply** — code ready and in main (preflight, isolated workspace,
-  cost-safe teardown, live reconcile wrapper, GATE-0 preflight — `make gate0`,
-  [docs/GATE-0-preflight.md](docs/GATE-0-preflight.md)). No live apply on a VPS
-  yet; orchestrator fleet-loop OFF (`DRY_RUN=true`, `PROBE_ENABLED=false`)
-  until #3/#7/#8 are closed. See [docs/FIRST-WORKING-USER.md](docs/FIRST-WORKING-USER.md).
-
-## Security
-
-Secrets — env/secret manager only, never in code or deploy scripts. Dev creds
-in `docker-compose.dev.yml` are local-only. Commit format:
-`<type>: <description>` (feat/fix/refactor/docs/test/chore/perf/ci).
-Rules for agents and humans — [`CLAUDE.md`](CLAUDE.md).
+Dual-licensed under [AGPLv3](LICENSE) and a [commercial license](COMMERCIAL.md).
+See those files for terms. Repository working instructions: [CLAUDE.md](CLAUDE.md).

@@ -3,8 +3,8 @@
 # It drives the REAL reconcile_node.sh state machine (sourced, real _cp, real
 # hooks) against a live control-plane stack AND a real entry->exit->echo container
 # chain. Proves: a real ban/cancel through the CP changes the eligibility revision;
-# the reconciler resyncs the node's REALITY allow-list; the banned user's VLESS
-# dies while the other keeps both transports; the run is idempotent; and the
+# the reconciler resyncs the node's personal VLESS and Hysteria2 allow-lists;
+# the banned user loses both while the other keeps both transports; the run is idempotent; and the
 # R1/R2 race and a broken transport both leave the pair provisioning.
 #
 # OPT-IN: REALITY_DEST + REALITY_SERVER_NAME (SKIP without; FAIL on non-TLS-1.3).
@@ -57,10 +57,10 @@ for i in $(seq 1 30); do "${COMPOSE[@]}" exec -T postgres pg_isready -U caspervp
 "${COMPOSE[@]}" up -d "${CORE[@]}"
 for u in "$CP/healthz" "$SUB/healthz" "$BILL/healthz"; do for i in $(seq 1 30); do "${CURL[@]}" -o /dev/null "$u" 2>/dev/null && break; [ "$i" = 30 ] && die "$u unhealthy"; sleep 2; done; done
 
-# mkuser -> creates+pays a user; echoes "id uuid short_id sub_id"
+# mkuser -> creates+pays a user; echoes "id uuid short_id hy2_password sub_id"
 mkuser(){
   local uj; uj="$("${CURL[@]}" -X POST "$CP/v1/users" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d "{\"telegram_id\":$1}")"
-  local id uuid sid; id="$(jq -re .id <<<"$uj")"; uuid="$(jq -re .uuid <<<"$uj")"; sid="$(jq -re .reality_short_id <<<"$uj")"
+  local id uuid sid hy2; id="$(jq -re .id <<<"$uj")"; uuid="$(jq -re .uuid <<<"$uj")"; sid="$(jq -re .reality_short_id <<<"$uj")"; hy2="$(jq -re .hysteria2_password <<<"$uj")"
   local inv; inv="$("${CURL[@]}" -X POST "$BILL/v1/invoices" -H 'Content-Type: application/json' -d "{\"anon_user_id\":\"$id\",\"plan\":\"basic\",\"currency\":\"BTC\"}")"
   local iid amt cur; iid="$(jq -re .invoice_id <<<"$inv")"; amt="$(jq -re .amount <<<"$inv")"; cur="$(jq -re .currency <<<"$inv")"
   local ts body sig; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -68,11 +68,11 @@ mkuser(){
   sig="$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$MOCK_SECRET" -hex | awk '{print $NF}')"
   "${CURL[@]}" -o /dev/null -X POST "$BILL/v1/webhooks/mock" -H "X-Signature: $sig" -H 'Content-Type: application/json' --data-binary "$body"
   local subid; subid="$("${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/users/$id" | jq -r .subscription_id)"
-  echo "$id $uuid $sid $subid"
+  echo "$id $uuid $sid $hy2 $subid"
 }
 step "create + pay two eligible users"
-read -r U1_ID U1_UUID U1_SID U1_SUB < <(mkuser 800001)
-read -r U2_ID U2_UUID U2_SID U2_SUB < <(mkuser 800002)
+read -r U1_ID U1_UUID U1_SID U1_HY2 U1_SUB < <(mkuser 800001)
+read -r U2_ID U2_UUID U2_SID U2_HY2 U2_SUB < <(mkuser 800002)
 [ -n "$U1_UUID" ] && [ -n "$U2_UUID" ] || die "user creation failed"
 echo "    user1=$U1_UUID/$U1_SID  user2=$U2_UUID/$U2_SID"
 
@@ -99,15 +99,15 @@ NODE_ID="$ENTRY_ID" NODE_ROLE=entry NODE_STATUS=provisioning PROVIDER=local CLOU
 
 # ---------------------------------------------------------------------------
 # hooks (called by reconcile_pair via RECONCILE_* env pointing at these funcs)
-render_entry(){ # $1 = users json array [{uuid,short_id}]
+render_entry(){ # $1 = users json array [{uuid,short_id,hysteria2_password}]
   local users="$1"
   jq -n --argjson users "$users" --arg priv "$RPRIV" --arg dh "$DEST_HOST" --argjson dp "$DEST_PORT" \
-    --arg sni "$REALITY_SERVER_NAME" --arg hp "$HY2_PW" --arg psk "$PSK" --arg exip "$EXIT_IP" '{
+    --arg sni "$REALITY_SERVER_NAME" --arg psk "$PSK" --arg exip "$EXIT_IP" '{
     log:{level:"warn"},
     inbounds:[
       {type:"vless",tag:"vless-in",listen:"::",listen_port:443,users:($users|map({uuid:.uuid,flow:"xtls-rprx-vision"})),
        tls:{enabled:true,server_name:$sni,reality:{enabled:true,handshake:{server:$dh,server_port:$dp},private_key:$priv,short_id:($users|map(.short_id))}}},
-      {type:"hysteria2",tag:"hy2-in",listen:"::",listen_port:8443,users:[{password:$hp}],
+      {type:"hysteria2",tag:"hy2-in",listen:"::",listen_port:8443,users:($users|map({password:.hysteria2_password})),
        tls:{enabled:true,alpn:["h3"],certificate_path:"/etc/hy2.crt",key_path:"/etc/hy2.key"}}
     ],
     outbounds:[{type:"shadowsocks",tag:"to-exit",server:$exip,server_port:8388,method:"2022-blake3-aes-256-gcm",password:$psk},{type:"direct",tag:"direct"}],
@@ -120,14 +120,14 @@ hook_verify_exit(){  # authenticated SS2022 client -> exit -> echo -> egress==ex
     outbounds:[{type:"shadowsocks",tag:"o",server:$exip,server_port:8388,method:"2022-blake3-aes-256-gcm",password:$psk},{type:"direct",tag:"direct"}],route:{final:"o"}}' >"$WORK/vexit.json"
   local r; r="$(probe_transport shadowsocks-2022 "$WORK/vexit.json" "$SOCKS_PORT" "$ECHO" "$EXIT_IP")"; echo "$r" | jq -e '.authenticated_http and .exit_ip_verified' >/dev/null
 }
-hook_apply(){  # receives RECONCILE_USERS; renders + restarts entry
-  [ -n "${RECONCILE_USERS:-}" ] || return 1
-  render_entry "$RECONCILE_USERS"; start_entry
+hook_apply(){  # receives the leased access snapshot through a 0600 file
+  [ -n "${RECON_ACCESS_SNAPSHOT_FILE:-}" ] && [ -f "$RECON_ACCESS_SNAPSHOT_FILE" ] || return 1
+  render_entry "$(jq -c '.users' "$RECON_ACCESS_SNAPSHOT_FILE")"; start_entry
 }
 vless_probe(){ local uuid="$1" sid="$2"; jq -n --arg u "$uuid" --arg sni "$REALITY_SERVER_NAME" --arg pub "$RPUB" --arg sid "$sid" --arg s "$ENTRY" '{log:{level:"warn"},inbounds:[{type:"mixed",tag:"in",listen:"0.0.0.0",listen_port:1080}],outbounds:[{type:"vless",tag:"vless-out",server:$s,server_port:443,uuid:$u,flow:"xtls-rprx-vision",tls:{enabled:true,server_name:$sni,utls:{enabled:true,fingerprint:"chrome"},reality:{enabled:true,public_key:$pub,short_id:$sid}}},{type:"direct",tag:"direct"}],route:{final:"vless-out"}}' >"$WORK/client.json"; probe_transport vless-reality "$WORK/client.json" "$SOCKS_PORT" "$ECHO" "$EXIT_IP"; }
-hy2_probe(){ jq -n --arg s "$ENTRY" --arg pw "$HY2_PW" --arg sni "$REALITY_SERVER_NAME" '{log:{level:"warn"},inbounds:[{type:"mixed",tag:"in",listen:"0.0.0.0",listen_port:1080}],outbounds:[{type:"hysteria2",tag:"hy2-out",server:$s,server_port:8443,password:$pw,tls:{enabled:true,server_name:$sni,insecure:true,alpn:["h3"]}},{type:"direct",tag:"direct"}],route:{final:"hy2-out"}}' >"$WORK/client.json"; probe_transport hysteria2 "$WORK/client.json" "$SOCKS_PORT" "$ECHO" "$EXIT_IP"; }
+hy2_probe(){ local password="$1"; jq -n --arg s "$ENTRY" --arg pw "$password" --arg sni "$REALITY_SERVER_NAME" '{log:{level:"warn"},inbounds:[{type:"mixed",tag:"in",listen:"0.0.0.0",listen_port:1080}],outbounds:[{type:"hysteria2",tag:"hy2-out",server:$s,server_port:8443,password:$pw,tls:{enabled:true,server_name:$sni,insecure:true,alpn:["h3"]}},{type:"direct",tag:"direct"}],route:{final:"hy2-out"}}' >"$WORK/client.json"; probe_transport hysteria2 "$WORK/client.json" "$SOCKS_PORT" "$ECHO" "$EXIT_IP"; }
 hook_probe(){  # the reconciler's >=2 evidence: vless(user2) + hy2
-  local a b; a="$(vless_probe "$U2_UUID" "$U2_SID")"; b="$(hy2_probe)"
+  local a b; a="$(vless_probe "$U2_UUID" "$U2_SID")"; b="$(hy2_probe "$U2_HY2")"
   jq -sc '.' <<<"$a"$'\n'"$b"
 }
 export RECONCILE_VERIFY_EXIT=hook_verify_exit RECONCILE_APPLY_CMD=hook_apply RECONCILE_PROBE_CMD=hook_probe
@@ -136,30 +136,31 @@ status(){ "${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$1" | jq 
 
 # ---------------------------------------------------------------------------
 step "R1 before ban includes both users"
-REV1="$("${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/reality-users" | jq -r .revision)"
-"${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/reality-users" | jq -e --arg u "$U1_UUID" 'any(.users[];.uuid==$u)' >/dev/null || die "R1 missing user1"
+REV1="$("${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/access-users" | jq -r .revision)"
+"${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/access-users" | jq -e --arg u "$U1_UUID" --arg p "$U1_HY2" 'any(.users[];.uuid==$u and .hysteria2_password==$p)' >/dev/null || die "R1 missing user1 personal credentials"
 
 step "reconcile #1: demote pair -> activate exit -> activate entry"
 reconcile_pair "$ENTRY_ID" "$EXIT_ID" || die "reconcile #1 failed"
 [ "$(status "$EXIT_ID")" = active ] && [ "$(status "$ENTRY_ID")" = active ] || die "pair not both active after reconcile #1 (exit=$(status "$EXIT_ID") entry=$(status "$ENTRY_ID"))"
 vless_probe "$U1_UUID" "$U1_SID" | verified || die "user1 vless should tunnel after reconcile #1"
 vless_probe "$U2_UUID" "$U2_SID" | verified || die "user2 vless should tunnel"
-hy2_probe | verified || die "user2 hy2 should tunnel"
+hy2_probe "$U2_HY2" | verified || die "user2 hy2 should tunnel"
 echo "    both active; both users tunnel; user2 has vless+hy2"
 
 # ---------------------------------------------------------------------------
 step "BAN user1 through the real CP (cancel subscription)"
 "${CURL[@]}" -X POST "$CP/v1/subscriptions/$U1_SUB/cancel" -H "Authorization: Bearer $ADMIN" >/dev/null
-REV2="$("${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/reality-users" | jq -r .revision)"
+REV2="$("${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/access-users" | jq -r .revision)"
 [ "$REV2" != "$REV1" ] || die "revision did not change after ban"
-"${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/reality-users" | jq -e --arg u "$U1_UUID" 'any(.users[];.uuid==$u)|not' >/dev/null || die "banned user1 still in R1"
+"${CURL[@]}" -H "Authorization: Bearer $ADMIN" "$CP/v1/nodes/$ENTRY_ID/access-users" | jq -e --arg u "$U1_UUID" 'any(.users[];.uuid==$u)|not' >/dev/null || die "banned user1 still in access snapshot"
 echo "    revision changed; user1 excluded from R1"
 
 step "reconcile #2: after ban"
 reconcile_pair "$ENTRY_ID" "$EXIT_ID" || die "reconcile #2 failed"
 vless_probe "$U1_UUID" "$U1_SID" | verified && die "BANNED user1 still tunnels vless" || echo "    user1 vless dead"
+hy2_probe "$U1_HY2" | verified && die "BANNED user1 still tunnels hysteria2" || echo "    user1 hysteria2 dead"
 vless_probe "$U2_UUID" "$U2_SID" | verified || die "user2 vless must still tunnel"
-hy2_probe | verified || die "user2 hy2 must still tunnel"
+hy2_probe "$U2_HY2" | verified || die "user2 hy2 must still tunnel"
 echo "    user1 removed; user2 keeps both transports"
 
 step "reconcile #3: idempotent"

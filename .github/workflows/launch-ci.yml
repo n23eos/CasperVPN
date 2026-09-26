@@ -1,0 +1,32 @@
+name: launch-acceptance
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: launch-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  onboarding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: '**/go.sum'
+      - name: Build all services
+        run: make build
+      - name: Production settings guards
+        run: python3 -m unittest discover -s test/launch -p 'test_*.py'
+      - name: PostgreSQL integration, Telegram onboarding, restart and restore
+        run: python3 test/e2e/onboarding.py --integration
+      - name: Install vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Check reachable vulnerabilities in every module
+        run: |
+          for module in packages/contracts packages/platform services/control-plane services/subscription services/billing services/delivery services/telemetry services/orchestrator; do
+            (cd "$module" && govulncheck ./...) || exit 1
+          done

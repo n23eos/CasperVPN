@@ -31,3 +31,10 @@ type Client interface {
 	// PATCH /v1/subscriptions/{id}.
 	SetSubscriptionPeriod(ctx context.Context, subID string, status contracts.SubscriptionStatus, expiresAt time.Time) (contracts.Subscription, error)
 }
+
+// BillingClient is the launch-safe additive control-plane surface. It is split
+// from Client so legacy test adapters and old callers remain source compatible.
+type BillingClient interface {
+	EnsureSubscription(ctx context.Context, userID string, plan contracts.SubscriptionPlan) (contracts.Subscription, error)
+	SetBillingState(ctx context.Context, subID string, state contracts.BillingState) (contracts.Subscription, error)
+}

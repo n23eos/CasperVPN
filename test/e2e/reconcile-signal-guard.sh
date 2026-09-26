@@ -25,11 +25,11 @@ cd "$(pwd)"
 export RECONCILE_LIB_ONLY=true
 source infra/scripts/reconcile_node.sh
 set +e
-# mock CP: record every call; GET reality-users returns a stable revision.
+# mock CP: record every call; GET access-users returns a stable leased snapshot.
 _cp() {
   echo "\$1 \$2" >> "$ACTIONS"
   case "\$1 \$2" in
-    "GET "*"/reality-users") echo '{"revision":"R1","users":[]}' ;;
+    "GET "*"/access-users") echo '{"revision":"R1","valid_until":"2999-01-01T00:00:00Z","users":[{"uuid":"u","short_id":"s","hysteria2_password":"hp"}]}' ;;
     "GET /v1/nodes/"*) echo '{"id":"n","status":"active"}' ;;
   esac
   return 0

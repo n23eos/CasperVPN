@@ -77,6 +77,31 @@ func TestGetNodeErrors(t *testing.T) {
 	}
 }
 
+func TestAccessUsersReadsLeasedPersonalSnapshot(t *testing.T) {
+	deadline := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/nodes/entry-1/access-users" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(contracts.NodeAccessUsers{
+			Revision: "access-r1", ValidUntil: deadline,
+			Users: []contracts.AccessUser{{UUID: "user-b", ShortID: "bb", Hysteria2Password: "hy2-b"}},
+		})
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL, "tok", time.Second).AccessUsers(context.Background(), "entry-1")
+	if err != nil {
+		t.Fatalf("AccessUsers() error: %v", err)
+	}
+	if got.Revision != "access-r1" || !got.ValidUntil.Equal(deadline) || len(got.Users) != 1 || got.Users[0].Hysteria2Password != "hy2-b" {
+		t.Fatalf("snapshot = %+v", got)
+	}
+}
+
 func TestUpdateNodePatchesFullObjectWithBoundedRetry(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

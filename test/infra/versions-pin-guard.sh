@@ -14,6 +14,10 @@ role="$(grep -E '^singbox_version:' infra/ansible/roles/singbox/defaults/main.ym
 if [ "$role" != "$SINGBOX_VERSION" ]; then
   echo "FAIL: ansible role default sing-box ${role} != versions.env ${SINGBOX_VERSION} (drift)" >&2; fail=1
 fi
+inventory="$(grep -E '^singbox_version:' infra/ansible/inventory/group_vars/all.yml.example | sed -E 's/.*"([^"]+)".*/\1/')"
+if [ "$inventory" != "$SINGBOX_VERSION" ]; then
+  echo "FAIL: ansible inventory example sing-box ${inventory} != versions.sh ${SINGBOX_VERSION} (drift)" >&2; fail=1
+fi
 
 # No script anywhere may hardcode a sing-box image version — the pin is the ONLY
 # source. Scan every e2e + infra script.

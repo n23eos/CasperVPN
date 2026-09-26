@@ -3,56 +3,72 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/caspervpn/contracts"
 )
 
-// Link is what the bot hands a user: their subscription URL and a Happ deep-link
-// that imports it in one tap. Both are derived from config/DB per user — no URL
-// or host is hardcoded (CLAUDE.md [ANTI-BLOCK] rule 5).
+// Link is the stable personal subscription URL returned by control-plane.
 type Link struct {
 	SubscriptionURL string
 	HappDeepLink    string
 }
 
-// SubProvider resolves a messenger user to their subscription link. Implemented by
-// a subscription-service client; injected so this package holds no business logic
-// or hardcoded endpoint. ErrNoUser signals an unregistered user.
-type SubProvider interface {
-	SubscriptionLink(ctx context.Context, userID int64) (Link, error)
+// Invoice is safe payment information returned by billing.
+type Invoice struct {
+	ID          string
+	Provider    string
+	PayAddress  string
+	CheckoutURL string
+	Amount      string
+	Currency    string
+	ExpiresAt   time.Time
 }
 
-// ErrNoUser is returned by a SubProvider for an unknown/unregistered user.
-var ErrNoUser = errors.New("telegram: no subscription for user")
+var (
+	ErrNoSubscription = errors.New("telegram: no subscription")
+	ErrNotEligible    = errors.New("telegram: subscription not eligible")
+)
 
-// BotConfig holds the antispam/rate knobs and reply copy. Defaults are applied by
-// NewBot when zero.
+// Onboarding is the self-service business surface used by the bot. Every method
+// binds identity to senderID supplied by Telegram, never to command arguments.
+type Onboarding interface {
+	EnsureUser(ctx context.Context, senderID int64) error
+	CreateInvoice(ctx context.Context, senderID, updateID int64, plan contracts.SubscriptionPlan, currency string) (Invoice, error)
+	SubscriptionLink(ctx context.Context, senderID int64) (Link, error)
+}
+
 type BotConfig struct {
-	RatePerSec int
-	Burst      int
-	Cooldown   time.Duration
-	// Now is injectable for deterministic tests; nil => time.Now.
-	Now func() time.Time
+	RatePerSec      int
+	Burst           int
+	Cooldown        time.Duration
+	DefaultPlan     contracts.SubscriptionPlan
+	DefaultCurrency string
+	Now             func() time.Time
 }
 
-// Bot serves subscription links over one messenger network via a BotAPI.
 type Bot struct {
-	api      BotAPI
-	provider SubProvider
-	lim      *limiter
+	api        BotAPI
+	onboarding Onboarding
+	lim        *limiter
+	plan       contracts.SubscriptionPlan
+	currency   string
 }
 
-// Default rate/antispam tunables (named — no magic numbers).
 const (
 	defaultRatePerSec = 1
 	defaultBurst      = 5
 	defaultCooldown   = 3 * time.Second
 )
 
-// NewBot builds a bot. api and provider are required.
-func NewBot(api BotAPI, provider SubProvider, cfg BotConfig) (*Bot, error) {
-	if api == nil || provider == nil {
-		return nil, errors.New("telegram: api and provider required")
+var currencyPattern = regexp.MustCompile(`^[A-Z0-9_]{2,16}$`)
+
+func NewBot(api BotAPI, onboarding Onboarding, cfg BotConfig) (*Bot, error) {
+	if api == nil || onboarding == nil {
+		return nil, errors.New("telegram: api and onboarding required")
 	}
 	if cfg.RatePerSec <= 0 {
 		cfg.RatePerSec = defaultRatePerSec
@@ -63,61 +79,120 @@ func NewBot(api BotAPI, provider SubProvider, cfg BotConfig) (*Bot, error) {
 	if cfg.Cooldown <= 0 {
 		cfg.Cooldown = defaultCooldown
 	}
+	if !cfg.DefaultPlan.Valid() {
+		cfg.DefaultPlan = contracts.SubscriptionPlanBasic
+	}
+	cfg.DefaultCurrency = strings.ToUpper(strings.TrimSpace(cfg.DefaultCurrency))
+	if !currencyPattern.MatchString(cfg.DefaultCurrency) {
+		return nil, errors.New("telegram: default currency is invalid")
+	}
 	return &Bot{
-		api:      api,
-		provider: provider,
-		lim:      newLimiter(cfg.RatePerSec, cfg.Burst, cfg.Cooldown, cfg.Now),
+		api:        api,
+		onboarding: onboarding,
+		lim:        newLimiter(cfg.RatePerSec, cfg.Burst, cfg.Cooldown, cfg.Now),
+		plan:       cfg.DefaultPlan,
+		currency:   cfg.DefaultCurrency,
 	}, nil
 }
 
-// command extracts the leading command word ("/get foo" -> "/get"), lowercased.
 func command(text string) string {
-	f := strings.Fields(strings.TrimSpace(text))
-	if len(f) == 0 {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 {
 		return ""
 	}
-	return strings.ToLower(f[0])
+	cmd := strings.ToLower(fields[0])
+	if i := strings.IndexByte(cmd, '@'); i > 0 {
+		cmd = cmd[:i]
+	}
+	return cmd
 }
 
-// HandleUpdate processes one inbound update: rate-limit + antispam, then dispatch.
-// It replies via the BotAPI and returns any send error (nil when silently dropped
-// by the limiter — dropping is not an error).
-func (b *Bot) HandleUpdate(ctx context.Context, u Update) error {
-	cmd := command(u.Text)
-
-	if !b.lim.allow(u.UserID, cmd) {
-		// Rate-limited or duplicate: drop silently so we don't amplify a flood.
+func (b *Bot) HandleUpdate(ctx context.Context, update Update) error {
+	// Only private messages with an explicit Telegram sender are accepted.
+	// Group chat IDs and text payloads cannot impersonate another account.
+	if update.ChatType != "private" || update.UserID <= 0 || update.ChatID != update.UserID {
+		return nil
+	}
+	cmd := command(update.Text)
+	if !b.lim.allow(update.UserID, cmd, update.UpdateID) {
 		return nil
 	}
 
 	switch cmd {
 	case "/start", "/help":
-		return b.api.Send(ctx, u.ChatID, helpText)
-	case "/get", "/sub", "/subscription":
-		return b.sendSubscription(ctx, u)
-	default:
-		return b.api.Send(ctx, u.ChatID, helpText)
-	}
-}
-
-func (b *Bot) sendSubscription(ctx context.Context, u Update) error {
-	link, err := b.provider.SubscriptionLink(ctx, u.UserID)
-	if err != nil {
-		if errors.Is(err, ErrNoUser) {
-			return b.api.Send(ctx, u.ChatID, notRegisteredText)
+		if err := b.onboarding.EnsureUser(ctx, update.UserID); err != nil {
+			return b.sendTemporaryError(ctx, update.ChatID)
 		}
-		return b.api.Send(ctx, u.ChatID, tempErrorText)
+		return b.api.Send(ctx, update.ChatID, helpText)
+	case "/pay":
+		return b.sendInvoice(ctx, update)
+	case "/get", "/sub", "/subscription":
+		return b.sendSubscription(ctx, update)
+	default:
+		return b.api.Send(ctx, update.ChatID, helpText)
 	}
-	msg := "Your subscription link:\n" + link.SubscriptionURL
-	if link.HappDeepLink != "" {
-		msg += "\n\nOne-tap import (Happ):\n" + link.HappDeepLink
-	}
-	return b.api.Send(ctx, u.ChatID, msg)
 }
 
-// Static reply copy. No secrets, no hardcoded endpoints.
+func (b *Bot) sendInvoice(ctx context.Context, update Update) error {
+	plan, currency, ok := b.paymentArgs(update.Text)
+	if !ok {
+		return b.api.Send(ctx, update.ChatID, payUsageText)
+	}
+	invoice, err := b.onboarding.CreateInvoice(ctx, update.UserID, update.UpdateID, plan, currency)
+	if err != nil {
+		return b.sendTemporaryError(ctx, update.ChatID)
+	}
+	paymentTarget := invoice.CheckoutURL
+	if paymentTarget == "" {
+		paymentTarget = invoice.PayAddress
+	}
+	message := fmt.Sprintf("Invoice %s\nAmount: %s %s\nPay: %s\nExpires: %s",
+		invoice.ID, invoice.Amount, invoice.Currency, paymentTarget,
+		invoice.ExpiresAt.UTC().Format(time.RFC3339))
+	return b.api.Send(ctx, update.ChatID, message)
+}
+
+func (b *Bot) paymentArgs(text string) (contracts.SubscriptionPlan, string, bool) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) > 3 {
+		return "", "", false
+	}
+	plan := b.plan
+	currency := b.currency
+	if len(fields) >= 2 {
+		plan = contracts.SubscriptionPlan(strings.ToLower(fields[1]))
+	}
+	if len(fields) == 3 {
+		currency = strings.ToUpper(fields[2])
+	}
+	return plan, currency, plan.Valid() && currencyPattern.MatchString(currency)
+}
+
+func (b *Bot) sendSubscription(ctx context.Context, update Update) error {
+	link, err := b.onboarding.SubscriptionLink(ctx, update.UserID)
+	if err != nil {
+		if errors.Is(err, ErrNoSubscription) || errors.Is(err, ErrNotEligible) {
+			return b.api.Send(ctx, update.ChatID, noSubscriptionText)
+		}
+		return b.sendTemporaryError(ctx, update.ChatID)
+	}
+	message := "Your subscription link:\n" + link.SubscriptionURL
+	if link.HappDeepLink != "" {
+		message += "\n\nOne-tap import (Happ):\n" + link.HappDeepLink
+	}
+	return b.api.Send(ctx, update.ChatID, message)
+}
+
+func (b *Bot) sendTemporaryError(ctx context.Context, chatID int64) error {
+	if err := b.api.Send(ctx, chatID, tempErrorText); err != nil {
+		return err
+	}
+	return nil
+}
+
 const (
-	helpText          = "Send /get to receive your current subscription link and one-tap Happ import. Links rotate automatically — always fetch a fresh one with /get."
-	notRegisteredText = "No active subscription found for this account. Complete signup first, then send /get."
-	tempErrorText     = "Temporarily unable to fetch your link. Please try /get again in a moment."
+	helpText           = "Commands:\n/start - create or restore your account\n/pay [basic|unlimited] [currency] - create a payment invoice\n/get - receive your current subscription link"
+	payUsageText       = "Usage: /pay [basic|unlimited] [currency]"
+	noSubscriptionText = "No eligible subscription is available. Send /pay to create an invoice, then use /get after payment is confirmed."
+	tempErrorText      = "The service is temporarily unavailable. Please try again."
 )

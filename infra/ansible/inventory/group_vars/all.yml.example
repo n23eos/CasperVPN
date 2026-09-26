@@ -5,7 +5,7 @@
 # actual secrets come from vault/env, not from committed files.
 
 # sing-box core — keep in lockstep with roles/singbox/defaults/main.yml (canonical pin)
-singbox_version: "1.11.11"
+singbox_version: "1.14.2"
 
 # telemetry + control-plane endpoints (your infra; not mimicry)
 telemetry_ingest_url: "http://telemetry:8085"

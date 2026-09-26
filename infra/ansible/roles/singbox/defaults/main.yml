@@ -5,7 +5,7 @@
 # CANONICAL sing-box version pin for the whole repo. It MUST stay in lockstep
 # with .github/workflows/subscription.yml (env.SINGBOX_VERSION) so the fleet and
 # the subscription `sing-box check` render/validate against the same schema.
-singbox_version: "1.11.11"
+singbox_version: "1.14.2"
 singbox_download_base: "https://github.com/SagerNet/sing-box/releases/download"
 
 singbox_user: "sing-box"

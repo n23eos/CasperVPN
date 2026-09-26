@@ -389,6 +389,55 @@ func (m *markFailStore) MarkSettlementActivated(context.Context, string) error {
 	return fmt.Errorf("simulated marker write failure")
 }
 
+// crashAfterApplyStore reproduces the real crash window: control-plane accepted
+// the new period, but neither the activation marker nor the final invoice status
+// became durable. Recovery must resend the exact saved target, not calculate a
+// second period from the already advanced schedule.
+type crashAfterApplyStore struct {
+	*store.Memory
+	failComplete bool
+}
+
+func (s *crashAfterApplyStore) MarkSettlementActivated(context.Context, string) error {
+	return fmt.Errorf("simulated crash before activation marker")
+}
+
+func (s *crashAfterApplyStore) CompleteBillingDelivery(ctx context.Context, id string) error {
+	if s.failComplete {
+		s.failComplete = false
+		return fmt.Errorf("simulated crash before invoice completion")
+	}
+	return s.Memory.CompleteBillingDelivery(ctx, id)
+}
+
+func TestSettle_CrashAfterRemoteApplyRecoveryKeepsThirtyDays(t *testing.T) {
+	fake := seededFakeCP(t, "acct-1")
+	clk := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clk }
+	catalog := plan.NewCatalog(plan.Plan{
+		ID: contracts.SubscriptionPlanBasic, Duration: 30 * day, Grace: 3 * day,
+		Prices: map[string]string{"BTC": "0.0001"},
+	})
+	repo := &crashAfterApplyStore{Memory: store.NewMemoryWithClock(now), failComplete: true}
+	act := subscription.NewActivator(fake, catalog, repo, now)
+	proc := NewProcessor(repo, act, 0, now)
+	seedPending(t, repo.Memory, "inv-1", "acct-1", clk.Add(time.Hour))
+
+	if err := proc.Process(context.Background(), settledEvent("d1")); err == nil {
+		t.Fatal("expected the simulated crash window to leave settlement unfinished")
+	}
+	if got, want := subExpiry(t, fake, "acct-1"), clk.Add(30*day); !got.Equal(want) {
+		t.Fatalf("expiry after first remote apply = %v, want %v", got, want)
+	}
+
+	if _, err := proc.Reconcile(context.Background(), clk, leaseFor, batch); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got, want := subExpiry(t, fake, "acct-1"), clk.Add(30*day); !got.Equal(want) {
+		t.Fatalf("expiry after recovery = %v, want %v (same saved period)", got, want)
+	}
+}
+
 // flakyOnceCP fails the first SetSubscriptionPeriod (create has already succeeded),
 // simulating a transient activation failure mid-settle.
 type flakyOnceCP struct {
@@ -402,4 +451,12 @@ func (c *flakyOnceCP) SetSubscriptionPeriod(ctx context.Context, subID string, s
 		return contracts.Subscription{}, fmt.Errorf("simulated transient set-period failure")
 	}
 	return c.Fake.SetSubscriptionPeriod(ctx, subID, status, expiresAt)
+}
+
+func (c *flakyOnceCP) SetBillingState(ctx context.Context, subID string, state contracts.BillingState) (contracts.Subscription, error) {
+	c.setCalls++
+	if c.setCalls == 1 {
+		return contracts.Subscription{}, fmt.Errorf("simulated transient billing-state failure")
+	}
+	return c.Fake.SetBillingState(ctx, subID, state)
 }

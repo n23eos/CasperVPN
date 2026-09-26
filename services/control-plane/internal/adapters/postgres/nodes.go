@@ -166,6 +166,12 @@ func (s *NodeStore) SetStatus(ctx context.Context, id string, status contracts.N
 //
 // Any failed check rolls back with domain.ErrConflict (node stays provisioning).
 func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
+	return s.activate(ctx, id, expectedRevision, "", evidence)
+}
+func (s *NodeStore) ActivateAccess(ctx context.Context, id, revision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
+	return s.activate(ctx, id, "", revision, evidence)
+}
+func (s *NodeStore) activate(ctx context.Context, id, expectedRevision, accessRevision string, evidence contracts.NodeActivationEvidence) (contracts.Node, contracts.NodeStatus, error) {
 	var activated contracts.Node
 	var prev contracts.NodeStatus
 	err := withSerializableTx(ctx, s.pool, func(q querier) error {
@@ -209,12 +215,28 @@ func (s *NodeStore) Activate(ctx context.Context, id, expectedRevision string, e
 				return fmt.Errorf("%w: paired exit of %s is %s, not active", domain.ErrConflict, id, exitStatus)
 			}
 
-			users, err := queryEligibleRealityUsersForUpdate(ctx, q)
-			if err != nil {
-				return err
+			requireAccess := accessRevision != ""
+			for _, t := range n.Transports {
+				if t.Enabled && t.Type == contracts.TransportHysteria2 {
+					requireAccess = true
+				}
 			}
-			if rev := contracts.RealityUsersRevision(users); rev != expectedRevision {
-				return fmt.Errorf("%w: allow-list revision changed (have %s, expected %s)", domain.ErrConflict, rev, expectedRevision)
+			if requireAccess {
+				snapshot, err := queryEligibleAccessUsers(ctx, q, true)
+				if err != nil {
+					return err
+				}
+				if accessRevision == "" || snapshot.Revision != accessRevision {
+					return domain.ErrConflict
+				}
+			} else {
+				users, err := queryEligibleRealityUsersForUpdate(ctx, q)
+				if err != nil {
+					return err
+				}
+				if contracts.RealityUsersRevision(users) != expectedRevision {
+					return domain.ErrConflict
+				}
 			}
 		}
 

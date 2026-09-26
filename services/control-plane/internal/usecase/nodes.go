@@ -232,3 +232,17 @@ func (s *NodeService) setStatusIfChanged(ctx context.Context, id string, to cont
 	s.queue.EnqueueNode(id)
 	return prev, true, nil
 }
+
+func (s *NodeService) ActivateAccess(ctx context.Context, id, revision string, evidence contracts.NodeActivationEvidence, actor string) (contracts.Node, error) {
+	a, ok := s.activator.(domain.AccessNodeActivator)
+	if !ok {
+		return contracts.Node{}, domain.ErrConflict
+	}
+	n, prev, err := a.ActivateAccess(ctx, id, revision, evidence)
+	if err != nil {
+		return contracts.Node{}, err
+	}
+	_ = s.recordRotation(ctx, id, &prev, n.Status, "activate", n.EntryIP, actor)
+	s.queue.EnqueueNode(id)
+	return n, nil
+}

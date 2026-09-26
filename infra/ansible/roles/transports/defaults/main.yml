@@ -29,6 +29,16 @@ hysteria2_insecure_e2e: false
 
 # per-user VLESS users (uuid + optional personal short_id) — filled by control-plane.
 reality_users: []
+# Per-user Hysteria2 admission. A node-level password is never accepted by the
+# inbound; every eligible user receives an independent password from control-plane.
+hysteria2_users: []
+
+# Access snapshot lease. A successful controller sync refreshes this deadline.
+# The node watchdog stops sing-box if the lease is missing, malformed or expired.
+access_snapshot_revision: ""
+access_snapshot_valid_until: ""
+access_lease_file: "/etc/caspervpn/access-lease.json"
+access_lease_watchdog_bin: "/usr/local/bin/casper-access-lease-watchdog"
 
 # optional entry->exit chaining. When set on an entry, decrypted client traffic
 # is forwarded to the exit endpoint (server IP comes from provisioning, not code).

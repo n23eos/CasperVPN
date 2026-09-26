@@ -18,6 +18,10 @@ sub=""; for a in "$@"; do case "$a" in -chdir=*) ;; -*) ;; *) sub="$a"; break;; 
 case "$sub" in
   destroy) [ "${FAKE_DESTROY_FAIL:-0}" = 1 ] && exit 1 || exit 0 ;;
   output)  exit 1 ;;   # node_down must NOT depend on terraform output
+  workspace)
+    case "$*" in *'workspace show'*) printf '%s\n' "${TF_WORKSPACE:?}";; esac
+    exit 0
+    ;;
   *)       exit 0 ;;   # init / workspace
 esac
 SH

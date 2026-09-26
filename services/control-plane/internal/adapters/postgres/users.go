@@ -10,27 +10,29 @@ import (
 
 	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/domain"
+	"github.com/caspervpn/control-plane/internal/secret"
 )
 
 const userColumns = `id, telegram_id, email, status, reality_short_id, vless_uuid,
-	private_key, subscription_id, device_limit, quota_bytes, used_bytes, created_at, updated_at`
+	private_key, subscription_id, device_limit, quota_bytes, used_bytes, created_at, updated_at, hysteria2_password`
 
 // UserStore persists accounts and their personal isolation secrets.
 type UserStore struct {
-	q querier
+	q    querier
+	pool *pgxpool.Pool
 }
 
 // NewUserStore builds a UserStore.
-func NewUserStore(pool *pgxpool.Pool) *UserStore { return &UserStore{q: pool} }
+func NewUserStore(pool *pgxpool.Pool) *UserStore { return &UserStore{q: pool, pool: pool} }
 
 // Create inserts a user with their personal isolation secrets.
 func (s *UserStore) Create(ctx context.Context, u contracts.User) error {
 	_, err := s.q.Exec(ctx, `
 		INSERT INTO users (`+userColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		u.ID, u.TelegramID, u.Email, string(u.Status), u.RealityShortID, u.UUID,
 		u.PrivateKey, u.SubscriptionID, u.DeviceLimit, int64(u.QuotaBytes), int64(u.UsedBytes),
-		u.CreatedAt, u.UpdatedAt)
+		u.CreatedAt, u.UpdatedAt, u.Hysteria2Password)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return domain.ErrConflict
@@ -64,10 +66,24 @@ func (s *UserStore) Update(ctx context.Context, u contracts.User) error {
 
 // RotateSecrets swaps the personal secrets atomically and returns the new user.
 func (s *UserStore) RotateSecrets(ctx context.Context, id, shortID, uuid, privKey string) (contracts.User, error) {
-	row := s.q.QueryRow(ctx, `
-		UPDATE users SET reality_short_id=$2, vless_uuid=$3, private_key=$4, updated_at=now()
-		WHERE id=$1 RETURNING `+userColumns, id, shortID, uuid, privKey)
-	return scanUser(row)
+	hy2, err := secret.Token()
+	if err != nil {
+		return contracts.User{}, err
+	}
+	var u contracts.User
+	err = withTx(ctx, s.pool, func(q querier) error {
+		var e error
+		u, e = scanUser(q.QueryRow(ctx, `UPDATE users SET reality_short_id=$2,vless_uuid=$3,private_key=$4,hysteria2_password=$5,updated_at=now() WHERE id=$1 RETURNING `+userColumns, id, shortID, uuid, privKey, hy2))
+		if e != nil {
+			return e
+		}
+		if _, e = q.Exec(ctx, `UPDATE subscriptions SET token_hash='revoked:'||id::text||':'||clock_timestamp()::text WHERE user_id=$1`, id); e != nil {
+			return e
+		}
+		_, e = q.Exec(ctx, `DELETE FROM subscription_delivery_tokens WHERE subscription_id IN(SELECT id FROM subscriptions WHERE user_id=$1)`, id)
+		return e
+	})
+	return u, err
 }
 
 // AllActiveIDs lists ids of active users (rebuild candidates).
@@ -103,7 +119,7 @@ FROM users u
 JOIN subscriptions sub ON sub.id = u.subscription_id
 WHERE u.status = 'active'
   AND sub.status IN ('active', 'trialing', 'past_due')
-  AND (sub.expires_at IS NULL OR sub.expires_at > now())
+  AND (COALESCE(sub.grace_until,sub.expires_at) IS NULL OR COALESCE(sub.grace_until,sub.expires_at) > now())
 ORDER BY u.vless_uuid`
 
 // forUpdate locks the eligible users' and subscriptions' rows. Activation uses
@@ -147,7 +163,7 @@ func scanUser(row pgx.Row) (contracts.User, error) {
 		quota, used int64
 	)
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Email, &status, &u.RealityShortID, &u.UUID,
-		&u.PrivateKey, &u.SubscriptionID, &u.DeviceLimit, &quota, &used, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		&u.PrivateKey, &u.SubscriptionID, &u.DeviceLimit, &quota, &used, &u.CreatedAt, &u.UpdatedAt, &u.Hysteria2Password); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return contracts.User{}, domain.ErrNotFound
 		}
@@ -157,4 +173,8 @@ func scanUser(row pgx.Row) (contracts.User, error) {
 	u.QuotaBytes = uint64(quota)
 	u.UsedBytes = uint64(used)
 	return u, nil
+}
+
+func (s *UserStore) GetByTelegram(ctx context.Context, id int64) (contracts.User, error) {
+	return scanUser(s.q.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE telegram_id=$1`, id))
 }

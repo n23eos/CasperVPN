@@ -41,7 +41,13 @@ func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
-	var patch contracts.User
+	// PATCH starts from the current account. A status-only ban must not erase
+	// Telegram identity, quotas, or limits and create a second account on /get.
+	patch, err := h.users.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	if err := decodeJSON(r, &patch); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return

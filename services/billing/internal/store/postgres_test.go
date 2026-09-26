@@ -40,11 +40,49 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	// the same DB — would pollute results and make the suite order-dependent. Start
 	// every test from a clean slate.
 	if _, err := pool.Exec(context.Background(),
-		`TRUNCATE settlements, invoices, seen_events, schedules RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE billing_deliveries, invoice_intents, settlements, invoices, seen_events, schedules RESTART IDENTITY CASCADE`); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v", err)
 	}
 	return pool
+}
+
+func TestPostgres_StageInvoiceCreditPersistsOneFixedTarget(t *testing.T) {
+	pool := newTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+	repo := store.NewPostgres(pool)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedPGInvoice(t, pool, repo, "fixed-target", now.Add(time.Hour))
+	first, err := repo.StageInvoiceCredit(ctx, "fixed-target", "sub-fixed", "acct-pg", now, 30*24*time.Hour, 3*24*time.Hour)
+	if err != nil {
+		t.Fatalf("stage first: %v", err)
+	}
+	replay, err := repo.StageInvoiceCredit(ctx, "fixed-target", "sub-fixed", "acct-pg", now.Add(10*24*time.Hour), 30*24*time.Hour, 3*24*time.Hour)
+	if err != nil {
+		t.Fatalf("stage replay: %v", err)
+	}
+	if replay.ID != first.ID || replay.Revision != 1 || !replay.ExpiresAt.Equal(now.Add(30*24*time.Hour)) {
+		t.Fatalf("replay changed durable target: first=%+v replay=%+v", first, replay)
+	}
+	sched, err := repo.GetSchedule(ctx, "sub-fixed")
+	if err != nil || sched.Plan != "basic" {
+		t.Fatalf("persisted schedule plan = %q err=%v, want basic", sched.Plan, err)
+	}
+	expiry, staged, err := repo.StageScheduleTransition(ctx, "sub-fixed", first.Revision, "expired", now.Add(34*24*time.Hour))
+	if err != nil || !staged || expiry.Plan != "basic" {
+		t.Fatalf("expiry snapshot = %+v staged=%t err=%v, want persisted basic plan", expiry, staged, err)
+	}
+	if err := repo.CompleteBillingDelivery(ctx, first.ID); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := repo.CompleteBillingDelivery(ctx, expiry.ID); err != nil {
+		t.Fatalf("complete expiry: %v", err)
+	}
+	inv, err := repo.GetInvoice(ctx, "fixed-target")
+	if err != nil || inv.Status != model.StatusSettled {
+		t.Fatalf("invoice after completion = %+v err=%v", inv, err)
+	}
 }
 
 // TestPostgres_InvoiceSurvivesRestart is the core durability guarantee: an invoice

@@ -64,7 +64,7 @@ func authMiddleware(token string) func(http.Handler) http.Handler {
 				return
 			}
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/caspervpn/billing/internal/controlplane"
+	"github.com/caspervpn/billing/internal/model"
 	"github.com/caspervpn/billing/internal/plan"
 	"github.com/caspervpn/billing/internal/store"
 	"github.com/caspervpn/contracts"
@@ -187,5 +188,61 @@ func TestActivate_RenewAfterLapseExtendsFromNow(t *testing.T) {
 	want := renewNow.Add(30 * day)
 	if !second.ExpiresAt.Equal(want) {
 		t.Fatalf("lapsed renew expiry = %v, want %v (extend from now)", second.ExpiresAt, want)
+	}
+}
+
+func TestDeliver_OutOfOrderExpiryPreservesUpgradePlan(t *testing.T) {
+	fake, acct := seededFake(t)
+	ctx := context.Background()
+	sub, err := fake.EnsureSubscription(ctx, acct, contracts.SubscriptionPlanBasic)
+	if err != nil {
+		t.Fatalf("ensure subscription: %v", err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(30 * day)
+	graceUntil := expiresAt.Add(3 * day)
+	if _, err := fake.SetBillingState(ctx, sub.ID, contracts.BillingState{
+		Revision: 1, Plan: contracts.SubscriptionPlanBasic,
+		Status: contracts.SubscriptionStatusActive, ExpiresAt: expiresAt, GraceUntil: graceUntil,
+	}); err != nil {
+		t.Fatalf("seed billing state: %v", err)
+	}
+
+	repo := store.NewMemoryWithClock(func() time.Time { return now })
+	if err := repo.UpsertSchedule(ctx, model.Schedule{
+		SubID: sub.ID, AnonUserID: acct, Revision: 1, Plan: string(contracts.SubscriptionPlanBasic),
+		Status: string(contracts.SubscriptionStatusActive), ExpiresAt: expiresAt, GraceUntil: graceUntil,
+	}); err != nil {
+		t.Fatalf("seed schedule: %v", err)
+	}
+	if err := repo.CreateInvoice(ctx, model.Invoice{
+		ID: "upgrade", AnonUserID: acct, Plan: string(contracts.SubscriptionPlanUnlimited),
+		Status: model.StatusPending,
+	}); err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+	upgrade, err := repo.StageInvoiceCredit(ctx, "upgrade", sub.ID, acct, now, 30*day, 3*day)
+	if err != nil {
+		t.Fatalf("stage upgrade: %v", err)
+	}
+	expiry, staged, err := repo.StageScheduleTransition(ctx, sub.ID, upgrade.Revision, string(contracts.SubscriptionStatusExpired), now)
+	if err != nil || !staged {
+		t.Fatalf("stage expiry: staged=%t err=%v", staged, err)
+	}
+
+	act := NewActivator(fake, plan.NewCatalog(), repo, func() time.Time { return now })
+	if _, err := act.Deliver(ctx, expiry); err != nil {
+		t.Fatalf("deliver newer expiry first: %v", err)
+	}
+	if _, err := act.Deliver(ctx, upgrade); err != nil {
+		t.Fatalf("deliver stale upgrade second: %v", err)
+	}
+	got, ok := fake.Subscription(sub.ID)
+	if !ok {
+		t.Fatal("subscription missing")
+	}
+	if got.BillingRevision != expiry.Revision || got.Plan != contracts.SubscriptionPlanUnlimited || got.Status != contracts.SubscriptionStatusExpired {
+		t.Fatalf("final subscription = rev %d plan %q status %q, want rev %d unlimited expired",
+			got.BillingRevision, got.Plan, got.Status, expiry.Revision)
 	}
 }

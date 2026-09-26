@@ -1,8 +1,5 @@
-// Package aggregate turns a stream of anonymous FieldSignals into per-(region,
-// transport) verdicts and control-plane recommendations. Its central defence
-// against data poisoning is SOURCE-DIVERSITY counting: verdicts are driven by the
-// number of DISTINCT coarse sources that agree, not by the raw signal count. One
-// attacker — however many signals it sends — is one voice.
+// Package aggregate computes advisory statistics from anonymous field reports.
+// Client-provided source fields are unverified and must never authorize actions.
 package aggregate
 
 import (
@@ -17,9 +14,8 @@ import (
 // weight, not a stored identity.
 type SourceKey string
 
-// sourceKey derives the diversity bucket for a signal. Attackers can forge these
-// fields, but forging N distinct ASNs is far costlier than sending N signals — which
-// is exactly the asymmetry the verdict thresholds exploit.
+// sourceKey groups self-reported origins for advisory statistics only.
+// Different client-supplied ASNs do not prove distinct physical senders.
 func sourceKey(s contracts.FieldSignal) SourceKey {
 	if s.ASN > 0 {
 		return SourceKey("asn:" + strconv.Itoa(s.ASN))

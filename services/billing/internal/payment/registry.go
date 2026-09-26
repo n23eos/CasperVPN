@@ -39,6 +39,22 @@ func (r *Registry) Gateways() []Gateway {
 	return r.order
 }
 
+// Select deterministically chooses one provider before any durable reservation or
+// remote side effect. Once selected, retries remain pinned to this provider.
+func (r *Registry) Select(preferred, currency string) (Gateway, error) {
+	if preferred != "" {
+		if g, ok := r.byName[preferred]; ok && g.SupportsCurrency(currency) {
+			return g, nil
+		}
+	}
+	for _, g := range r.order {
+		if g.SupportsCurrency(currency) {
+			return g, nil
+		}
+	}
+	return nil, ErrNoGateway
+}
+
 // CreateInvoice tries each gateway that supports the currency, in registration
 // order, until one succeeds. If a preferred provider is given it is tried first;
 // if it fails, the others still get a chance (failover).

@@ -27,6 +27,21 @@ CREATE TABLE IF NOT EXISTS invoices (
     expires_at          TIMESTAMPTZ NOT NULL
 );
 
+-- Durable client idempotency reservation. The stable order_id is chosen before
+-- contacting the provider and is used to recover an ambiguous remote result.
+CREATE TABLE IF NOT EXISTS invoice_intents (
+    idempotency_key TEXT        PRIMARY KEY,
+    request_hash    TEXT        NOT NULL,
+    order_id        TEXT        NOT NULL UNIQUE,
+    provider        TEXT        NOT NULL,
+    anon_user_id    TEXT        NOT NULL,
+    plan            TEXT        NOT NULL,
+    currency        TEXT        NOT NULL,
+    amount          TEXT        NOT NULL,
+    state           TEXT        NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL
+);
+
 -- Open invoices are polled every cycle; index the hot predicate.
 CREATE INDEX IF NOT EXISTS invoices_status_idx ON invoices (status);
 
@@ -89,10 +104,49 @@ CREATE INDEX IF NOT EXISTS settlements_recover_idx ON settlements (claimed_at, r
 CREATE TABLE IF NOT EXISTS schedules (
     sub_id       TEXT        PRIMARY KEY,
     anon_user_id TEXT        NOT NULL,
+    revision     BIGINT      NOT NULL DEFAULT 0,
+    plan         TEXT        NOT NULL DEFAULT '',
     status       TEXT        NOT NULL,               -- contracts.SubscriptionStatus
     expires_at   TIMESTAMPTZ NOT NULL,
     grace_until  TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE schedules ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE schedules ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT '';
+
+-- Durable absolute control-plane writes. A credit row and the corresponding
+-- schedule revision are inserted in one transaction. invoice_id uniqueness makes
+-- one invoice one period; (sub_id, revision) makes the revision stream monotonic.
+CREATE TABLE IF NOT EXISTS billing_deliveries (
+    id           TEXT        PRIMARY KEY,
+    invoice_id   TEXT        UNIQUE REFERENCES invoices (id) ON DELETE CASCADE,
+    sub_id       TEXT        NOT NULL,
+    anon_user_id TEXT        NOT NULL,
+    revision     BIGINT      NOT NULL,
+    plan         TEXT        NOT NULL DEFAULT '',
+    status       TEXT        NOT NULL,
+    expires_at   TIMESTAMPTZ NOT NULL,
+    grace_until  TIMESTAMPTZ NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL,
+    delivered_at TIMESTAMPTZ,
+    leased_until TIMESTAMPTZ,
+    UNIQUE (sub_id, revision)
+);
+ALTER TABLE billing_deliveries ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT '';
+
+-- A rolling upgrade may already have invoice deliveries with a plan while the
+-- older schedule row has none. Preserve the newest known full billing snapshot so
+-- a later expiry revision cannot erase that paid plan at the control-plane fence.
+UPDATE schedules AS s
+SET plan = latest.plan
+FROM (
+    SELECT DISTINCT ON (sub_id) sub_id, plan
+    FROM billing_deliveries
+    WHERE plan <> ''
+    ORDER BY sub_id, revision DESC
+) AS latest
+WHERE s.sub_id = latest.sub_id AND s.plan = '';
+CREATE INDEX IF NOT EXISTS billing_deliveries_pending_idx
+    ON billing_deliveries (created_at, leased_until) WHERE delivered_at IS NULL;
 
 -- DueSchedules filters on status and expiry every sweep cycle.
 CREATE INDEX IF NOT EXISTS schedules_due_idx ON schedules (status, expires_at);

@@ -52,6 +52,20 @@ tf_select_workspace() {
     || terraform -chdir="$dir" workspace new "$TF_WORKSPACE"
 }
 
+# tf_select_existing_workspace <tf-dir> -> select an already-created workspace.
+# Destructive lifecycle operations must never create a workspace implicitly: a
+# missing workspace means the manifest/state identity is broken and we fail before
+# apply/destroy.
+tf_select_existing_workspace() {
+  local dir="$1"
+  terraform -chdir="$dir" workspace select "$TF_WORKSPACE" >/dev/null 2>&1 \
+    || die "terraform workspace not found: ${TF_WORKSPACE}"
+  local selected
+  selected="$(terraform -chdir="$dir" workspace show)"
+  [ "$selected" = "$TF_WORKSPACE" ] \
+    || die "terraform workspace mismatch: selected=${selected}, manifest=${TF_WORKSPACE}"
+}
+
 # backup_state <tf-dir> -> copy this workspace's tfstate to a 0600 backup under
 # run_dir; echo the backup path (empty if no state file yet). The state is the
 # critical teardown artifact, so it is never left world-readable.
@@ -122,4 +136,52 @@ manifest_field() {
   path="$(manifest_path "$run_id")"
   [ -f "$path" ] || die "run manifest not found: $path (needed for teardown)"
   jq -r "$filter" "$path"
+}
+
+# manifest_run_for_node <cp-node-id> -> the unique run containing this CP node.
+# Ambiguous or missing identity is unsafe for any lifecycle mutation.
+manifest_run_for_node() {
+  local node_id="$1" dir path matches=()
+  [ -n "$node_id" ] || die "manifest lookup requires a node id"
+  dir="$(run_dir)"
+  [ -d "$dir" ] || die "run manifest directory not found: $dir"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if jq -e --arg id "$node_id" '.entry.cp_id == $id or .exit.cp_id == $id' "$path" >/dev/null 2>&1; then
+      matches+=("$(basename "$path" .json)")
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.json' ! -name '*.tokens.json' | sort)
+  [ "${#matches[@]}" -eq 1 ] \
+    || die "expected exactly one run manifest for node ${node_id}, found ${#matches[@]}"
+  printf '%s' "${matches[0]}"
+}
+
+# require_manifest_node <run-id> <cp-node-id> <entry|exit|any> validates that
+# the requested CP identity belongs to the selected run before any mutation.
+require_manifest_node() {
+  local run_id="$1" node_id="$2" role="${3:-any}" entry exit
+  entry="$(manifest_field "$run_id" '.entry.cp_id')"
+  exit="$(manifest_field "$run_id" '.exit.cp_id')"
+  case "$role" in
+    entry) [ "$node_id" = "$entry" ] || die "node ${node_id} is not entry for run ${run_id}" ;;
+    exit)  [ "$node_id" = "$exit" ]  || die "node ${node_id} is not exit for run ${run_id}" ;;
+    any)   { [ "$node_id" = "$entry" ] || [ "$node_id" = "$exit" ]; } \
+             || die "node ${node_id} is not present in run ${run_id}" ;;
+    *) die "invalid manifest role: $role" ;;
+  esac
+}
+
+# update_manifest_entry <run-id> <raw-id> <ip> atomically refreshes the
+# post-rotation provider identity while preserving every unrelated manifest field.
+update_manifest_entry() {
+  local run_id="$1" raw_id="$2" ip="$3" path tmp
+  path="$(manifest_path "$run_id")"
+  [ -f "$path" ] || die "run manifest not found: $path"
+  tmp="${path}.tmp.$$"
+  ( umask 077
+    jq --arg raw "$raw_id" --arg ip "$ip" \
+      '.entry.raw_id = $raw | .entry.ip = $ip' "$path" >"$tmp"
+  )
+  chmod 600 "$tmp"
+  mv "$tmp" "$path"
 }

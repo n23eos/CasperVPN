@@ -31,3 +31,11 @@ test/
 .DS_Store
 .idea/
 .vscode/
+
+# Private notes, launch credentials and backups
+**/!notes/
+.launch/
+backups/
+openspec/
+deploy/
+scripts/

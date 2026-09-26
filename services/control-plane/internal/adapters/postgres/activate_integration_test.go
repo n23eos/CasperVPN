@@ -61,11 +61,11 @@ func TestIntegration_ActivateGuardedAndSerialized(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	users, err := userStore.EligibleRealityUsers(ctx)
+	users, err := userStore.EligibleAccessUsers(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rev := contracts.RealityUsersRevision(users)
+	rev := users.Revision
 
 	// stale revision -> conflict, node stays provisioning
 	if _, _, err := nodeStore.Activate(ctx, "en", "stale", ""); !errors.Is(err, domain.ErrConflict) {
@@ -81,7 +81,7 @@ func TestIntegration_ActivateGuardedAndSerialized(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, err := nodeStore.Activate(ctx, "en", rev, "")
+			_, _, err := nodeStore.ActivateAccess(ctx, "en", rev, "")
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -133,11 +133,11 @@ func TestIntegration_ActivateExitThenEntrySequence(t *testing.T) {
 	if err := nodeStore.Create(ctx, exitNode("es-ex", "es-en", contracts.NodeStatusProvisioning)); err != nil {
 		t.Fatal(err)
 	}
-	users, _ := userStore.EligibleRealityUsers(ctx)
-	rev := contracts.RealityUsersRevision(users)
+	users, _ := userStore.EligibleAccessUsers(ctx)
+	rev := users.Revision
 
 	// entry cannot go active while its exit is provisioning.
-	if _, _, err := nodeStore.Activate(ctx, "es-en", rev, ""); !errors.Is(err, domain.ErrConflict) {
+	if _, _, err := nodeStore.ActivateAccess(ctx, "es-en", rev, ""); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("entry before exit: got %v, want ErrConflict", err)
 	}
 	// activate exit first.
@@ -145,7 +145,7 @@ func TestIntegration_ActivateExitThenEntrySequence(t *testing.T) {
 		t.Fatalf("activate exit: %v", err)
 	}
 	// entry now activates.
-	if _, _, err := nodeStore.Activate(ctx, "es-en", rev, ""); err != nil {
+	if _, _, err := nodeStore.ActivateAccess(ctx, "es-en", rev, ""); err != nil {
 		t.Fatalf("activate entry after exit: %v", err)
 	}
 	got, _ := nodeStore.Get(ctx, "es-en")
@@ -184,15 +184,15 @@ func TestIntegration_ActivateEligibilityRaceStaysConsistent(t *testing.T) {
 		if err := nodeStore.Create(ctx, exitNode("rc-ex", entryID, contracts.NodeStatusActive)); err != nil {
 			t.Fatal(err)
 		}
-		users, _ := userStore.EligibleRealityUsers(ctx)
-		rev := contracts.RealityUsersRevision(users)
+		users, _ := userStore.EligibleAccessUsers(ctx)
+		rev := users.Revision
 
 		var wg sync.WaitGroup
 		wg.Add(2)
 		var actErr error
 		go func() {
 			defer wg.Done()
-			_, _, actErr = nodeStore.Activate(ctx, entryID, rev, "")
+			_, _, actErr = nodeStore.ActivateAccess(ctx, entryID, rev, "")
 		}()
 		go func() {
 			defer wg.Done()

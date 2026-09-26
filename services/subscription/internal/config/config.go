@@ -7,7 +7,10 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/caspervpn/platform/envcfg"
@@ -24,6 +27,11 @@ const (
 
 // Config is the fully-resolved service configuration.
 type Config struct {
+	Environment   string
+	PublicBaseURL string
+	// TrustedProxyCIDRs controls which immediate peers may supply X-Forwarded-For.
+	// Empty (the default) trusts no proxy headers.
+	TrustedProxyCIDRs []netip.Prefix
 	// Port is the HTTP listen port (env PORT).
 	Port string
 
@@ -72,6 +80,8 @@ type Config struct {
 func Load() (Config, error) {
 	var e envcfg.Env
 	c := Config{
+		Environment:         e.Str("ENV", "production"),
+		PublicBaseURL:       e.Str("SUBSCRIPTION_PUBLIC_BASE_URL", ""),
 		Port:                e.Str("PORT", defaultPort),
 		ControlPlaneURL:     e.Str("CONTROL_PLANE_URL", ""),
 		ControlPlaneToken:   e.Str("CONTROL_PLANE_TOKEN", ""),
@@ -89,8 +99,36 @@ func Load() (Config, error) {
 	if err := e.Err(); err != nil {
 		return Config{}, err
 	}
+	trusted, err := parseTrustedProxyCIDRs(os.Getenv("SUBSCRIPTION_TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return Config{}, err
+	}
+	c.TrustedProxyCIDRs = trusted
 	if c.ProfileUpdateHours < 1 {
 		return Config{}, fmt.Errorf("config: PROFILE_UPDATE_INTERVAL_HOURS must be >= 1")
+	}
+	if c.Environment != "production" && c.Environment != "dev" && c.Environment != "test" {
+		return Config{}, fmt.Errorf("config: ENV must be production, dev or test")
+	}
+	if c.CacheTTL <= 0 {
+		return Config{}, fmt.Errorf("config: CACHE_TTL must be positive")
+	}
+	if c.Environment == "production" {
+		for _, required := range []struct{ name, value string }{
+			{"DATABASE_URL", c.DatabaseURL}, {"CONTROL_PLANE_URL", c.ControlPlaneURL},
+			{"CONTROL_PLANE_TOKEN", c.ControlPlaneToken}, {"INTERNAL_TOKEN", c.InternalToken},
+			{"SUBSCRIPTION_PUBLIC_BASE_URL", c.PublicBaseURL},
+		} {
+			if required.value == "" {
+				return Config{}, fmt.Errorf("config: %s required in production", required.name)
+			}
+		}
+	}
+	if c.PublicBaseURL != "" {
+		u, err := url.Parse(c.PublicBaseURL)
+		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && (c.Environment == "production" || u.Scheme != "http")) {
+			return Config{}, fmt.Errorf("config: SUBSCRIPTION_PUBLIC_BASE_URL must be an absolute HTTPS URL in production")
+		}
 	}
 
 	rp, err := LoadRoutingPolicy(path)
@@ -117,4 +155,25 @@ func LoadRoutingPolicy(path string) (RoutingPolicy, error) {
 		return RoutingPolicy{}, err
 	}
 	return rp, nil
+}
+
+func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var result []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(entry))
+		if err != nil {
+			return nil, fmt.Errorf("config: SUBSCRIPTION_TRUSTED_PROXY_CIDRS must be comma-separated CIDRs")
+		}
+		if prefix.Addr().Is4In6() {
+			if prefix.Bits() < 96 {
+				return nil, fmt.Errorf("config: mapped IPv4 trusted proxy prefix must have at least 96 bits")
+			}
+			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
+		}
+		result = append(result, prefix.Masked())
+	}
+	return result, nil
 }

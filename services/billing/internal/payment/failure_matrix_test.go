@@ -28,6 +28,14 @@ func (s *failScheduleStore) UpsertSchedule(ctx context.Context, sched model.Sche
 	return s.Repository.UpsertSchedule(ctx, sched)
 }
 
+func (s *failScheduleStore) StageInvoiceCredit(ctx context.Context, invoiceID, subID, userID string, now time.Time, duration, grace time.Duration) (model.BillingDelivery, error) {
+	if s.failNext {
+		s.failNext = false
+		return model.BillingDelivery{}, fmt.Errorf("injected schedule write failure")
+	}
+	return s.Repository.StageInvoiceCredit(ctx, invoiceID, subID, userID, now, duration, grace)
+}
+
 // Failure matrix: a schedule write failure aborts the settlement but KEEPS the claim
 // (never releases it), so a concurrent sweep can't bury the confirmed-but-unactivated
 // invoice; the durable Reconcile pass then finishes it with exactly ONE period —

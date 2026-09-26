@@ -1,10 +1,14 @@
 package btcpay
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -18,6 +22,56 @@ func sign(secret string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+func TestCreateAndLookupUseStableOrderID(t *testing.T) {
+	const orderID = "billing-order-1"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body createReq
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode create: %v", err)
+			}
+			if body.Metadata["orderId"] != orderID {
+				t.Errorf("orderId = %q, want %q", body.Metadata["orderId"], orderID)
+			}
+			_, _ = w.Write([]byte(`{"id":"provider-1","checkoutLink":"https://checkout/1"}`))
+			return
+		}
+		if got := r.URL.Query().Get("orderId"); got != orderID {
+			t.Errorf("lookup orderId = %q, want %q", got, orderID)
+		}
+		_, _ = w.Write([]byte(`[{"id":"provider-1","checkoutLink":"https://checkout/1","amount":"0.00010000","currency":"BTC","createdTime":1767225600,"expirationTime":1767227400,"metadata":{"orderId":"billing-order-1"}}]`))
+	}))
+	defer server.Close()
+	g := New(Config{BaseURL: server.URL, APIKey: "key", StoreID: "store", WebhookSecret: "secret", Currencies: []string{"BTC"}})
+	req := model.CreateInvoiceRequest{OrderID: orderID, AnonUserID: "acct", Plan: "basic", Currency: "BTC", Amount: "0.0001"}
+	created, err := g.CreateInvoice(context.Background(), req)
+	if err != nil || created.ID != orderID {
+		t.Fatalf("create = %+v err=%v, want stable order id", created, err)
+	}
+	found, ok, err := g.LookupInvoice(context.Background(), req)
+	if err != nil || !ok || found.ID != orderID || found.ProviderInvoiceID != "provider-1" {
+		t.Fatalf("lookup = %+v ok=%t err=%v", found, ok, err)
+	}
+}
+
+func TestLookupRejectsInvalidRemoteAmount(t *testing.T) {
+	for _, amount := range []string{"not-a-number", "-0.0001"} {
+		t.Run(amount, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`[{"id":"provider-1","amount":"` + amount + `","currency":"BTC","metadata":{"orderId":"billing-order-1"}}]`))
+			}))
+			defer server.Close()
+			g := New(Config{BaseURL: server.URL, APIKey: "key", StoreID: "store", WebhookSecret: "secret"})
+			_, _, err := g.LookupInvoice(context.Background(), model.CreateInvoiceRequest{
+				OrderID: "billing-order-1", Currency: "BTC", Amount: "0.0001",
+			})
+			if err == nil {
+				t.Fatalf("LookupInvoice accepted invalid remote amount %q", amount)
+			}
+		})
+	}
+}
+
 func newGateway(secret string) *Gateway {
 	return New(Config{
 		BaseURL:       "https://btcpay.example.org",
@@ -29,7 +83,7 @@ func newGateway(secret string) *Gateway {
 // A1: a configured gateway with an empty webhook secret must be rejected at
 // startup, not run with a forgeable (empty-key) HMAC.
 func TestConfigValidate_EmptySecretWithBaseURL(t *testing.T) {
-	cfg := Config{BaseURL: "https://btcpay.example.org", WebhookSecret: ""}
+	cfg := Config{BaseURL: "https://btcpay.example.org", APIKey: "key", StoreID: "store", WebhookSecret: ""}
 	if err := cfg.Validate(); !errors.Is(err, ErrNoWebhookSecret) {
 		t.Fatalf("Validate() = %v, want ErrNoWebhookSecret", err)
 	}
@@ -37,7 +91,7 @@ func TestConfigValidate_EmptySecretWithBaseURL(t *testing.T) {
 	if err := (Config{}).Validate(); err != nil {
 		t.Fatalf("unconfigured Validate() = %v, want nil", err)
 	}
-	if err := (Config{BaseURL: "https://x", WebhookSecret: "s"}).Validate(); err != nil {
+	if err := (Config{BaseURL: "https://x", APIKey: "key", StoreID: "store", WebhookSecret: "s"}).Validate(); err != nil {
 		t.Fatalf("configured Validate() = %v, want nil", err)
 	}
 }

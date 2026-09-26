@@ -9,6 +9,7 @@ func TestLoadDefaults(t *testing.T) {
 	// With no env set, defaults apply and no channel endpoints are present
 	// (unset channels are simply not configured — dynamic, not hardcoded).
 	t.Setenv("PORT", "")
+	t.Setenv("ENV", "dev")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -25,6 +26,7 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadFromEnv(t *testing.T) {
+	t.Setenv("ENV", "dev")
 	t.Setenv("PORT", "9999")
 	t.Setenv("DELIVERY_GITRAW_MIRRORS", "https://a/repo, https://b/repo ,")
 	t.Setenv("DELIVERY_VERIFY_KEYS", "old:AAAA,new:BBBB")
@@ -50,9 +52,41 @@ func TestLoadFromEnv(t *testing.T) {
 }
 
 func TestLoadFailsOnMalformedValues(t *testing.T) {
+	t.Setenv("ENV", "dev")
 	t.Setenv("DELIVERY_BOT_RATE_PER_SEC", "not-an-int")
 	t.Setenv("DELIVERY_BOT_COOLDOWN", "not-a-duration")
 	if _, err := Load(); err == nil {
 		t.Fatal("malformed env values must fail Load, got nil error")
+	}
+}
+
+func TestProductionFailsClosed(t *testing.T) {
+	t.Setenv("ENV", "production")
+	if _, err := Load(); err == nil {
+		t.Fatal("production without stable secrets and bot dependencies must fail")
+	}
+}
+
+func TestEnabledTestBotAllowsHTTPPublicBase(t *testing.T) {
+	t.Setenv("ENV", "test")
+	t.Setenv("DELIVERY_BOT_ENABLED", "true")
+	t.Setenv("DATABASE_URL", "postgres://local/test")
+	t.Setenv("DELIVERY_CONTROL_PLANE_BASE", "http://control-plane")
+	t.Setenv("DELIVERY_CONTROL_PLANE_TOKEN", "cp-token")
+	t.Setenv("DELIVERY_BILLING_BASE", "http://billing")
+	t.Setenv("DELIVERY_BILLING_TOKEN", "billing-token")
+	t.Setenv("DELIVERY_TELEGRAM_BASE", "http://telegram")
+	t.Setenv("DELIVERY_TELEGRAM_TOKEN", "bot-token")
+	t.Setenv("DELIVERY_PUBLIC_SUBSCRIPTION_BASE", "http://subscriptions.example")
+	if _, err := Load(); err != nil {
+		t.Fatalf("test mode should allow local HTTP endpoints: %v", err)
+	}
+}
+
+func TestURLRejectsCredentialsQueryAndFragment(t *testing.T) {
+	for _, raw := range []string{"https://user:pass@example.com", "https://example.com?q=1", "https://example.com/#fragment"} {
+		if err := requireURL("TEST_URL", raw, true); err == nil {
+			t.Fatalf("URL %q must be rejected", raw)
+		}
 	}
 }

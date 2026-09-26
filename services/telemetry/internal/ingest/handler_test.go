@@ -120,3 +120,14 @@ func TestHandleHealth_Accepts(t *testing.T) {
 		t.Fatalf("store has %d health events, want 1", len(got))
 	}
 }
+
+func TestClientOriginCannotBeForgedOrChangedBySourcePort(t *testing.T) {
+	first := httptest.NewRequest(http.MethodPost, "/v1/signals", nil)
+	first.RemoteAddr = "192.0.2.1:1234"
+	second := httptest.NewRequest(http.MethodPost, "/v1/signals", nil)
+	second.RemoteAddr = "192.0.2.1:9876"
+	second.Header.Set("X-Forwarded-For", "198.51.100.99")
+	if clientOrigin(first) != clientOrigin(second) {
+		t.Fatal("same TCP origin bypassed limiter with a port/header change")
+	}
+}

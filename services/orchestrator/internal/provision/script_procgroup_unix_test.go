@@ -44,15 +44,17 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 	marker := filepath.Join(dir, "marker")
 	pidfile := filepath.Join(dir, "child.pid")
 	writeScript(t, dir, "node_rotate.sh",
-		`( sleep 3; touch "`+marker+`" ) &`+"\n"+
+		`( sleep 4; touch "`+marker+`" ) &`+"\n"+
 			`echo $! > "`+pidfile+`"`+"\n"+
 			`sleep 30`)
 
 	// Timeout comfortably exceeds the child fork + pidfile write, but is well under
-	// the child's 3s marker delay, so a correct kill still prevents the marker.
-	s := &ScriptRunner{Dir: dir, Timeout: time.Second}
+	// the child's 4s marker delay, so a correct kill still prevents the marker.
+	// Two seconds leaves enough startup headroom when the full suite runs in
+	// parallel on a small CI host.
+	s := &ScriptRunner{Dir: dir, Timeout: 2 * time.Second}
 	start := time.Now()
-	if err := s.NodeRotate(context.Background(), "node-1"); err == nil {
+	if err := s.NodeRotate(context.Background(), lifecycleNode("node-1")); err == nil {
 		t.Fatal("want timeout error")
 	}
 	if took := time.Since(start); took > 5*time.Second {
@@ -73,7 +75,7 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 	}
 
 	// Its deferred side effect must never happen.
-	time.Sleep(4 * time.Second) // past the child's 3s marker delay
+	time.Sleep(5 * time.Second) // past the child's 4s marker delay
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("marker created after the kill — a descendant kept running")
 	}

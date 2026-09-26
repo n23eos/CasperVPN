@@ -21,6 +21,11 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
+func (p *PostgresStore) Ready(ctx context.Context) error {
+	var exists bool
+	return p.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM telemetry_signals LIMIT 1)").Scan(&exists)
+}
+
 // NewPostgresStore wraps an open pool. Caller owns opening/closing the driver.
 func NewPostgresStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}

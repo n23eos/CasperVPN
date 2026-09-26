@@ -19,6 +19,11 @@ import (
 // on startup, to avoid a migrate-on-boot race between instances.
 type Postgres struct{ db *sql.DB }
 
+func (p *Postgres) Ready(ctx context.Context) error {
+	var exists bool
+	return p.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM subscription_tokens LIMIT 1)").Scan(&exists)
+}
+
 // NewPostgres wraps an already-open *sql.DB. In main, blank-import a driver
 // (github.com/jackc/pgx/v5/stdlib), sql.Open("pgx", DATABASE_URL) and pass it here.
 func NewPostgres(db *sql.DB) *Postgres { return &Postgres{db: db} }

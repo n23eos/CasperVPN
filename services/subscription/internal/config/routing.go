@@ -40,6 +40,8 @@ type RoutingPolicy struct {
 type SingBoxRouting struct {
 	// DNS is a verbatim sing-box "dns" object (optional).
 	DNS json.RawMessage `json:"dns,omitempty"`
+	// DefaultDomainResolver is the explicit resolver for outbound dial domains.
+	DefaultDomainResolver map[string]interface{} `json:"default_domain_resolver,omitempty"`
 	// RuleSets are verbatim entries for route.rule_set (remote geosite/geoip srs).
 	RuleSets []map[string]interface{} `json:"rule_sets,omitempty"`
 	// Rules are verbatim route.rules entries evaluated before Final (e.g. send

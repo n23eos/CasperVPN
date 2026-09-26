@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -26,13 +27,25 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return fmt.Errorf("migrate: acquire conn: %w", err)
 	}
-	defer conn.Release()
+	defer func() {
+		if conn != nil {
+			conn.Release()
+		}
+	}()
 
 	// Serialize migration across instances (defends the startup-race checklist item).
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", advisoryLockKey); err != nil {
 		return fmt.Errorf("migrate: advisory lock: %w", err)
 	}
-	defer func() { _, _ = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey) }()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(cleanup, "SELECT pg_advisory_unlock($1)", advisoryLockKey); err != nil {
+			raw := conn.Hijack()
+			conn = nil
+			_ = raw.Close(cleanup)
+		}
+	}()
 
 	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -74,12 +87,8 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("migrate: read %s: %w", f, err)
 		}
-		if _, err := conn.Exec(ctx, string(body)); err != nil {
+		if err := applyMigration(ctx, conn, version, string(body)); err != nil {
 			return fmt.Errorf("migrate: apply %s: %w", f, err)
-		}
-		if _, err := conn.Exec(ctx,
-			"INSERT INTO schema_migrations (version) VALUES ($1)", version); err != nil {
-			return fmt.Errorf("migrate: record %s: %w", version, err)
 		}
 	}
 	return nil
@@ -98,4 +107,29 @@ func migrationFiles() ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+// The schema and its applied marker must commit together. Embedded migration files
+// retain their standalone BEGIN/COMMIT wrappers for operators; the runner owns the
+// transaction when it executes them.
+func applyMigration(ctx context.Context, conn *pgxpool.Conn, version, body string) error {
+	sql := strings.TrimSpace(body)
+	sql = strings.TrimSpace(strings.TrimPrefix(sql, "BEGIN;"))
+	sql = strings.TrimSpace(strings.TrimSuffix(sql, "COMMIT;"))
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(cleanup)
+	}()
+	if _, err = tx.Exec(ctx, sql); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "INSERT INTO schema_migrations(version) VALUES($1)", version); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

@@ -10,7 +10,7 @@
 {%- set part %}{% include 'inbound_amneziawg.json.j2' %}{% endset -%}
 {%- set ns.inbounds = ns.inbounds + [part] -%}
 {%- endif -%}
-{%- if transports.hysteria2.enabled -%}
+{%- if transports.hysteria2.enabled and hysteria2_users | length > 0 -%}
 {%- set part %}{% include 'inbound_hysteria2.json.j2' %}{% endset -%}
 {%- set ns.inbounds = ns.inbounds + [part] -%}
 {%- endif -%}

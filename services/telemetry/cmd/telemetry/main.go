@@ -57,6 +57,20 @@ func main() {
 		log.Printf("%s: WARNING TELEMETRY_INTERNAL_TOKEN unset — internal endpoints (/v1/health, /v1/aggregates, /v1/recommendations, /metrics) are DISABLED", serviceName)
 	}
 	handler := api.Router(ingestor, queries, coll, cfg.InternalToken)
+	root := http.NewServeMux()
+	root.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if ready, ok := st.(interface{ Ready(context.Context) error }); ok {
+			if err := ready.Ready(ctx); err != nil {
+				http.Error(w, "not ready", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	root.Handle("/", handler)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -65,8 +79,11 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           handler,
+		Handler:           root,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -100,6 +117,9 @@ func newStore(cfg config.Config) (store.Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
@@ -119,7 +139,9 @@ func retentionLoop(ctx context.Context, st store.Store, retention, every time.Du
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			removed, err := st.Prune(context.Background(), now().Add(-retention))
+			pruneCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			removed, err := st.Prune(pruneCtx, now().Add(-retention))
+			cancel()
 			if err != nil {
 				log.Printf("%s: prune error: %v", serviceName, err)
 				continue

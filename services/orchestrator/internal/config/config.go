@@ -49,6 +49,8 @@ type Config struct {
 	// DrainGrace: how long a draining node coexists with its replacement before
 	// it is retired.
 	DrainGrace time.Duration
+	// RotationInterval schedules the next rotation after one completes.
+	RotationInterval time.Duration
 	// MaxActionsPerCycle caps rotate/replace side effects per reconcile cycle so
 	// poisoned input can never stampede the whole fleet (anti-block: diversity).
 	MaxActionsPerCycle int
@@ -81,6 +83,7 @@ func Load() (Config, error) {
 		RecommendationMaxAge: e.Duration("RECOMMENDATION_MAX_AGE", 15*time.Minute),
 		ProbeMaxAge:          e.Duration("PROBE_MAX_AGE", 10*time.Minute),
 		DrainGrace:           e.Duration("DRAIN_GRACE", 30*time.Minute),
+		RotationInterval:     e.Duration("ROTATION_INTERVAL", 24*time.Hour),
 		MaxActionsPerCycle:   1,
 		ProbeEnabled:         e.Bool("PROBE_ENABLED", false),
 		ProbeSource:          e.Str("PROBE_SOURCE", "orchestrator-local"),
@@ -102,6 +105,7 @@ func Load() (Config, error) {
 		{"RECOMMENDATION_MAX_AGE", cfg.RecommendationMaxAge},
 		{"PROBE_MAX_AGE", cfg.ProbeMaxAge},
 		{"DRAIN_GRACE", cfg.DrainGrace},
+		{"ROTATION_INTERVAL", cfg.RotationInterval},
 		{"PROBE_TIMEOUT", cfg.ProbeTimeout},
 	} {
 		if d.val <= 0 {
@@ -128,6 +132,12 @@ func (c Config) Validate() error {
 	}
 	if c.ControlPlaneURL == "" {
 		return fmt.Errorf("config: CONTROL_PLANE_URL is required when DRY_RUN=false")
+	}
+	if c.TelemetryToken == "" {
+		return fmt.Errorf("config: TELEMETRY_TOKEN is required when DRY_RUN=false")
+	}
+	if c.ControlPlaneToken == "" {
+		return fmt.Errorf("config: CONTROL_PLANE_TOKEN is required when DRY_RUN=false")
 	}
 	return nil
 }

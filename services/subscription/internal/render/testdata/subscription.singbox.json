@@ -3,12 +3,14 @@
     "servers": [
       {
         "tag": "proxy-dns",
-        "address": "https://1.1.1.1/dns-query",
+        "type": "https",
+        "server": "1.1.1.1",
         "detour": "proxy"
       },
       {
         "tag": "direct-dns",
-        "address": "https://77.88.8.8/dns-query",
+        "type": "https",
+        "server": "77.88.8.8",
         "detour": "direct"
       }
     ],
@@ -120,6 +122,10 @@
   ],
   "route": {
     "auto_detect_interface": true,
+    "default_domain_resolver": {
+      "server": "proxy-dns",
+      "strategy": "prefer_ipv4"
+    },
     "final": "proxy",
     "rule_set": [
       {

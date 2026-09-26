@@ -1,6 +1,6 @@
 module github.com/caspervpn/orchestrator
 
-go 1.22
+go 1.27.1
 
 require (
 	github.com/caspervpn/contracts v0.0.0

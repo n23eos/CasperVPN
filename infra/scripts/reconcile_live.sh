@@ -87,6 +87,43 @@ rl_converge() {
   return "$rc"
 }
 
+# rl_sync_access <snapshot-file> is the single access convergence seam. Tests
+# replace it without touching a host; production delegates to access_sync.sh.
+rl_sync_access() {
+  local snapshot="$1" hy2_sni node_json reality_names reality_dest
+  node_json="$(cp_get_node "$ENTRY")" || return 1
+  hy2_sni="${HY2_SNI:-${RL_HY2_SNI:-}}"
+  if [ -z "$hy2_sni" ]; then
+    hy2_sni="$(jq -er '
+      first(.transports[] | select(.enabled == true and .type == "hysteria2") | .hysteria2.sni)
+      | select(type == "string" and length > 0)' <<<"$node_json")" \
+      || { log "reconcile-live: enabled hysteria2 SNI missing from node"; return 1; }
+  fi
+  reality_names="$(jq -er 'first(.transports[] | select(.enabled == true and .type == "vless-reality") | .vless_reality.server_names) | join(",") | select(length > 0)' <<<"$node_json")" \
+    || { log "reconcile-live: enabled VLESS server_names missing from node"; return 1; }
+  reality_dest="$(jq -er 'first(.transports[] | select(.enabled == true and .type == "vless-reality") | .vless_reality.dest) | select(length > 0)' <<<"$node_json")" \
+    || { log "reconcile-live: enabled VLESS destination missing from node"; return 1; }
+  RUN_ID="$RUN_ID" NODE="$ENTRY" ACCESS_SNAPSHOT_FILE="$snapshot" \
+    HY2_SNI="$hy2_sni" REALITY_SERVER_NAMES="$reality_names" REALITY_DEST="$reality_dest" \
+    "${HERE}/access_sync.sh"
+}
+
+# Load probe credentials from the same authoritative snapshot and the current
+# CP transport record. This prevents a stale operator credential from proving a
+# newly activated revision.
+rl_load_probe_identity() {
+  local node_json
+  [ -n "${RECON_ACCESS_SNAPSHOT_FILE:-}" ] && [ -f "$RECON_ACCESS_SNAPSHOT_FILE" ] || return 1
+  node_json="$(cp_get_node "$ENTRY")" || return 1
+  RL_VLESS_UUID="$(jq -er '.users[0].uuid' "$RECON_ACCESS_SNAPSHOT_FILE")" || return 1
+  RL_VLESS_SHORT_ID="$(jq -er '.users[0].short_id' "$RECON_ACCESS_SNAPSHOT_FILE")" || return 1
+  RL_HY2_PASSWORD="$(jq -er '.users[0].hysteria2_password' "$RECON_ACCESS_SNAPSHOT_FILE")" || return 1
+  RL_VLESS_PUBKEY="$(jq -er 'first(.transports[] | select(.enabled == true and .type == "vless-reality") | .vless_reality.public_key)' <<<"$node_json")" || return 1
+  RL_REALITY_SNI="$(jq -er 'first(.transports[] | select(.enabled == true and .type == "vless-reality") | .vless_reality.server_names[0])' <<<"$node_json")" || return 1
+  RL_HY2_SNI="$(jq -er 'first(.transports[] | select(.enabled == true and .type == "hysteria2") | .hysteria2.sni)' <<<"$node_json")" || return 1
+  export RL_VLESS_UUID RL_VLESS_SHORT_ID RL_HY2_PASSWORD RL_VLESS_PUBKEY RL_REALITY_SNI RL_HY2_SNI
+}
+
 # --- production echo contract -------------------------------------------------
 
 # echo_observed_ip <body> — strict, fail-closed parse of the operator-provided
@@ -128,26 +165,19 @@ hook_verify_exit() {
 }
 
 hook_apply() {
-  [ -n "${RECONCILE_USERS:-}" ] || { log "reconcile-live: no RECONCILE_USERS"; return 1; }
-  require_env PAIR_PSK
-  # Reuse existing on-node REALITY/hy2 state: pass ONLY the allow-list + the pair
-  # link PSK, never a keygen/rotate flag, so a reconcile never rotates secrets.
-  local vars; vars="$(mktemp)"
-  ( umask 077
-    jq -n --argjson users "$RECONCILE_USERS" --arg psk "$PAIR_PSK" \
-       --arg exip "$EXIT_IP" --argjson port "${EXIT_LINK_PORT:-8388}" \
-       '{reality_users:$users, reality_reuse_existing_key:true,
-         exit_endpoint:{server:$exip, server_port:$port, psk:$psk}}' >"$vars"
-  )
+  [ -n "${RECON_ACCESS_SNAPSHOT_FILE:-}" ] && [ -f "$RECON_ACCESS_SNAPSHOT_FILE" ] \
+    || { log "reconcile-live: no access snapshot file"; return 1; }
+  require_env RUN_ID PAIR_PSK
   local rc=0
-  rl_converge "$vars" || rc=$?
-  rm -f "$vars"
-  [ "$rc" -eq 0 ] || { log "reconcile-live: converge failed"; return 1; }
+  rl_sync_access "$RECON_ACCESS_SNAPSHOT_FILE" || rc=$?
+  [ "$rc" -eq 0 ] || { log "reconcile-live: access converge failed"; return 1; }
 }
 
 hook_probe() {
   require_env ENTRY_IP EXIT_IP EGRESS_ECHO_URL
   local vcfg hcfg a b
+  rl_load_probe_identity \
+    || { log "reconcile-live: current access/transport probe identity unavailable"; return 1; }
   vcfg="$(_rl_vless_client_config)" || return 1
   a="$(rl_run_client_probe vless-reality "$vcfg")"; rm -f "$vcfg"
   hcfg="$(_rl_hy2_client_config)" || { log "reconcile-live: hy2 client not configured"; printf '[%s]' "$a"; return 0; }

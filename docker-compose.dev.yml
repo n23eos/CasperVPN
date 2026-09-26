@@ -37,12 +37,13 @@ services:
     environment:
       PORT: 8081
       ENV: dev
+      SUBSCRIPTION_TOKEN_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       SEED: "true"
       # Demo fleet (mimicry domains/IPs) is data, mounted below — never baked in.
       SEED_NODES_FILE: /config/seed.nodes.json
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
       # Dev-only service tokens (token:role). NEVER reuse in prod — see rules/security.md.
-      CONTROL_PLANE_TOKENS: ${CONTROL_PLANE_TOKENS:-dev-admin-token:admin,dev-orchestrator-token:orchestrator,dev-telemetry-token:telemetry,dev-subscription-token:subscription,dev-billing-token:billing}
+      CONTROL_PLANE_TOKENS: ${CONTROL_PLANE_TOKENS:-dev-admin-token:admin,dev-orchestrator-token:orchestrator,dev-telemetry-token:telemetry,dev-subscription-token:subscription,dev-billing-token:billing,dev-delivery-token:delivery}
       # Token revocation propagation into the subscription service (dev-only token).
       SUBSCRIPTION_INTERNAL_URL: http://subscription:8082
       SUBSCRIPTION_INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:-dev-internal-token}
@@ -57,6 +58,7 @@ services:
       args: { SERVICE: subscription }
     environment:
       PORT: 8082
+      ENV: dev
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
       # Enables /internal/* (revoke, tokens, invalidate); must match control-plane's
       # SUBSCRIPTION_INTERNAL_TOKEN. Dev-only value.
@@ -79,6 +81,7 @@ services:
       args: { SERVICE: delivery }
     environment:
       PORT: 8083
+      ENV: dev
     ports: ["8083:8083"]
 
   billing:
@@ -88,6 +91,7 @@ services:
       args: { SERVICE: billing }
     environment:
       PORT: 8084
+      ENV: dev
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
       CONTROL_PLANE_URL: http://control-plane:8081
       CONTROL_PLANE_TOKEN: ${BILLING_CP_TOKEN:-dev-billing-token}
@@ -105,6 +109,7 @@ services:
       args: { SERVICE: telemetry }
     environment:
       PORT: 8085
+      ENV: dev
       DATABASE_URL: postgres://${POSTGRES_USER:-caspervpn}:${POSTGRES_PASSWORD:-dev_only_change_me}@postgres:5432/${POSTGRES_DB:-caspervpn}?sslmode=disable
       # Internal endpoints are fail-closed: without a token they return 403.
       # Dev-only value, NEVER reuse in prod.

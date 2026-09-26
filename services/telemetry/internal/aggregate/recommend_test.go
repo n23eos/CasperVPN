@@ -7,7 +7,7 @@ import (
 	"github.com/caspervpn/contracts"
 )
 
-func TestRecommend_NodeBlockFromField(t *testing.T) {
+func TestRecommend_ForgedFieldDiversityCannotBlockNode(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	at := now.Add(-time.Minute)
 	p := defaultParams()
@@ -18,18 +18,8 @@ func TestRecommend_NodeBlockFromField(t *testing.T) {
 	}
 	recs := Recommend(sigs, nil, now, 15*time.Minute, p)
 
-	if len(recs.NodeBlocks) != 1 {
-		t.Fatalf("want 1 node block, got %d", len(recs.NodeBlocks))
-	}
-	nb := recs.NodeBlocks[0]
-	if nb.NodeID != "node-x" || nb.Action != ActionMarkNodeBlocked {
-		t.Fatalf("unexpected node block: %+v", nb)
-	}
-	if nb.Confidence != ConfidenceCorroborated {
-		t.Fatalf("field-derived block should be corroborated, got %s", nb.Confidence)
-	}
-	if len(nb.Regions) != 1 || nb.Regions[0] != "RU-MOW" {
-		t.Fatalf("want region RU-MOW, got %v", nb.Regions)
+	if len(recs.NodeBlocks) != 0 || len(recs.RegionPriorities) != 0 {
+		t.Fatalf("client-chosen ASNs produced actions: %+v", recs)
 	}
 }
 
@@ -51,7 +41,7 @@ func TestRecommend_NodeBlockFromHealthIsAuthoritative(t *testing.T) {
 	}
 }
 
-func TestRecommend_PrioritizeHealthyTransport(t *testing.T) {
+func TestRecommend_ForgedFieldDiversityCannotChangeTransport(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	at := now.Add(-time.Minute)
 	p := defaultParams()
@@ -67,16 +57,7 @@ func TestRecommend_PrioritizeHealthyTransport(t *testing.T) {
 	}
 	recs := Recommend(sigs, nil, now, 15*time.Minute, p)
 
-	var ru *RegionPriority
-	for i := range recs.RegionPriorities {
-		if recs.RegionPriorities[i].Region == "RU-MOW" {
-			ru = &recs.RegionPriorities[i]
-		}
-	}
-	if ru == nil {
-		t.Fatal("no RU-MOW region priority")
-	}
-	if ru.Recommended != contracts.TransportHysteria2 {
-		t.Fatalf("should prioritize hysteria2, got %q (ranked %+v)", ru.Recommended, ru.Ranked)
+	if len(recs.RegionPriorities) != 0 {
+		t.Fatalf("untrusted field reports changed routing: %+v", recs.RegionPriorities)
 	}
 }

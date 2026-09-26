@@ -97,13 +97,16 @@ func (s *SubscriptionStore) Update(ctx context.Context, sub contracts.Subscripti
 	tag, err := s.q.Exec(ctx, `
 		UPDATE subscriptions
 		SET status=$2, expires_at=$3, updated_at=$4
-		WHERE id=$1`,
+		WHERE id=$1 AND billing_revision=0`,
 		sub.ID, string(sub.Status), sub.ExpiresAt, sub.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("postgres: update subscription: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return domain.ErrNotFound
+		if _, err := s.Get(ctx, sub.ID); err != nil {
+			return err
+		}
+		return domain.ErrConflict
 	}
 	return nil
 }
@@ -111,17 +114,17 @@ func (s *SubscriptionStore) Update(ctx context.Context, sub contracts.Subscripti
 // UpdateTokenHash swaps the stored token hash/prefix (rotation). Plaintext
 // never reaches this layer.
 func (s *SubscriptionStore) UpdateTokenHash(ctx context.Context, id, tokenHash, tokenPrefix string) error {
-	tag, err := s.q.Exec(ctx, `
-		UPDATE subscriptions
-		SET token_hash=$2, token_prefix=$3
-		WHERE id=$1`, id, tokenHash, tokenPrefix)
-	if err != nil {
-		return fmt.Errorf("postgres: rotate subscription token: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	return withTx(ctx, s.pool, func(q querier) error {
+		tag, err := q.Exec(ctx, `UPDATE subscriptions SET token_hash=$2,token_prefix=$3,updated_at=now() WHERE id=$1`, id, tokenHash, tokenPrefix)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrNotFound
+		}
+		_, err = q.Exec(ctx, `DELETE FROM subscription_delivery_tokens WHERE subscription_id=$1`, id)
+		return err
+	})
 }
 
 // Get returns a subscription by id. The token is never selected/exposed.
@@ -134,10 +137,10 @@ func (s *SubscriptionStore) Get(ctx context.Context, id string) (contracts.Subsc
 	)
 	err := s.q.QueryRow(ctx, `
 		SELECT id, user_id, plan, status, traffic_limit_bytes, speed_limit_mbps,
-			device_limit, starts_at, expires_at, created_at, updated_at
+			device_limit, starts_at, expires_at, created_at, updated_at, billing_revision, grace_until
 		FROM subscriptions WHERE id=$1`, id).Scan(
 		&sub.ID, &sub.UserID, &plan, &status, &traffic, &sub.SpeedLimitMbps,
-		&sub.DeviceLimit, &sub.StartsAt, &sub.ExpiresAt, &sub.CreatedAt, &sub.UpdatedAt)
+		&sub.DeviceLimit, &sub.StartsAt, &sub.ExpiresAt, &sub.CreatedAt, &sub.UpdatedAt, &sub.BillingRevision, &sub.GraceUntil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return contracts.Subscription{}, domain.ErrNotFound

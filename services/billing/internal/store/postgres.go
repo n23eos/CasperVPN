@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/caspervpn/billing/internal/idgen"
@@ -30,6 +32,15 @@ type Postgres struct {
 	pool *pgxpool.Pool
 }
 
+type lockedConnKey struct{}
+
+type postgresExecutor interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 // NewPostgres wraps an existing pgx pool. The caller owns the pool lifecycle
 // (construction from DATABASE_URL and Close) so the store stays a thin data layer.
 func NewPostgres(pool *pgxpool.Pool) *Postgres {
@@ -40,11 +51,9 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 // connection for the whole of fn, so the entire activation of one user is serialized
 // across every billing instance sharing this database.
 //
-// Pool sizing: this holds one pooled connection for all of fn, during which the
-// caller (the activator) acquires OTHER pooled connections for its schedule reads/
-// writes. Size the pool comfortably above peak concurrent distinct-user activations
-// (≈ 2×) so activations don't starve each other waiting for a query connection while
-// holding a lock connection. Starvation surfaces as a ctx timeout, never a deadlock.
+// Repository calls made with fn's context use this same connection. This is needed
+// for both correctness and liveness: a same-user waiter may occupy every other pool
+// slot while blocked on the advisory lock.
 func (p *Postgres) WithUserLock(ctx context.Context, userID string, fn func(ctx context.Context) error) error {
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
@@ -69,7 +78,14 @@ func (p *Postgres) WithUserLock(ctx context.Context, userID string, fn func(ctx 
 		}
 		conn.Release() // a closed conn is discarded by the pool, not reused
 	}()
-	return fn(ctx)
+	return fn(context.WithValue(ctx, lockedConnKey{}, conn))
+}
+
+func (p *Postgres) executor(ctx context.Context) postgresExecutor {
+	if conn, ok := ctx.Value(lockedConnKey{}).(*pgxpool.Conn); ok {
+		return conn
+	}
+	return p.pool
 }
 
 // Compile-time proof the Postgres store implements the full Repository contract.
@@ -86,6 +102,93 @@ func (p *Postgres) CreateInvoice(ctx context.Context, inv model.Invoice) error {
 		inv.PayAddress, inv.ProviderInvoiceID, string(inv.Status), inv.CreatedAt, inv.ExpiresAt,
 	)
 	return err
+}
+
+func (p *Postgres) ReserveInvoiceIntent(ctx context.Context, intent model.InvoiceIntent) (model.InvoiceIntent, bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		INSERT INTO invoice_intents (
+			idempotency_key, request_hash, order_id, provider, anon_user_id,
+			plan, currency, amount, state, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'reserved',$9)
+		ON CONFLICT (idempotency_key) DO NOTHING`,
+		intent.IdempotencyKey, intent.RequestHash, intent.OrderID, intent.Provider,
+		intent.AnonUserID, intent.Plan, intent.Currency, intent.Amount, intent.CreatedAt)
+	if err != nil {
+		return model.InvoiceIntent{}, false, err
+	}
+	got, err := p.GetInvoiceIntent(ctx, intent.IdempotencyKey)
+	if err != nil {
+		return model.InvoiceIntent{}, false, err
+	}
+	if got.RequestHash != intent.RequestHash {
+		return model.InvoiceIntent{}, false, ErrConflict
+	}
+	return got, tag.RowsAffected() == 1, nil
+}
+
+func (p *Postgres) BeginInvoiceCreate(ctx context.Context, key string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE invoice_intents SET state = 'creating'
+		WHERE idempotency_key = $1 AND state = 'reserved'`, key)
+	return tag.RowsAffected() == 1, err
+}
+
+func (p *Postgres) CompleteInvoiceCreate(ctx context.Context, key string, inv model.Invoice) error {
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var orderID, provider string
+	if err := tx.QueryRow(ctx, `SELECT order_id, provider FROM invoice_intents WHERE idempotency_key=$1 FOR UPDATE`, key).Scan(&orderID, &provider); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if orderID != inv.ID || provider != inv.Provider {
+		return ErrConflict
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO invoices (
+			id, provider, anon_user_id, plan, currency, amount,
+			pay_address, provider_invoice_id, status, created_at, expires_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT (id) DO NOTHING`,
+		inv.ID, inv.Provider, inv.AnonUserID, inv.Plan, inv.Currency, inv.Amount,
+		inv.PayAddress, inv.ProviderInvoiceID, string(inv.Status), inv.CreatedAt, inv.ExpiresAt); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE invoice_intents SET state='ready' WHERE idempotency_key=$1`, key); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (p *Postgres) FailInvoiceCreate(ctx context.Context, key string) error {
+	tag, err := p.pool.Exec(ctx, `UPDATE invoice_intents SET state='failed' WHERE idempotency_key=$1`, key)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) GetInvoiceIntent(ctx context.Context, key string) (model.InvoiceIntent, error) {
+	var intent model.InvoiceIntent
+	err := p.pool.QueryRow(ctx, `
+		SELECT idempotency_key, request_hash, order_id, provider, anon_user_id,
+		       plan, currency, amount, state, created_at
+		FROM invoice_intents WHERE idempotency_key=$1`, key).Scan(
+		&intent.IdempotencyKey, &intent.RequestHash, &intent.OrderID, &intent.Provider,
+		&intent.AnonUserID, &intent.Plan, &intent.Currency, &intent.Amount,
+		&intent.State, &intent.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.InvoiceIntent{}, ErrNotFound
+	}
+	return intent, err
 }
 
 // GetInvoice loads an invoice by id, returning ErrNotFound on a miss.
@@ -286,24 +389,193 @@ func (p *Postgres) ClearNegativeCheck(ctx context.Context, invoiceID string) err
 	return err
 }
 
+func (p *Postgres) StageInvoiceCredit(ctx context.Context, invoiceID, subID, anonUserID string, now time.Time, duration, grace time.Duration) (model.BillingDelivery, error) {
+	tx, err := p.executor(ctx).BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return model.BillingDelivery{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if existing, err := getDeliveryByInvoice(ctx, tx, invoiceID); err == nil {
+		return existing, tx.Commit(ctx)
+	} else if !errors.Is(err, ErrNotFound) {
+		return model.BillingDelivery{}, err
+	}
+	var invoiceUser, invoicePlan string
+	if err := tx.QueryRow(ctx, `SELECT anon_user_id, plan FROM invoices WHERE id=$1 FOR UPDATE`, invoiceID).Scan(&invoiceUser, &invoicePlan); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.BillingDelivery{}, ErrNotFound
+		}
+		return model.BillingDelivery{}, err
+	}
+	if invoiceUser != anonUserID {
+		return model.BillingDelivery{}, ErrConflict
+	}
+	sched, err := getScheduleForUpdate(ctx, tx, subID)
+	base, revision := now, int64(1)
+	if err == nil {
+		revision = sched.Revision + 1
+		if sched.ExpiresAt.After(base) {
+			base = sched.ExpiresAt
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return model.BillingDelivery{}, err
+	}
+	expiresAt := base.Add(duration)
+	delivery := model.BillingDelivery{
+		ID: "invoice:" + invoiceID, InvoiceID: invoiceID, SubID: subID,
+		AnonUserID: anonUserID, Revision: revision, Plan: invoicePlan, Status: "active",
+		ExpiresAt: expiresAt, GraceUntil: expiresAt.Add(grace), CreatedAt: now,
+	}
+	if err := insertDelivery(ctx, tx, delivery); err != nil {
+		return model.BillingDelivery{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO schedules (sub_id, anon_user_id, revision, plan, status, expires_at, grace_until)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (sub_id) DO UPDATE SET
+			anon_user_id=EXCLUDED.anon_user_id, revision=EXCLUDED.revision,
+			plan=EXCLUDED.plan, status=EXCLUDED.status, expires_at=EXCLUDED.expires_at,
+			grace_until=EXCLUDED.grace_until`,
+		delivery.SubID, delivery.AnonUserID, delivery.Revision, delivery.Plan, delivery.Status,
+		delivery.ExpiresAt, delivery.GraceUntil); err != nil {
+		return model.BillingDelivery{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.BillingDelivery{}, err
+	}
+	return delivery, nil
+}
+
+func (p *Postgres) StageScheduleTransition(ctx context.Context, subID string, expectedRevision int64, status string, now time.Time) (model.BillingDelivery, bool, error) {
+	tx, err := p.executor(ctx).BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return model.BillingDelivery{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sched, err := getScheduleForUpdate(ctx, tx, subID)
+	if err != nil {
+		return model.BillingDelivery{}, false, err
+	}
+	if sched.Revision != expectedRevision {
+		return model.BillingDelivery{}, false, tx.Commit(ctx)
+	}
+	delivery := model.BillingDelivery{
+		ID:    "schedule:" + subID + ":" + strconv.FormatInt(sched.Revision+1, 10),
+		SubID: subID, AnonUserID: sched.AnonUserID, Revision: sched.Revision + 1,
+		Plan: sched.Plan, Status: status,
+		ExpiresAt: sched.ExpiresAt, GraceUntil: sched.GraceUntil, CreatedAt: now,
+	}
+	if err := insertDelivery(ctx, tx, delivery); err != nil {
+		return model.BillingDelivery{}, false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE schedules SET revision=$2, status=$3 WHERE sub_id=$1`, subID, delivery.Revision, status); err != nil {
+		return model.BillingDelivery{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.BillingDelivery{}, false, err
+	}
+	return delivery, true, nil
+}
+
+func (p *Postgres) LeaseBillingDeliveries(ctx context.Context, olderThan time.Time, leaseFor time.Duration, limit int) ([]model.BillingDelivery, error) {
+	rows, err := p.pool.Query(ctx, `
+		UPDATE billing_deliveries SET leased_until=now()+make_interval(secs=>$2)
+		WHERE id IN (
+			SELECT id FROM billing_deliveries
+			WHERE delivered_at IS NULL AND created_at < $1
+			  AND (leased_until IS NULL OR leased_until <= now())
+			ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT $3
+		)
+		RETURNING id, COALESCE(invoice_id,''), sub_id, anon_user_id, revision,
+		          plan, status, expires_at, grace_until, created_at, COALESCE(delivered_at, 'epoch')`,
+		olderThan, leaseFor.Seconds(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.BillingDelivery
+	for rows.Next() {
+		delivery, err := scanDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, delivery)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) CompleteBillingDelivery(ctx context.Context, deliveryID string) error {
+	tx, err := p.executor(ctx).BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var invoiceID *string
+	err = tx.QueryRow(ctx, `
+		UPDATE billing_deliveries SET delivered_at=COALESCE(delivered_at,now()), leased_until=NULL
+		WHERE id=$1 RETURNING invoice_id`, deliveryID).Scan(&invoiceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if invoiceID != nil {
+		if _, err := tx.Exec(ctx, `UPDATE invoices SET status='settled' WHERE id=$1`, *invoiceID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func insertDelivery(ctx context.Context, tx pgx.Tx, d model.BillingDelivery) error {
+	var invoiceID any
+	if d.InvoiceID != "" {
+		invoiceID = d.InvoiceID
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO billing_deliveries (
+			id, invoice_id, sub_id, anon_user_id, revision, plan, status,
+			expires_at, grace_until, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		d.ID, invoiceID, d.SubID, d.AnonUserID, d.Revision, d.Plan, d.Status,
+		d.ExpiresAt, d.GraceUntil, d.CreatedAt)
+	return err
+}
+
+func getDeliveryByInvoice(ctx context.Context, tx pgx.Tx, invoiceID string) (model.BillingDelivery, error) {
+	return scanDelivery(tx.QueryRow(ctx, `
+		SELECT id, COALESCE(invoice_id,''), sub_id, anon_user_id, revision,
+		       plan, status, expires_at, grace_until, created_at, COALESCE(delivered_at, 'epoch')
+		FROM billing_deliveries WHERE invoice_id=$1`, invoiceID))
+}
+
+func getScheduleForUpdate(ctx context.Context, tx pgx.Tx, subID string) (model.Schedule, error) {
+	return scanSchedule(tx.QueryRow(ctx, `
+		SELECT sub_id, anon_user_id, revision, plan, status, expires_at, grace_until
+		FROM schedules WHERE sub_id=$1 FOR UPDATE`, subID))
+}
+
 // UpsertSchedule inserts or replaces a subscription's expiry schedule.
 func (p *Postgres) UpsertSchedule(ctx context.Context, s model.Schedule) error {
-	_, err := p.pool.Exec(ctx, `
-		INSERT INTO schedules (sub_id, anon_user_id, status, expires_at, grace_until)
-		VALUES ($1,$2,$3,$4,$5)
+	_, err := p.executor(ctx).Exec(ctx, `
+		INSERT INTO schedules (sub_id, anon_user_id, revision, plan, status, expires_at, grace_until)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT (sub_id) DO UPDATE SET
 			anon_user_id = EXCLUDED.anon_user_id,
+			revision     = GREATEST(schedules.revision, EXCLUDED.revision),
+			plan         = CASE WHEN EXCLUDED.plan <> '' THEN EXCLUDED.plan ELSE schedules.plan END,
 			status       = EXCLUDED.status,
 			expires_at   = EXCLUDED.expires_at,
 			grace_until  = EXCLUDED.grace_until`,
-		s.SubID, s.AnonUserID, s.Status, s.ExpiresAt, s.GraceUntil)
+		s.SubID, s.AnonUserID, s.Revision, s.Plan, s.Status, s.ExpiresAt, s.GraceUntil)
 	return err
 }
 
 // GetSchedule loads a schedule by subscription id, ErrNotFound on a miss.
 func (p *Postgres) GetSchedule(ctx context.Context, subID string) (model.Schedule, error) {
-	row := p.pool.QueryRow(ctx, `
-		SELECT sub_id, anon_user_id, status, expires_at, grace_until
+	row := p.executor(ctx).QueryRow(ctx, `
+		SELECT sub_id, anon_user_id, revision, plan, status, expires_at, grace_until
 		FROM schedules WHERE sub_id = $1`, subID)
 	return scanSchedule(row)
 }
@@ -311,7 +583,7 @@ func (p *Postgres) GetSchedule(ctx context.Context, subID string) (model.Schedul
 // DueSchedules returns non-expired schedules whose expiry time has passed.
 func (p *Postgres) DueSchedules(ctx context.Context, now time.Time) ([]model.Schedule, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT sub_id, anon_user_id, status, expires_at, grace_until
+		SELECT sub_id, anon_user_id, revision, plan, status, expires_at, grace_until
 		FROM schedules WHERE status <> $1 AND expires_at <= $2`,
 		"expired", now)
 	if err != nil {
@@ -354,7 +626,7 @@ func scanInvoice(s scanner) (model.Invoice, error) {
 
 func scanSchedule(s scanner) (model.Schedule, error) {
 	var sc model.Schedule
-	err := s.Scan(&sc.SubID, &sc.AnonUserID, &sc.Status, &sc.ExpiresAt, &sc.GraceUntil)
+	err := s.Scan(&sc.SubID, &sc.AnonUserID, &sc.Revision, &sc.Plan, &sc.Status, &sc.ExpiresAt, &sc.GraceUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Schedule{}, ErrNotFound
 	}
@@ -363,3 +635,15 @@ func scanSchedule(s scanner) (model.Schedule, error) {
 	}
 	return sc, nil
 }
+
+func scanDelivery(s scanner) (model.BillingDelivery, error) {
+	var d model.BillingDelivery
+	err := s.Scan(&d.ID, &d.InvoiceID, &d.SubID, &d.AnonUserID, &d.Revision, &d.Plan,
+		&d.Status, &d.ExpiresAt, &d.GraceUntil, &d.CreatedAt, &d.DeliveredAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.BillingDelivery{}, ErrNotFound
+	}
+	return d, err
+}
+
+func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }

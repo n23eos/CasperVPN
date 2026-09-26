@@ -36,10 +36,9 @@ func newServer(token string) http.Handler {
 	return Router(in, q, coll, token)
 }
 
-// TestLoop_IngestToRecommendation drives the whole feedback loop: 6 independent
-// sources report a DPI block for one node/transport, and the recommendations API
-// then returns an actionable mark_node_blocked — the core acceptance criterion.
-func TestLoop_IngestToRecommendation(t *testing.T) {
+// A single anonymous sender can choose arbitrary ASNs. Such input must remain
+// advisory and cannot issue actions even when the statistical threshold is met.
+func TestLoop_ForgedASNsCannotDriveRecommendations(t *testing.T) {
 	srv := newServer("loop-token")
 
 	var items []string
@@ -68,11 +67,8 @@ func TestLoop_IngestToRecommendation(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &recs); err != nil {
 		t.Fatal(err)
 	}
-	if len(recs.NodeBlocks) != 1 || recs.NodeBlocks[0].NodeID != "node-x" {
-		t.Fatalf("want mark_node_blocked for node-x, got %+v", recs.NodeBlocks)
-	}
-	if recs.NodeBlocks[0].Action != aggregate.ActionMarkNodeBlocked {
-		t.Fatalf("unexpected action %q", recs.NodeBlocks[0].Action)
+	if len(recs.NodeBlocks) != 0 || len(recs.RegionPriorities) != 0 {
+		t.Fatalf("forged client diversity produced actions: %+v", recs)
 	}
 }
 

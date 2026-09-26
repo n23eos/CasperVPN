@@ -55,8 +55,8 @@ func seedActivatable(t *testing.T, r http.Handler, nodes *memory.Nodes, entryTra
 	seedActive(t, nodes, `{"id":"ex-1","role":"exit","status":"active","entry_node_id":"en-1","provider":"l","cloud":"l","region":"eu","ephemeral_entry_ip":false,"transports":[]}`)
 	postNode(t, r, `{"id":"en-1","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.1","ephemeral_entry_ip":false,"transports":[`+entryTransports+`]}`)
 
-	rec = do(t, r, http.MethodGet, "/v1/nodes/en-1/reality-users", orchTok, "")
-	var al contracts.NodeRealityUsers
+	rec = do(t, r, http.MethodGet, "/v1/nodes/en-1/access-users", orchTok, "")
+	var al contracts.NodeAccessUsers
 	if err := json.Unmarshal(rec.Body.Bytes(), &al); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func seedActivatable(t *testing.T, r http.Handler, nodes *memory.Nodes, entryTra
 }
 
 func activate(t *testing.T, r http.Handler, id, token, revision string) *httptest.ResponseRecorder {
-	return do(t, r, http.MethodPost, "/v1/nodes/"+id+"/activate", token, `{"expected_revision":"`+revision+`"}`)
+	return do(t, r, http.MethodPost, "/v1/nodes/"+id+"/activate", token, `{"expected_access_revision":"`+revision+`"}`)
 }
 
 func activateExit(t *testing.T, r http.Handler, id, token, evidence string) *httptest.ResponseRecorder {
@@ -135,8 +135,8 @@ func TestActivate_ExitNotActive(t *testing.T) {
 	r := newTestRouter(t)
 	postNode(t, r, `{"id":"ex-2","role":"exit","status":"provisioning","entry_node_id":"en-2","provider":"l","cloud":"l","region":"eu","ephemeral_entry_ip":false,"transports":[]}`)
 	postNode(t, r, `{"id":"en-2","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.2","ephemeral_entry_ip":false,"transports":[`+vlessTr+`,`+hy2Tr+`]}`)
-	rec := do(t, r, http.MethodGet, "/v1/nodes/en-2/reality-users", orchTok, "")
-	var al contracts.NodeRealityUsers
+	rec := do(t, r, http.MethodGet, "/v1/nodes/en-2/access-users", orchTok, "")
+	var al contracts.NodeAccessUsers
 	_ = json.Unmarshal(rec.Body.Bytes(), &al)
 	if rec := activate(t, r, "en-2", orchTok, al.Revision); rec.Code != http.StatusConflict {
 		t.Errorf("exit not active: got %d, want 409", rec.Code)
@@ -146,8 +146,8 @@ func TestActivate_ExitNotActive(t *testing.T) {
 func TestActivate_ExitMissing(t *testing.T) {
 	r := newTestRouter(t)
 	postNode(t, r, `{"id":"en-3","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.1.3","ephemeral_entry_ip":false,"transports":[`+vlessTr+`,`+hy2Tr+`]}`)
-	rec := do(t, r, http.MethodGet, "/v1/nodes/en-3/reality-users", orchTok, "")
-	var al contracts.NodeRealityUsers
+	rec := do(t, r, http.MethodGet, "/v1/nodes/en-3/access-users", orchTok, "")
+	var al contracts.NodeAccessUsers
 	_ = json.Unmarshal(rec.Body.Bytes(), &al)
 	if rec := activate(t, r, "en-3", orchTok, al.Revision); rec.Code != http.StatusConflict {
 		t.Errorf("exit missing: got %d, want 409", rec.Code)
@@ -183,8 +183,8 @@ func TestActivate_ExitThenEntrySequence(t *testing.T) {
 	postNode(t, r, `{"id":"en-seq","role":"entry","status":"provisioning","provider":"l","cloud":"l","region":"eu","entry_ip":"1.1.9.1","ephemeral_entry_ip":false,"transports":[`+vlessTr+`,`+hy2Tr+`]}`)
 	postNode(t, r, `{"id":"ex-seq","role":"exit","status":"provisioning","entry_node_id":"en-seq","provider":"l","cloud":"l","region":"eu","ephemeral_entry_ip":false,"transports":[]}`)
 
-	rec = do(t, r, http.MethodGet, "/v1/nodes/en-seq/reality-users", orchTok, "")
-	var al contracts.NodeRealityUsers
+	rec = do(t, r, http.MethodGet, "/v1/nodes/en-seq/access-users", orchTok, "")
+	var al contracts.NodeAccessUsers
 	_ = json.Unmarshal(rec.Body.Bytes(), &al)
 
 	// entry cannot activate while exit is still provisioning.

@@ -2,6 +2,28 @@
 # Build /etc/sing-box/config.json from the enabled transports, then validate it
 # with `sing-box check`. Enforces the [АНТИ-БЛОК] invariants at config-build time.
 
+- name: Merge personal REALITY short ids into the active snapshot
+  when: reality_users | length > 0
+  ansible.builtin.set_fact:
+    transports: >-
+      {{ transports | combine({'vless_reality':
+         transports.vless_reality | combine({
+           'short_ids': reality_users | map(attribute='short_id') | list
+         })}, recursive=True) }}
+
+- name: Validate personal multi-transport access snapshot
+  when: access_snapshot_valid_until | length > 0
+  ansible.builtin.assert:
+    that:
+      - access_snapshot_revision | length > 0
+      - reality_users | length == hysteria2_users | length
+      - reality_users | selectattr('uuid', 'undefined') | list | length == 0
+      - reality_users | selectattr('short_id', 'undefined') | list | length == 0
+      - hysteria2_users | selectattr('password', 'undefined') | list | length == 0
+      - hysteria2_users | map(attribute='password') | select('equalto', '') | list | length == 0
+    fail_msg: "Access snapshot must carry complete VLESS and personal Hysteria2 credentials."
+  no_log: true
+
 # --- REALITY keypair: resolve (explicit | state file | generate) before asserts,
 # so private_key is populated idempotently from the persisted pair. ---
 - name: Resolve REALITY keypair
@@ -98,3 +120,67 @@
 - name: Verify sing-box config (explicit check)
   ansible.builtin.command: "{{ singbox_bin }} check -c {{ singbox_config_dir }}/config.json"
   changed_when: false
+
+- name: Install access lease watchdog
+  when: access_snapshot_valid_until | length > 0
+  block:
+    - name: Ensure private access lease directory exists
+      ansible.builtin.file:
+        path: "{{ access_lease_file | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Persist current access lease
+      ansible.builtin.copy:
+        dest: "{{ access_lease_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+        content: >-
+          {{ {'revision': access_snapshot_revision,
+              'valid_until': access_snapshot_valid_until} | to_nice_json }}
+
+    - name: Install access lease watchdog executable
+      ansible.builtin.template:
+        src: access-lease-watchdog.py.j2
+        dest: "{{ access_lease_watchdog_bin }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install access lease watchdog service
+      ansible.builtin.template:
+        src: access-lease-watchdog.service.j2
+        dest: /etc/systemd/system/casper-access-lease-watchdog.service
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install access lease watchdog timer
+      ansible.builtin.template:
+        src: access-lease-watchdog.timer.j2
+        dest: /etc/systemd/system/casper-access-lease-watchdog.timer
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload systemd for access lease units
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Validate access lease immediately
+      ansible.builtin.command: "{{ access_lease_watchdog_bin }}"
+      changed_when: false
+
+    - name: Enable access lease watchdog timer
+      ansible.builtin.systemd:
+        name: casper-access-lease-watchdog.timer
+        enabled: true
+        state: started
+
+    - name: Ensure sing-box is running after a valid access sync
+      ansible.builtin.systemd:
+        name: sing-box
+        state: started

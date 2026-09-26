@@ -165,6 +165,7 @@ USER_JSON=$("${CURL[@]}" -X POST "$CP/v1/users" -H "Authorization: Bearer $ADMIN
   -H 'Content-Type: application/json' -d '{"telegram_id": 700700}')
 USER_ID=$(jq -re .id <<<"$USER_JSON"); USER_UUID=$(jq -re .uuid <<<"$USER_JSON")
 USER_SID=$(jq -re .reality_short_id <<<"$USER_JSON")
+USER_HY2=$(jq -re .hysteria2_password <<<"$USER_JSON")
 INV=$("${CURL[@]}" -X POST "$BILL/v1/invoices" -H 'Content-Type: application/json' \
   -d "{\"anon_user_id\":\"$USER_ID\",\"plan\":\"basic\",\"currency\":\"BTC\"}")
 INV_ID=$(jq -re .invoice_id <<<"$INV"); INV_AMT=$(jq -re .amount <<<"$INV"); INV_CUR=$(jq -re .currency <<<"$INV")
@@ -261,9 +262,13 @@ step "guarded activation: exit (evidence) -> entry (revision-checked)"
 "${CURL[@]}" -X POST "$CP/v1/nodes/$EXIT_ID/activate" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' -d '{"expected_revision":"","evidence":"exit_data_plane_verified"}' \
   | jq -e '.status=="active"' >/dev/null || fail "exit activation refused"
-REV="$("${CURL[@]}" "$CP/v1/nodes/$ENTRY_ID/reality-users" -H "Authorization: Bearer $ADMIN_TOKEN" | jq -r '.revision')"
+ACCESS="$("${CURL[@]}" "$CP/v1/nodes/$ENTRY_ID/access-users" -H "Authorization: Bearer $ADMIN_TOKEN")"
+jq -e --arg u "$USER_UUID" --arg h "$USER_HY2" \
+  'any(.users[]; .uuid == $u and .hysteria2_password == $h)' <<<"$ACCESS" >/dev/null \
+  || fail "personal Hysteria2 credential missing from access snapshot"
+REV="$(jq -r '.revision' <<<"$ACCESS")"
 "${CURL[@]}" -X POST "$CP/v1/nodes/$ENTRY_ID/activate" -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' -d "$(jq -n --arg r "$REV" '{expected_revision:$r}')" \
+  -H 'Content-Type: application/json' -d "$(jq -n --arg r "$REV" '{expected_revision:"",expected_access_revision:$r}')" \
   | jq -e '.status=="active"' >/dev/null || fail "entry activation refused (revision race or structure)"
 echo "    entry+exit active (exit-first, entry-last)"
 

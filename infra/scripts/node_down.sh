@@ -31,6 +31,7 @@ ANSIBLE_DIR="${ROOT}/${ANSIBLE_DIR_DEFAULT}"
 TF_WORKSPACE="$(manifest_field "$RUN_ID" '.tf_workspace')"
 [ "$TF_WORKSPACE" != "default" ] || die "manifest workspace is 'default' — refusing (isolated state required)"
 export TF_WORKSPACE
+[ -z "${NODE:-}" ] || require_manifest_node "$RUN_ID" "$NODE" any
 ENTRY_CP="$(manifest_field "$RUN_ID" '.entry.cp_id')"
 EXIT_CP="$(manifest_field "$RUN_ID" '.exit.cp_id')"
 ENTRY_RAW="$(manifest_field "$RUN_ID" '.entry.raw_id')"
@@ -39,7 +40,7 @@ ENTRY_IP="$(manifest_field "$RUN_ID" '.entry.ip')"
 EXIT_IP="$(manifest_field "$RUN_ID" '.exit.ip')"
 
 terraform -chdir="${TF_DIR}" init -input=false >/dev/null
-tf_select_workspace "${TF_DIR}"
+tf_select_existing_workspace "${TF_DIR}"
 
 # Aggregate soft failures (drain/retire) but keep going to the destroy.
 WARN=()

@@ -72,7 +72,10 @@ func (g *Gateway) CreateInvoice(_ context.Context, req model.CreateInvoiceReques
 	if err != nil {
 		return model.Invoice{}, fmt.Errorf("onchain: allocate address: %w", err)
 	}
-	id := idgen.New()
+	id := req.OrderID
+	if id == "" {
+		id = idgen.New()
+	}
 	now := g.now()
 	return model.Invoice{
 		ID:                id,

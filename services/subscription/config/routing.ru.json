@@ -5,8 +5,8 @@
   "singbox": {
     "dns": {
       "servers": [
-        { "tag": "proxy-dns", "address": "https://1.1.1.1/dns-query", "detour": "proxy" },
-        { "tag": "direct-dns", "address": "https://77.88.8.8/dns-query", "detour": "direct" }
+        { "tag": "proxy-dns", "type": "https", "server": "1.1.1.1", "detour": "proxy" },
+        { "tag": "direct-dns", "type": "https", "server": "77.88.8.8", "detour": "direct" }
       ],
       "rules": [
         { "rule_set": ["geosite-ru"], "server": "direct-dns" }
@@ -14,6 +14,7 @@
       "final": "proxy-dns",
       "strategy": "prefer_ipv4"
     },
+    "default_domain_resolver": { "server": "proxy-dns", "strategy": "prefer_ipv4" },
     "rule_sets": [
       { "tag": "geosite-ru", "type": "remote", "format": "binary", "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ru.srs", "download_detour": "proxy", "update_interval": "24h" },
       { "tag": "geoip-ru", "type": "remote", "format": "binary", "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/ru.srs", "download_detour": "proxy", "update_interval": "24h" }

@@ -17,6 +17,15 @@ var ErrNoGateway = errors.New("payment: no gateway available for currency")
 // ErrUnsupportedWebhook means the gateway is poll-based and has no webhook path.
 var ErrUnsupportedWebhook = errors.New("payment: gateway does not accept webhooks")
 
+// ErrCreateAmbiguous means the provider may have created the invoice although the
+// response was lost or malformed. Callers must recover by stable OrderID and must
+// not issue another create blindly.
+var ErrCreateAmbiguous = errors.New("payment: ambiguous invoice creation")
+
+// ErrCreateRejected means the provider definitely rejected the request before an
+// invoice existed.
+var ErrCreateRejected = errors.New("payment: invoice creation rejected")
+
 // Gateway is one crypto payment path. Implementations MUST be independent of one
 // another so the fleet stays diverse (anti-block: diversity over monoculture).
 type Gateway interface {
@@ -51,4 +60,11 @@ type OnChainGateway interface {
 	// if the chain is reachable but payment is absent/insufficient, or err for a chain
 	// API failure (neither positive nor a definitive negative).
 	CheckInvoice(ctx context.Context, inv model.Invoice) (event *model.Event, negative bool, err error)
+}
+
+// RecoverableGateway can find a provider invoice by the stable OrderID supplied
+// during creation. It closes the timeout/crash ambiguity without a duplicate POST.
+type RecoverableGateway interface {
+	Gateway
+	LookupInvoice(ctx context.Context, req model.CreateInvoiceRequest) (model.Invoice, bool, error)
 }

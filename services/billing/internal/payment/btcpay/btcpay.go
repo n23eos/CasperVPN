@@ -15,11 +15,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/caspervpn/billing/internal/idgen"
 	"github.com/caspervpn/billing/internal/model"
+	"github.com/caspervpn/billing/internal/money"
+	"github.com/caspervpn/billing/internal/payment"
 )
 
 const name = "btcpay"
@@ -38,13 +41,23 @@ type Config struct {
 // webhook secret. Without it the HMAC key is empty and any attacker can forge a
 // "settled" webhook, so the gateway MUST NOT run in this state.
 var ErrNoWebhookSecret = errors.New("btcpay: BTCPAY_WEBHOOK_SECRET must be set when BTCPAY_BASE_URL is configured")
+var ErrMissingAPIKey = errors.New("btcpay: BTCPAY_API_KEY must be set when BTCPAY_BASE_URL is configured")
+var ErrMissingStoreID = errors.New("btcpay: BTCPAY_STORE_ID must be set when BTCPAY_BASE_URL is configured")
 
 // Validate reports a fatal misconfiguration: a configured gateway with an empty
 // webhook secret. main calls this at startup so the service fails fast instead of
 // silently accepting forged webhooks (empty HMAC key).
 func (c Config) Validate() error {
-	if c.BaseURL != "" && c.WebhookSecret == "" {
-		return ErrNoWebhookSecret
+	if c.BaseURL != "" {
+		if c.APIKey == "" {
+			return ErrMissingAPIKey
+		}
+		if c.StoreID == "" {
+			return ErrMissingStoreID
+		}
+		if c.WebhookSecret == "" {
+			return ErrNoWebhookSecret
+		}
 	}
 	return nil
 }
@@ -95,7 +108,10 @@ func (g *Gateway) CreateInvoice(ctx context.Context, req model.CreateInvoiceRequ
 	if !g.currencies[req.Currency] {
 		return model.Invoice{}, fmt.Errorf("btcpay: unsupported currency %q", req.Currency)
 	}
-	id := idgen.New()
+	id := req.OrderID
+	if id == "" {
+		id = idgen.New()
+	}
 	payload, err := json.Marshal(createReq{
 		Amount:   req.Amount,
 		Currency: req.Currency,
@@ -114,16 +130,19 @@ func (g *Gateway) CreateInvoice(ctx context.Context, req model.CreateInvoiceRequ
 
 	resp, err := g.http.Do(httpReq)
 	if err != nil {
-		return model.Invoice{}, fmt.Errorf("btcpay: create invoice: %w", err)
+		return model.Invoice{}, fmt.Errorf("%w: btcpay create: %v", payment.ErrCreateAmbiguous, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
-		return model.Invoice{}, fmt.Errorf("btcpay: create invoice status %d: %s", resp.StatusCode, string(b))
+		if resp.StatusCode/100 == 4 {
+			return model.Invoice{}, fmt.Errorf("%w: btcpay status %d: %s", payment.ErrCreateRejected, resp.StatusCode, string(b))
+		}
+		return model.Invoice{}, fmt.Errorf("%w: btcpay status %d: %s", payment.ErrCreateAmbiguous, resp.StatusCode, string(b))
 	}
 	var cr createResp
 	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
-		return model.Invoice{}, fmt.Errorf("btcpay: decode: %w", err)
+		return model.Invoice{}, fmt.Errorf("%w: btcpay decode: %v", payment.ErrCreateAmbiguous, err)
 	}
 	now := g.now()
 	return model.Invoice{
@@ -139,6 +158,69 @@ func (g *Gateway) CreateInvoice(ctx context.Context, req model.CreateInvoiceRequ
 		CreatedAt:         now,
 		ExpiresAt:         now.Add(30 * time.Minute),
 	}, nil
+}
+
+type lookupResp struct {
+	ID             string `json:"id"`
+	CheckoutLink   string `json:"checkoutLink"`
+	Amount         string `json:"amount"`
+	Currency       string `json:"currency"`
+	CreatedTime    int64  `json:"createdTime"`
+	ExpirationTime int64  `json:"expirationTime"`
+	Metadata       struct {
+		OrderID string `json:"orderId"`
+	} `json:"metadata"`
+}
+
+// LookupInvoice recovers an ambiguous POST via BTCPay's indexed orderId filter.
+func (g *Gateway) LookupInvoice(ctx context.Context, req model.CreateInvoiceRequest) (model.Invoice, bool, error) {
+	endpoint := fmt.Sprintf("%s/api/v1/stores/%s/invoices?orderId=%s&take=2",
+		strings.TrimRight(g.cfg.BaseURL, "/"), g.cfg.StoreID, url.QueryEscape(req.OrderID))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return model.Invoice{}, false, fmt.Errorf("btcpay: lookup request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "token "+g.cfg.APIKey)
+	resp, err := g.http.Do(httpReq)
+	if err != nil {
+		return model.Invoice{}, false, fmt.Errorf("btcpay: lookup: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return model.Invoice{}, false, fmt.Errorf("btcpay: lookup status %d", resp.StatusCode)
+	}
+	var found []lookupResp
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&found); err != nil {
+		return model.Invoice{}, false, fmt.Errorf("btcpay: lookup decode: %w", err)
+	}
+	if len(found) == 0 {
+		return model.Invoice{}, false, nil
+	}
+	if len(found) != 1 || found[0].Metadata.OrderID != req.OrderID {
+		return model.Invoice{}, false, fmt.Errorf("btcpay: order id %q is not unique", req.OrderID)
+	}
+	remote := found[0]
+	amountMatches := true
+	if remote.Amount != "" {
+		amountMatches, err = money.Equal(remote.Amount, req.Amount)
+	}
+	if err != nil || !amountMatches || remote.Currency != "" && remote.Currency != req.Currency {
+		return model.Invoice{}, false, fmt.Errorf("btcpay: recovered invoice parameters differ")
+	}
+	createdAt := time.Unix(remote.CreatedTime, 0).UTC()
+	if remote.CreatedTime == 0 {
+		createdAt = g.now()
+	}
+	expiresAt := time.Unix(remote.ExpirationTime, 0).UTC()
+	if remote.ExpirationTime == 0 {
+		expiresAt = createdAt.Add(30 * time.Minute)
+	}
+	return model.Invoice{
+		ID: req.OrderID, Provider: name, AnonUserID: req.AnonUserID, Plan: req.Plan,
+		Currency: req.Currency, Amount: req.Amount, PayAddress: remote.CheckoutLink,
+		ProviderInvoiceID: remote.ID, Status: model.StatusPending,
+		CreatedAt: createdAt, ExpiresAt: expiresAt,
+	}, true, nil
 }
 
 // webhookBody is the subset of BTCPay's webhook payload billing consumes.

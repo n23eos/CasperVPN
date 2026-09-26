@@ -83,6 +83,34 @@ func TestProcess_SettlesAndActivatesOnce(t *testing.T) {
 	}
 }
 
+func TestProcess_PaidPlanUpgradeIsAppliedWithBillingRevision(t *testing.T) {
+	fake := controlplane.NewFake()
+	fake.AddUser(contracts.User{ID: "acct-1", Status: contracts.UserStatusActive, RealityShortID: "ab12", UUID: "uuid-1"})
+	existing, err := fake.EnsureSubscription(context.Background(), "acct-1", contracts.SubscriptionPlanBasic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := plan.NewCatalog(plan.Plan{
+		ID: contracts.SubscriptionPlanUnlimited, Duration: 30 * day, Grace: 3 * day,
+		Prices: map[string]string{"BTC": "0.0002"},
+	})
+	repo := store.NewMemory()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	proc := NewProcessor(repo, subscription.NewActivator(fake, catalog, repo, func() time.Time { return now }), 0, func() time.Time { return now })
+	inv := model.Invoice{ID: "upgrade", Provider: "mock", AnonUserID: "acct-1", Plan: string(contracts.SubscriptionPlanUnlimited), Currency: "BTC", Amount: "0.0002", Status: model.StatusPending}
+	if err := repo.CreateInvoice(context.Background(), inv); err != nil {
+		t.Fatal(err)
+	}
+	ev := model.Event{Provider: "mock", ExternalID: "upgrade-paid", InvoiceID: inv.ID, Status: model.StatusSettled, Currency: "BTC", Amount: "0.0002"}
+	if err := proc.Process(context.Background(), ev); err != nil {
+		t.Fatalf("process upgrade: %v", err)
+	}
+	updated, ok := fake.Subscription(existing.ID)
+	if !ok || updated.Plan != contracts.SubscriptionPlanUnlimited || updated.BillingRevision != 1 {
+		t.Fatalf("updated subscription = %+v, want unlimited at billing revision 1", updated)
+	}
+}
+
 // The headline anti-fraud guarantee: a double webhook must NOT grant a double term.
 func TestProcess_DoubleWebhookGivesSingleTerm(t *testing.T) {
 	proc, repo, fake := newHarness(t)

@@ -1,0 +1,143 @@
+name: ${COMPOSE_PROJECT_NAME:-caspervpn-production}
+
+x-runtime: &runtime
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:size=16m,mode=1777]
+  stop_grace_period: 20s
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  depends_on:
+    postgres: {condition: service_healthy}
+
+x-database: &database
+  DATABASE_URL: postgres://caspervpn:${POSTGRES_PASSWORD:?required}@postgres:5432/caspervpn?sslmode=disable
+  ENV: production
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: caspervpn
+      POSTGRES_DB: caspervpn
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U caspervpn -d caspervpn"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  control-plane:
+    <<: *runtime
+    build: {context: ., args: {SERVICE: control-plane}}
+    image: caspervpn/control-plane:${RELEASE_TAG:-local}
+    environment:
+      <<: *database
+      PORT: 8081
+      SEED: "false"
+      CONTROL_PLANE_TOKENS: ${CP_ADMIN_TOKEN:?required}:admin,${CP_ORCHESTRATOR_TOKEN:?required}:orchestrator,${CP_TELEMETRY_TOKEN:?required}:telemetry,${CP_SUBSCRIPTION_TOKEN:?required}:subscription,${CP_BILLING_TOKEN:?required}:billing,${CP_DELIVERY_TOKEN:?required}:delivery
+      SUBSCRIPTION_TOKEN_KEY: ${SUBSCRIPTION_TOKEN_KEY:?required}
+      SUBSCRIPTION_INTERNAL_URL: http://subscription:8082
+      SUBSCRIPTION_INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:?required}
+    ports: ["127.0.0.1:8081:8081"]
+
+  subscription:
+    <<: *runtime
+    build: {context: ., args: {SERVICE: subscription}}
+    image: caspervpn/subscription:${RELEASE_TAG:-local}
+    environment:
+      <<: *database
+      PORT: 8082
+      CONTROL_PLANE_URL: http://control-plane:8081
+      CONTROL_PLANE_TOKEN: ${CP_SUBSCRIPTION_TOKEN:?required}
+      INTERNAL_TOKEN: ${SUBSCRIPTION_INTERNAL_TOKEN:?required}
+      SUBSCRIPTION_PUBLIC_BASE_URL: https://${PUBLIC_HOST:?required}
+      SUBSCRIPTION_TRUSTED_PROXY_CIDRS: ${SERVICE_SUBNET:?required}
+      ROUTING_POLICY_FILE: /config/routing.json
+    volumes: ["${ROUTING_POLICY_HOST:?required}:/config/routing.json:ro"]
+    ports: ["127.0.0.1:8082:8082"]
+
+  billing:
+    <<: *runtime
+    build: {context: ., args: {SERVICE: billing}}
+    image: caspervpn/billing:${RELEASE_TAG:-local}
+    environment:
+      <<: *database
+      PORT: 8084
+      CONTROL_PLANE_URL: http://control-plane:8081
+      CONTROL_PLANE_TOKEN: ${CP_BILLING_TOKEN:?required}
+      BILLING_INTERNAL_TOKEN: ${BILLING_INTERNAL_TOKEN:?required}
+      BILLING_PLAN_CATALOG: /config/plans.json
+      BTCPAY_BASE_URL: ${BTCPAY_BASE_URL:?required}
+      BTCPAY_API_KEY: ${BTCPAY_API_KEY:?required}
+      BTCPAY_STORE_ID: ${BTCPAY_STORE_ID:?required}
+      BTCPAY_WEBHOOK_SECRET: ${BTCPAY_WEBHOOK_SECRET:?required}
+      BTCPAY_CURRENCIES: ${BTCPAY_CURRENCIES:-BTC}
+    volumes: ["${BILLING_PLAN_CATALOG_HOST:?required}:/config/plans.json:ro"]
+    ports: ["127.0.0.1:8084:8084"]
+
+  delivery:
+    <<: *runtime
+    build: {context: ., args: {SERVICE: delivery}}
+    image: caspervpn/delivery:${RELEASE_TAG:-local}
+    environment:
+      <<: *database
+      PORT: 8083
+      DELIVERY_BOT_ENABLED: "true"
+      DELIVERY_CONTROL_PLANE_BASE: http://control-plane:8081
+      DELIVERY_CONTROL_PLANE_TOKEN: ${CP_DELIVERY_TOKEN:?required}
+      DELIVERY_BILLING_BASE: http://billing:8084
+      DELIVERY_BILLING_TOKEN: ${BILLING_INTERNAL_TOKEN:?required}
+      DELIVERY_TELEGRAM_BASE: https://api.telegram.org
+      DELIVERY_TELEGRAM_TOKEN: ${DELIVERY_TELEGRAM_TOKEN:?required}
+      DELIVERY_PUBLIC_SUBSCRIPTION_BASE: https://${PUBLIC_HOST:?required}
+      DELIVERY_SIGN_KEY_ID: production-1
+      DELIVERY_SIGN_SEED: ${DELIVERY_SIGN_SEED:?required}
+      DELIVERY_SEAL_KEY: ${DELIVERY_SEAL_KEY:?required}
+      DELIVERY_BOT_DEFAULT_CURRENCY: ${DELIVERY_BOT_DEFAULT_CURRENCY:-BTC}
+    ports: ["127.0.0.1:8083:8083"]
+
+  telemetry:
+    <<: *runtime
+    build: {context: ., args: {SERVICE: telemetry}}
+    image: caspervpn/telemetry:${RELEASE_TAG:-local}
+    environment:
+      <<: *database
+      PORT: 8085
+      TELEMETRY_INTERNAL_TOKEN: ${TELEMETRY_INTERNAL_TOKEN:?required}
+    ports: ["127.0.0.1:8085:8085"]
+
+  edge:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?required}
+      TLS_EMAIL: ${TLS_EMAIL:?required}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [subscription, billing]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${SERVICE_SUBNET:?required}

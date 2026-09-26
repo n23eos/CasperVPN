@@ -29,6 +29,7 @@ func (s *Server) handleInternal(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 
 	switch strings.TrimPrefix(r.URL.Path, "/internal/") {
 	case "tokens":

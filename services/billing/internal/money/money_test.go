@@ -40,3 +40,15 @@ func TestValid(t *testing.T) {
 		t.Fatal("garbage should be invalid")
 	}
 }
+
+func TestEqual(t *testing.T) {
+	equal, err := Equal("0.00010000", "0.0001")
+	if err != nil || !equal {
+		t.Fatalf("Equal trailing zeros = %t, %v; want true, nil", equal, err)
+	}
+	for _, invalid := range []string{"invalid", "-0.0001"} {
+		if _, err := Equal(invalid, "0.0001"); err == nil {
+			t.Fatalf("Equal accepted invalid amount %q", invalid)
+		}
+	}
+}

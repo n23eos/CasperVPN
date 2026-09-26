@@ -43,15 +43,20 @@ type Options struct {
 	// replaced carries no placement of its own. From env only.
 	DefaultRegion string
 	DefaultCloud  string
+	// RotationInterval is applied after a successful guarded rotation.
+	RotationInterval time.Duration
+	// AccessSyncEnabled refreshes active entry credentials every cycle.
+	AccessSyncEnabled bool
 	// Interval between cycles for Run.
 	Interval time.Duration
 }
 
 // Report summarizes one cycle for logs and tests.
 type Report struct {
-	Plan     []policy.Action
-	Executed int // side-effecting actions actually performed
-	DryRun   bool
+	Plan         []policy.Action
+	Executed     int // side-effecting actions actually performed
+	AccessSynced int
+	DryRun       bool
 }
 
 // Loop is one reconcile loop instance.
@@ -85,8 +90,8 @@ func (l *Loop) Run(ctx context.Context) {
 		if rep, err := l.Cycle(ctx); err != nil {
 			l.deps.Logf("reconcile: cycle failed: %v", err)
 		} else {
-			l.deps.Logf("reconcile: cycle done: %d planned, %d executed (dry_run=%v)",
-				len(rep.Plan), rep.Executed, rep.DryRun)
+			l.deps.Logf("reconcile: cycle done: %d planned, %d executed, %d access snapshots synced (dry_run=%v)",
+				len(rep.Plan), rep.Executed, rep.AccessSynced, rep.DryRun)
 		}
 		select {
 		case <-ctx.Done():
@@ -106,6 +111,13 @@ func (l *Loop) Cycle(ctx context.Context) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("reconcile: fleet state unavailable: %w", err)
 	}
+	rep := Report{DryRun: l.opts.DryRun}
+	if !l.opts.DryRun && l.opts.AccessSyncEnabled {
+		rep.AccessSynced, err = l.syncFleetAccess(ctx, nodes, now)
+		if err != nil {
+			return rep, err
+		}
+	}
 	recs, err := l.deps.Telemetry.Recommendations(ctx)
 	if err != nil {
 		l.deps.Logf("reconcile: recommendations unavailable (%v) — planning without them", err)
@@ -122,11 +134,12 @@ func (l *Loop) Cycle(ctx context.Context) (Report, error) {
 		l.deps.Logf("reconcile: planned %-13s node=%s regions=%v reason=%s", a.Type, a.NodeID, a.Regions, a.Reason)
 	}
 	if l.opts.DryRun {
-		return Report{Plan: plan, DryRun: true}, nil
+		rep.Plan = plan
+		return rep, nil
 	}
 
 	// 4. Act. Stop at the first failure — a half-executed plan must not cascade.
-	rep := Report{Plan: plan}
+	rep.Plan = plan
 	byID := make(map[string]contracts.Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
@@ -135,7 +148,7 @@ func (l *Loop) Cycle(ctx context.Context) (Report, error) {
 		if a.Type == policy.ActionNoop {
 			continue
 		}
-		if err := l.execute(ctx, a, byID[a.NodeID], now); err != nil {
+		if err := l.execute(ctx, a, byID[a.NodeID], byID, now); err != nil {
 			return rep, fmt.Errorf("reconcile: %s %s: %w (stopping this cycle)", a.Type, a.NodeID, err)
 		}
 		if a.Type != policy.ActionMarkDegraded {
@@ -143,6 +156,39 @@ func (l *Loop) Cycle(ctx context.Context) (Report, error) {
 		}
 	}
 	return rep, nil
+}
+
+// syncFleetAccess refreshes every serving entry from the authoritative CP
+// snapshot. A failed refresh stops the cycle before any lifecycle mutation; the
+// node watchdog independently closes inbounds when its last lease expires.
+func (l *Loop) syncFleetAccess(ctx context.Context, nodes []contracts.Node, now time.Time) (int, error) {
+	count := 0
+	for _, node := range nodes {
+		if node.Role != contracts.NodeRoleEntry || node.Status != contracts.NodeStatusActive {
+			continue
+		}
+		snapshot, err := l.deps.CP.AccessUsers(ctx, node.ID)
+		if err != nil {
+			return count, fmt.Errorf("reconcile: access snapshot %s: %w", node.ID, err)
+		}
+		if !snapshot.ValidUntil.After(now) {
+			return count, fmt.Errorf("reconcile: access snapshot %s expired at %s", node.ID, snapshot.ValidUntil.UTC().Format(time.RFC3339))
+		}
+		if err := l.deps.Prov.SyncAccess(ctx, node, snapshot); err != nil {
+			return count, fmt.Errorf("reconcile: access sync %s: %w", node.ID, err)
+		}
+		count++
+		l.deps.Logf("reconcile: access synced node=%s users=%d revision=%s valid_until=%s",
+			node.ID, len(snapshot.Users), shortRevision(snapshot.Revision), snapshot.ValidUntil.UTC().Format(time.RFC3339))
+	}
+	return count, nil
+}
+
+func shortRevision(v string) string {
+	if len(v) > 12 {
+		return v[:12]
+	}
+	return v
 }
 
 // confirmSuspects probes nodes named in block recommendations. Only fresh
@@ -183,7 +229,7 @@ func (l *Loop) confirmSuspects(ctx context.Context, recs contracts.Recommendatio
 }
 
 // execute performs one side-effecting action.
-func (l *Loop) execute(ctx context.Context, a policy.Action, node contracts.Node, now time.Time) error {
+func (l *Loop) execute(ctx context.Context, a policy.Action, node contracts.Node, fleet map[string]contracts.Node, now time.Time) error {
 	switch a.Type {
 	case policy.ActionMarkDegraded:
 		node.Status = contracts.NodeStatusDegraded
@@ -194,7 +240,7 @@ func (l *Loop) execute(ctx context.Context, a policy.Action, node contracts.Node
 		// node_rotate.sh replaces the ephemeral entry VM, re-keys REALITY and
 		// PATCHes the Node in the control-plane itself. We verify afterwards.
 		oldIP := node.EntryIP
-		if err := l.deps.Prov.NodeRotate(ctx, a.NodeID); err != nil {
+		if err := l.deps.Prov.NodeRotate(ctx, node); err != nil {
 			return err
 		}
 		after, err := l.deps.CP.GetNode(ctx, a.NodeID)
@@ -202,9 +248,19 @@ func (l *Loop) execute(ctx context.Context, a policy.Action, node contracts.Node
 			return fmt.Errorf("rotate succeeded but verification failed: %w", err)
 		}
 		if after.EntryIP == oldIP {
-			l.deps.Logf("reconcile: WARNING rotate %s: entry_ip unchanged in control-plane (%s) — check CONTROL_PLANE_URL on the script side", a.NodeID, oldIP)
+			return fmt.Errorf("rotate returned without changing entry_ip in control-plane (%s)", oldIP)
 		}
-		return nil
+		if after.Status != contracts.NodeStatusActive {
+			return fmt.Errorf("rotate returned before guarded activation (status=%s)", after.Status)
+		}
+		interval := l.opts.RotationInterval
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+		next := now.Add(interval).UTC()
+		after.RotateAfter = &next
+		_, err = l.deps.CP.UpdateNode(ctx, after)
+		return err
 
 	case policy.ActionReplace:
 		// Order matters: replacement FIRST (node_up.sh registers it in the
@@ -216,20 +272,33 @@ func (l *Loop) execute(ctx context.Context, a policy.Action, node contracts.Node
 		if cloud == "" {
 			cloud = l.opts.DefaultCloud
 		}
-		if err := l.deps.Prov.NodeUp(ctx, region, cloud); err != nil {
+		pair, err := l.deps.Prov.NodeUp(ctx, region, cloud)
+		if err != nil {
 			return err // old node untouched — nothing to roll back
 		}
-		node.Status = contracts.NodeStatusDraining
-		if node.Labels == nil {
-			node.Labels = map[string]string{}
+		newEntry, err := l.deps.CP.GetNode(ctx, pair.EntryID)
+		if err != nil || newEntry.Status != contracts.NodeStatusActive {
+			return fmt.Errorf("replacement entry %s not active: status=%s err=%v", pair.EntryID, newEntry.Status, err)
 		}
-		node.Labels[policy.DrainStartedLabel] = now.UTC().Format(time.RFC3339)
-		_, err := l.deps.CP.UpdateNode(ctx, node)
-		return err
+		newExit, err := l.deps.CP.GetNode(ctx, pair.ExitID)
+		if err != nil || newExit.Status != contracts.NodeStatusActive {
+			return fmt.Errorf("replacement exit %s not active: status=%s err=%v", pair.ExitID, newExit.Status, err)
+		}
+		for _, old := range oldPair(node, fleet) {
+			old.Status = contracts.NodeStatusDraining
+			if old.Labels == nil {
+				old.Labels = map[string]string{}
+			}
+			old.Labels[policy.DrainStartedLabel] = now.UTC().Format(time.RFC3339)
+			if _, err := l.deps.CP.UpdateNode(ctx, old); err != nil {
+				return fmt.Errorf("replacement active but failed to drain old node %s: %w", old.ID, err)
+			}
+		}
+		return nil
 
 	case policy.ActionRetire:
 		// node_down.sh drains, retires the Node record and destroys the infra.
-		if err := l.deps.Prov.NodeDown(ctx, a.NodeID); err != nil {
+		if err := l.deps.Prov.NodeDown(ctx, node); err != nil {
 			return err
 		}
 		// Belt and braces: make sure the registry agrees.
@@ -243,4 +312,21 @@ func (l *Loop) execute(ctx context.Context, a policy.Action, node contracts.Node
 		return nil
 	}
 	return fmt.Errorf("unknown action %q", a.Type)
+}
+
+func oldPair(node contracts.Node, fleet map[string]contracts.Node) []contracts.Node {
+	out := []contracts.Node{node}
+	if node.Role == contracts.NodeRoleEntry {
+		for _, candidate := range fleet {
+			if candidate.Role == contracts.NodeRoleExit && candidate.EntryNodeID != nil && *candidate.EntryNodeID == node.ID {
+				out = append(out, candidate)
+				break
+			}
+		}
+	} else if node.Role == contracts.NodeRoleExit && node.EntryNodeID != nil && *node.EntryNodeID != "" {
+		if entry, ok := fleet[*node.EntryNodeID]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
 }

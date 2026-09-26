@@ -20,9 +20,10 @@ type User struct {
 	Status UserStatus `json:"status"`
 
 	// Per-user isolation secrets. These are unique per user and rotate on abuse.
-	RealityShortID string `json:"reality_short_id"`      // user's own REALITY short-id
-	UUID           string `json:"uuid"`                  // user's own VLESS UUID
-	PrivateKey     string `json:"private_key,omitempty"` // user's own transport key material (server-side secret)
+	RealityShortID    string `json:"reality_short_id"` // user's own REALITY short-id
+	UUID              string `json:"uuid"`             // user's own VLESS UUID
+	Hysteria2Password string `json:"hysteria2_password,omitempty"`
+	PrivateKey        string `json:"private_key,omitempty"` // user's own transport key material (server-side secret)
 
 	// Entitlements.
 	SubscriptionID *string `json:"subscription_id,omitempty"`
