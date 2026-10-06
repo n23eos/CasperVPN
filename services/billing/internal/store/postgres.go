@@ -72,7 +72,7 @@ func (p *Postgres) WithUserLock(ctx context.Context, userID string, fn func(ctx 
 		uctx, cancel := context.WithTimeout(context.Background(), unlockTimeout)
 		defer cancel()
 		if _, uerr := conn.Exec(uctx, `SELECT pg_advisory_unlock($1, $2)`, advisoryLockNamespace, key); uerr != nil {
-			// The connection may still hold the lock — it MUST NOT go back to the pool.
+			// The connection may still hold the lock - it MUST NOT go back to the pool.
 			// Force-closing the backend makes Postgres drop the session-level lock.
 			_ = conn.Conn().Close(context.Background())
 		}
@@ -200,6 +200,67 @@ func (p *Postgres) GetInvoice(ctx context.Context, id string) (model.Invoice, er
 	return scanInvoice(row)
 }
 
+func (p *Postgres) LatestInvoice(ctx context.Context, anonUserID string) (model.InvoiceOverview, error) {
+	row := p.pool.QueryRow(ctx, `
+		SELECT id, anon_user_id, plan, status, amount, currency, created_at, expires_at
+		FROM invoices
+		WHERE anon_user_id = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, anonUserID)
+	return scanInvoiceOverview(row)
+}
+
+func (p *Postgres) InvoiceSummary(ctx context.Context, recentLimit int) (model.InvoiceCounts, []model.InvoiceOverview, error) {
+	recentLimit = boundedRecentLimit(recentLimit)
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return model.InvoiceCounts{}, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var counts model.InvoiceCounts
+	err = tx.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE status = $1),
+			COUNT(*) FILTER (WHERE status = $2),
+			COUNT(*) FILTER (WHERE status = $3),
+			COUNT(*) FILTER (WHERE status = $4)
+		FROM invoices`,
+		string(model.StatusPending), string(model.StatusSettled),
+		string(model.StatusExpired), string(model.StatusInvalid),
+	).Scan(&counts.Pending, &counts.Settled, &counts.Expired, &counts.Invalid)
+	if err != nil {
+		return model.InvoiceCounts{}, nil, err
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT id, anon_user_id, plan, status, amount, currency, created_at, expires_at
+		FROM invoices
+		ORDER BY created_at DESC, id DESC
+		LIMIT $1`, recentLimit)
+	if err != nil {
+		return model.InvoiceCounts{}, nil, err
+	}
+	recent := make([]model.InvoiceOverview, 0, recentLimit)
+	for rows.Next() {
+		inv, scanErr := scanInvoiceOverview(rows)
+		if scanErr != nil {
+			rows.Close()
+			return model.InvoiceCounts{}, nil, scanErr
+		}
+		recent = append(recent, inv)
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		return model.InvoiceCounts{}, nil, rowsErr
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.InvoiceCounts{}, nil, err
+	}
+	return counts, recent, nil
+}
+
 // SetInvoiceStatus updates an invoice's status, returning ErrNotFound if absent.
 func (p *Postgres) SetInvoiceStatus(ctx context.Context, id string, s model.Status) error {
 	tag, err := p.pool.Exec(ctx, `UPDATE invoices SET status = $2 WHERE id = $1`, id, string(s))
@@ -253,7 +314,7 @@ func (p *Postgres) RecordEvent(ctx context.Context, provider, externalID string)
 
 // ClaimSettlement atomically claims the right to credit invoiceID. The primary-key
 // conflict makes the first insert win; every later caller inserts nothing and gets
-// false — this is the at-most-once credit latch.
+// false - this is the at-most-once credit latch.
 func (p *Postgres) ClaimSettlement(ctx context.Context, invoiceID string) (bool, error) {
 	tag, err := p.pool.Exec(ctx, `
 		INSERT INTO settlements (invoice_id) VALUES ($1)
@@ -315,7 +376,7 @@ func (p *Postgres) LeaseStuckSettlements(ctx context.Context, olderThan time.Tim
 
 // ExpireOverdue transitions overdue pending invoices to expired in one statement,
 // excluding any invoice that carries a settlement claim (NOT EXISTS) so a paid
-// invoice mid-recovery is never buried — no per-invoice race, no N+1.
+// invoice mid-recovery is never buried - no per-invoice race, no N+1.
 func (p *Postgres) ExpireOverdue(ctx context.Context, now time.Time, onchainProviders []string, grace time.Duration) error {
 	if onchainProviders == nil {
 		onchainProviders = []string{} // nil would encode as SQL NULL → provider = ANY(NULL) is NULL, not false
@@ -621,6 +682,25 @@ func scanInvoice(s scanner) (model.Invoice, error) {
 		return model.Invoice{}, err
 	}
 	inv.Status = model.Status(status)
+	return inv, nil
+}
+
+func scanInvoiceOverview(s scanner) (model.InvoiceOverview, error) {
+	var inv model.InvoiceOverview
+	var status string
+	err := s.Scan(
+		&inv.InvoiceID, &inv.AnonUserID, &inv.Plan, &status, &inv.Amount,
+		&inv.Currency, &inv.CreatedAt, &inv.ExpiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.InvoiceOverview{}, ErrNotFound
+	}
+	if err != nil {
+		return model.InvoiceOverview{}, err
+	}
+	inv.Status = model.Status(status)
+	inv.CreatedAt = inv.CreatedAt.UTC()
+	inv.ExpiresAt = inv.ExpiresAt.UTC()
 	return inv, nil
 }
 

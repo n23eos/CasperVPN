@@ -34,12 +34,33 @@ type Invoice struct {
 	ExpiresAt         time.Time `json:"expires_at"`
 }
 
+// InvoiceOverview is the safe projection used by private read APIs. Provider
+// identifiers, payment addresses and checkout data are deliberately absent.
+type InvoiceOverview struct {
+	InvoiceID  string
+	AnonUserID string
+	Plan       string
+	Status     Status
+	Amount     string
+	Currency   string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+}
+
+// InvoiceCounts contains the operator-visible totals for normalized statuses.
+type InvoiceCounts struct {
+	Pending int64
+	Settled int64
+	Expired int64
+	Invalid int64
+}
+
 // Event is a normalized payment notification, produced from a webhook or a poll.
 // ExternalID and InvoiceID drive the two-layer idempotency (see store).
 type Event struct {
 	Provider      string    `json:"provider"`
-	ExternalID    string    `json:"external_id"` // provider delivery/event id — webhook-replay dedup key
-	InvoiceID     string    `json:"invoice_id"`  // billing invoice id — settlement dedup key
+	ExternalID    string    `json:"external_id"` // provider delivery/event id - webhook-replay dedup key
+	InvoiceID     string    `json:"invoice_id"`  // billing invoice id - settlement dedup key
 	Status        Status    `json:"status"`
 	Currency      string    `json:"currency"`
 	Amount        string    `json:"amount"` // amount actually observed as paid

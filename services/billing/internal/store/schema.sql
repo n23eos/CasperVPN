@@ -1,7 +1,7 @@
 -- Billing persistence schema (Postgres). Mirrors store.Repository and the value
 -- types in internal/model. No PII: accounts are referenced by opaque anon_user_id.
 --
--- Apply once at deploy time (out of band, not on app start — concurrent instances
+-- Apply once at deploy time (out of band, not on app start - concurrent instances
 -- would otherwise race on migration). All statements are idempotent.
 --
 -- DEPLOYMENT ORDER: apply this DDL FIRST, then roll out the new binary. The new
@@ -44,9 +44,12 @@ CREATE TABLE IF NOT EXISTS invoice_intents (
 
 -- Open invoices are polled every cycle; index the hot predicate.
 CREATE INDEX IF NOT EXISTS invoices_status_idx ON invoices (status);
+CREATE INDEX IF NOT EXISTS invoices_account_latest_idx
+    ON invoices (anon_user_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS invoices_recent_idx ON invoices (created_at DESC, id DESC);
 
 -- last_negative_check_at records the time of the most recent DEFINITIVE negative
--- on-chain check (chain reachable, payment absent/insufficient) — NOT a chain API
+-- on-chain check (chain reachable, payment absent/insufficient) - NOT a chain API
 -- error. An on-chain invoice may be expired only once a negative check taken at or
 -- after its effective deadline exists, so a payment confirmed in the grace window is
 -- never buried by a sweep that raced ahead of the poll.
@@ -76,9 +79,9 @@ CREATE TABLE IF NOT EXISTS seen_events (
 -- Settlement latch: presence of a row means the invoice is claimed/credited.
 -- The primary key makes ClaimSettlement an atomic insert-if-absent. The recovery
 -- columns let a reconciler finish a settlement whose process died mid-flight:
---   claimed_at             — when the credit was claimed (recover once older than a threshold)
---   activated_at           — remote activation applied (recovery then only flips status, no re-activate)
---   reconcile_leased_until — cross-process lease so two reconcilers never race the same invoice
+--   claimed_at             - when the credit was claimed (recover once older than a threshold)
+--   activated_at           - remote activation applied (recovery then only flips status, no re-activate)
+--   reconcile_leased_until - cross-process lease so two reconcilers never race the same invoice
 CREATE TABLE IF NOT EXISTS settlements (
     invoice_id             TEXT PRIMARY KEY,
     claimed_at             TIMESTAMPTZ NOT NULL DEFAULT now(),

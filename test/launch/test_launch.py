@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +15,32 @@ SPEC.loader.exec_module(launch)
 
 
 class LaunchTests(unittest.TestCase):
+    def test_automated_restore_cleanup_on_success_and_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup = Path(directory) / "fixture.dump"
+            backup.write_bytes(b"local fixture")
+            for fail in (False, True):
+                with self.subTest(failure=fail):
+                    stack = Mock()
+                    if fail:
+                        stack.run.side_effect = ValueError("restore failed")
+                    with patch.object(launch.secrets, "token_hex", return_value="123456abcdef"):
+                        if fail:
+                            with self.assertRaisesRegex(ValueError, "restore failed"):
+                                launch.restore_check(stack, backup, cleanup=True)
+                        else:
+                            launch.restore_check(stack, backup, cleanup=True)
+                    self.assertEqual(stack.sql.call_args.args[0], 'DROP DATABASE "restore_check_123456abcdef" WITH (FORCE);')
+                    self.assertEqual(stack.sql.call_args.kwargs, {"database": "postgres"})
+
+    def test_manual_restore_retains_isolated_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup = Path(directory) / "fixture.dump"
+            backup.write_bytes(b"local fixture")
+            stack = Mock()
+            launch.restore_check(stack, backup)
+            self.assertFalse(any("DROP DATABASE" in call.args[0] for call in stack.sql.call_args_list))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -69,6 +95,18 @@ class LaunchTests(unittest.TestCase):
             with self.subTest(subnet=subnet):
                 self.values["SERVICE_SUBNET"] = subnet
                 with self.assertRaisesRegex(ValueError, "private"):
+                    launch.validate(self.values)
+
+    def test_optional_bot_links_do_not_block_valid_launch(self):
+        self.values["DELIVERY_BOT_SETUP_URL"] = ""
+        self.values["DELIVERY_BOT_SUPPORT_URL"] = ""
+        launch.validate(self.values)
+        self.values["DELIVERY_BOT_SETUP_URL"] = "https://docs.caspervpn-check.com/setup-ru.html"
+        launch.validate(self.values)
+        for invalid in ("http://help.example.org", "https://user:secret@help.example.org", "javascript:alert(1)"):
+            with self.subTest(url=invalid):
+                self.values["DELIVERY_BOT_SUPPORT_URL"] = invalid
+                with self.assertRaisesRegex(ValueError, "HTTPS"):
                     launch.validate(self.values)
 
     def test_fleet_gate_accepts_contract_transport_names(self):

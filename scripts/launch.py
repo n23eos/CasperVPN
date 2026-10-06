@@ -61,6 +61,11 @@ def initialize(path):
         "BTCPAY_WEBHOOK_SECRET": "",
         "BTCPAY_CURRENCIES": "BTC",
         "DELIVERY_BOT_DEFAULT_CURRENCY": "BTC",
+        "DELIVERY_BOT_SETUP_URL": "",
+        "DELIVERY_BOT_SUPPORT_URL": "",
+        "DELIVERY_NOTIFY_INTERVAL": "1m",
+        "DELIVERY_NOTIFY_WINDOW": "72h",
+        "DELIVERY_NOTIFY_BATCH_SIZE": "100",
         "BILLING_PLAN_CATALOG_HOST": str(path.parent / "plans.json"),
         "ROUTING_POLICY_HOST": str(ROOT / "services/subscription/config/routing.ru.json"),
     }
@@ -72,7 +77,8 @@ def initialize(path):
 
 
 def validate(values):
-    missing = [key for key, value in values.items() if not value]
+    optional = {"DELIVERY_BOT_SETUP_URL", "DELIVERY_BOT_SUPPORT_URL"}
+    missing = [key for key, value in values.items() if not value and key not in optional]
     required = ["POSTGRES_PASSWORD", "PUBLIC_HOST", "TLS_EMAIL", "DELIVERY_TELEGRAM_TOKEN", "SERVICE_SUBNET",
                 "BTCPAY_BASE_URL", "BTCPAY_API_KEY", "BTCPAY_STORE_ID", "BTCPAY_WEBHOOK_SECRET",
                 "BTCPAY_CURRENCIES", "DELIVERY_BOT_DEFAULT_CURRENCY", "BILLING_PLAN_CATALOG_HOST",
@@ -101,6 +107,11 @@ def validate(values):
     url = urlsplit(values["BTCPAY_BASE_URL"])
     if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise ValueError("BTCPAY_BASE_URL must be an HTTPS URL without credentials, query or fragment")
+    for key in optional:
+        if values.get(key):
+            target = urlsplit(values[key])
+            if target.scheme != "https" or not target.hostname or target.username or target.password or target.fragment:
+                raise ValueError(key + " must be an HTTPS URL without credentials or fragment")
     if "BILLING_MOCK_SECRET" in values:
         raise ValueError("mock payments are forbidden in production")
     for key in ("BILLING_PLAN_CATALOG_HOST", "ROUTING_POLICY_HOST"):
@@ -202,6 +213,25 @@ class Stack:
         self.ready()
 
 
+def restore_check(stack, backup, cleanup=False):
+    # The generated name never refers to the application database.
+    database = "restore_check_" + secrets.token_hex(6)
+    stack.sql(f'CREATE DATABASE "{database}";', database="postgres")
+    try:
+        with backup.open("rb") as stream:
+            stack.run("exec", "-T", "postgres", "pg_restore", "--exit-on-error", "--no-owner", "--single-transaction",
+                      "-U", "caspervpn", "-d", database, stdin=stream)
+        stack.sql("SELECT count(*) FROM users; SELECT count(*) FROM invoices; SELECT count(*) FROM subscription_tokens;", database)
+        print("Restored successfully into isolated database:", database)
+    finally:
+        if cleanup:
+            stack.sql(f'DROP DATABASE "{database}" WITH (FORCE);', database="postgres")
+    if cleanup:
+        print("Isolated restore database removed; production data was not replaced.")
+    else:
+        print("This check leaves that database intact; production data was not replaced.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", type=Path, default=ROOT / ".launch/production.env")
@@ -212,6 +242,7 @@ def main():
     backup.add_argument("output", type=Path)
     restore = sub.add_parser("restore-check")
     restore.add_argument("backup", type=Path)
+    restore.add_argument("--cleanup", action="store_true", help="remove this isolated restore database even when validation fails")
     args = parser.parse_args()
     path = args.env.resolve()
     if args.action == "init":
@@ -254,15 +285,7 @@ def main():
             stack.run("exec", "-T", "postgres", "pg_dump", "-U", "caspervpn", "-d", "caspervpn", "-Fc", stdout=stream)
         print("Database backup created. Preserve the matching private keys separately.")
     elif args.action == "restore-check":
-        # Never overwrite the application DB. Leave the isolated restore available for inspection.
-        database = "restore_check_" + secrets.token_hex(6)
-        stack.sql(f'CREATE DATABASE "{database}";', database="postgres")
-        with args.backup.open("rb") as stream:
-            stack.run("exec", "-T", "postgres", "pg_restore", "--exit-on-error", "--no-owner", "--single-transaction",
-                      "-U", "caspervpn", "-d", database, stdin=stream)
-        stack.sql("SELECT count(*) FROM users; SELECT count(*) FROM invoices; SELECT count(*) FROM subscription_tokens;", database)
-        print("Restored successfully into isolated database:", database)
-        print("This check leaves that database intact; production data was not replaced.")
+        restore_check(stack, args.backup, cleanup=args.cleanup)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ package onboarding
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,33 @@ func (s *Service) EnsureUser(ctx context.Context, senderID int64) error {
 	return err
 }
 
+func (s *Service) Catalog(ctx context.Context) ([]telegram.Plan, error) {
+	var response contracts.BillingPlanOffers
+	if err := s.billing.doJSON(ctx, http.MethodGet, "/v1/plans", nil, nil, &response, http.StatusOK); err != nil {
+		return nil, translateReadError(err)
+	}
+	plans := make([]telegram.Plan, 0, len(response.Items))
+	for _, item := range response.Items {
+		if !item.ID.Valid() || item.DurationSeconds <= 0 || item.GraceSeconds < 0 || len(item.Prices) == 0 {
+			return nil, errors.New("onboarding: invalid billing catalog")
+		}
+		prices := make(map[string]string, len(item.Prices))
+		for currency, amount := range item.Prices {
+			currency = strings.ToUpper(strings.TrimSpace(currency))
+			amount = strings.TrimSpace(amount)
+			if currency == "" || amount == "" {
+				return nil, errors.New("onboarding: invalid billing catalog price")
+			}
+			prices[currency] = amount
+		}
+		plans = append(plans, telegram.Plan{
+			ID: item.ID, DurationSeconds: item.DurationSeconds,
+			GraceSeconds: item.GraceSeconds, Prices: prices,
+		})
+	}
+	return plans, nil
+}
+
 func (s *Service) CreateInvoice(ctx context.Context, senderID, updateID int64, plan contracts.SubscriptionPlan, currency string) (telegram.Invoice, error) {
 	user, err := s.ensureUser(ctx, senderID)
 	if err != nil {
@@ -68,6 +96,15 @@ func (s *Service) CreateInvoice(ctx context.Context, senderID, updateID int64, p
 	}
 	headers := map[string]string{"Idempotency-Key": "tg-update-" + strconv.FormatInt(updateID, 10)}
 	if err := s.billing.doJSON(ctx, http.MethodPost, "/v1/invoices", request, headers, &response, http.StatusCreated, http.StatusOK); err != nil {
+		var statusErr *statusError
+		if errors.As(err, &statusErr) {
+			switch statusErr.code {
+			case http.StatusBadRequest, http.StatusUnprocessableEntity:
+				return telegram.Invoice{}, telegram.ErrUnsupportedCatalog
+			case http.StatusTooManyRequests:
+				return telegram.Invoice{}, telegram.ErrRateLimited
+			}
+		}
 		return telegram.Invoice{}, err
 	}
 	expiresAt, err := time.Parse(time.RFC3339, response.ExpiresAt)
@@ -80,31 +117,67 @@ func (s *Service) CreateInvoice(ctx context.Context, senderID, updateID int64, p
 	}, nil
 }
 
+func (s *Service) Status(ctx context.Context, senderID int64) (telegram.AccountStatus, error) {
+	user, err := s.ensureUser(ctx, senderID)
+	if err != nil {
+		return telegram.AccountStatus{}, translateReadError(err)
+	}
+	result := telegram.AccountStatus{UserStatus: user.Status}
+	var latest contracts.BillingInvoiceStatus
+	invoicePath := "/v1/accounts/" + url.PathEscape(user.ID) + "/invoices/latest"
+	err = s.billing.doJSON(ctx, http.MethodGet, invoicePath, nil, nil, &latest, http.StatusOK)
+	if err != nil {
+		var statusErr *statusError
+		if !errors.As(err, &statusErr) || statusErr.code != http.StatusNotFound {
+			return telegram.AccountStatus{}, translateReadError(err)
+		}
+	} else {
+		result.Invoice = &telegram.LatestInvoice{
+			ID: latest.InvoiceID, Plan: latest.Plan, Status: string(latest.Status),
+			Amount: latest.Amount, Currency: latest.Currency,
+			CreatedAt: latest.CreatedAt, ExpiresAt: latest.ExpiresAt,
+		}
+	}
+
+	if user.SubscriptionID == nil || *user.SubscriptionID == "" {
+		return result, nil
+	}
+	subscription, found, err := s.subscription(ctx, user, *user.SubscriptionID)
+	if err != nil {
+		return telegram.AccountStatus{}, translateReadError(err)
+	}
+	if !found {
+		return result, nil
+	}
+	result.Subscription = &subscription
+	result.Eligible = user.Status == contracts.UserStatusActive && eligible(subscription, s.now())
+	return result, nil
+}
+
 func (s *Service) SubscriptionLink(ctx context.Context, senderID int64) (telegram.Link, error) {
 	user, err := s.ensureUser(ctx, senderID)
 	if err != nil {
 		return telegram.Link{}, err
 	}
+	if user.Status == contracts.UserStatusSuspended || user.Status == contracts.UserStatusBanned {
+		return telegram.Link{}, telegram.ErrAccountSuspended
+	}
 	if user.Status != contracts.UserStatusActive || user.SubscriptionID == nil || *user.SubscriptionID == "" {
 		return telegram.Link{}, telegram.ErrNoSubscription
 	}
 
-	var subscription contracts.Subscription
-	path := "/v1/subscriptions/" + url.PathEscape(*user.SubscriptionID)
-	if err := s.cp.doJSON(ctx, http.MethodGet, path, nil, nil, &subscription, http.StatusOK); err != nil {
-		var statusErr *statusError
-		if errors.As(err, &statusErr) && statusErr.code == http.StatusNotFound {
-			return telegram.Link{}, telegram.ErrNoSubscription
-		}
+	subscription, found, err := s.subscription(ctx, user, *user.SubscriptionID)
+	if err != nil {
 		return telegram.Link{}, err
 	}
-	if subscription.ID != *user.SubscriptionID || subscription.UserID != user.ID {
-		return telegram.Link{}, errors.New("onboarding: inconsistent subscription identity")
+	if !found {
+		return telegram.Link{}, telegram.ErrNoSubscription
 	}
 	if !eligible(subscription, s.now()) {
 		return telegram.Link{}, telegram.ErrNotEligible
 	}
 
+	path := "/v1/subscriptions/" + url.PathEscape(subscription.ID)
 	var link contracts.DeliveryLink
 	if err := s.cp.doJSON(ctx, http.MethodPost, path+"/delivery-link", struct{}{}, nil, &link, http.StatusOK, http.StatusCreated); err != nil {
 		return telegram.Link{}, err
@@ -112,7 +185,35 @@ func (s *Service) SubscriptionLink(ctx context.Context, senderID int64) (telegra
 	if link.Token == "" || link.SubscriptionID != subscription.ID {
 		return telegram.Link{}, errors.New("onboarding: invalid delivery link response")
 	}
-	return telegram.Link{SubscriptionURL: s.publicSubBase + "/sub/" + url.PathEscape(link.Token)}, nil
+	subscriptionURL := s.publicSubBase + "/sub/" + url.PathEscape(link.Token)
+	return telegram.Link{
+		SubscriptionURL: subscriptionURL,
+		HappDeepLink:    "happ://add/" + base64.StdEncoding.EncodeToString([]byte(subscriptionURL)),
+	}, nil
+}
+
+func (s *Service) subscription(ctx context.Context, user contracts.User, subscriptionID string) (contracts.Subscription, bool, error) {
+	var subscription contracts.Subscription
+	path := "/v1/subscriptions/" + url.PathEscape(subscriptionID)
+	if err := s.cp.doJSON(ctx, http.MethodGet, path, nil, nil, &subscription, http.StatusOK); err != nil {
+		var statusErr *statusError
+		if errors.As(err, &statusErr) && statusErr.code == http.StatusNotFound {
+			return contracts.Subscription{}, false, nil
+		}
+		return contracts.Subscription{}, false, err
+	}
+	if subscription.ID != subscriptionID || subscription.UserID != user.ID {
+		return contracts.Subscription{}, false, errors.New("onboarding: inconsistent subscription identity")
+	}
+	return subscription, true, nil
+}
+
+func translateReadError(err error) error {
+	var statusErr *statusError
+	if errors.As(err, &statusErr) && statusErr.code == http.StatusTooManyRequests {
+		return telegram.ErrRateLimited
+	}
+	return err
 }
 
 func (s *Service) ensureUser(ctx context.Context, senderID int64) (contracts.User, error) {

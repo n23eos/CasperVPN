@@ -36,8 +36,9 @@ func TestLimiterRateLimitsAndAllowsSameUpdateRetry(t *testing.T) {
 }
 
 type sentMessage struct {
-	chatID int64
-	text   string
+	chatID   int64
+	text     string
+	keyboard [][]string
 }
 
 type fakeAPI struct {
@@ -48,6 +49,12 @@ type fakeAPI struct {
 }
 
 func (f *fakeAPI) Send(_ context.Context, chatID int64, text string) error {
+	return f.record(chatID, Message{Text: text})
+}
+func (f *fakeAPI) SendMessage(_ context.Context, chatID int64, message Message) error {
+	return f.record(chatID, message)
+}
+func (f *fakeAPI) record(chatID int64, message Message) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failures > 0 {
@@ -57,7 +64,7 @@ func (f *fakeAPI) Send(_ context.Context, chatID int64, text string) error {
 	if f.err != nil {
 		return f.err
 	}
-	f.sent = append(f.sent, sentMessage{chatID: chatID, text: text})
+	f.sent = append(f.sent, sentMessage{chatID: chatID, text: message.Text, keyboard: message.ReplyKeyboard})
 	return nil
 }
 func (f *fakeAPI) Network() string { return "telegram" }
@@ -76,13 +83,17 @@ func (f *fakeAPI) count() int {
 }
 
 type fakeOnboarding struct {
-	mu          sync.Mutex
-	ensured     []int64
-	invoiceUser []int64
-	linkUser    []int64
-	link        Link
-	invoice     Invoice
-	linkErrs    []error
+	mu              sync.Mutex
+	ensured         []int64
+	invoiceUser     []int64
+	invoicePlan     []contracts.SubscriptionPlan
+	invoiceCurrency []string
+	linkUser        []int64
+	link            Link
+	invoice         Invoice
+	linkErrs        []error
+	catalog         []Plan
+	status          AccountStatus
 }
 
 func (f *fakeOnboarding) EnsureUser(_ context.Context, senderID int64) error {
@@ -92,11 +103,25 @@ func (f *fakeOnboarding) EnsureUser(_ context.Context, senderID int64) error {
 	return nil
 }
 
-func (f *fakeOnboarding) CreateInvoice(_ context.Context, senderID, _ int64, _ contracts.SubscriptionPlan, _ string) (Invoice, error) {
+func (f *fakeOnboarding) Catalog(context.Context) ([]Plan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Plan(nil), f.catalog...), nil
+}
+
+func (f *fakeOnboarding) CreateInvoice(_ context.Context, senderID, _ int64, plan contracts.SubscriptionPlan, currency string) (Invoice, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.invoiceUser = append(f.invoiceUser, senderID)
+	f.invoicePlan = append(f.invoicePlan, plan)
+	f.invoiceCurrency = append(f.invoiceCurrency, currency)
 	return f.invoice, nil
+}
+
+func (f *fakeOnboarding) Status(context.Context, int64) (AccountStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status, nil
 }
 
 func (f *fakeOnboarding) SubscriptionLink(_ context.Context, senderID int64) (Link, error) {
@@ -203,6 +228,53 @@ func TestBotRejectsImpersonationExtraPayArgument(t *testing.T) {
 	}
 	if len(onboarding.invoiceUser) != 0 || api.last().text != payUsageText {
 		t.Fatal("extra identity-like argument must not create an invoice")
+	}
+}
+
+func TestBotLiveCatalogSelectionPreservesPlanAndCurrency(t *testing.T) {
+	api := &fakeAPI{}
+	onboarding := &fakeOnboarding{
+		catalog: []Plan{{
+			ID: contracts.SubscriptionPlanUnlimited, DurationSeconds: 30 * 24 * 60 * 60,
+			Prices: map[string]string{"XMR": "0.25", "USDT": "7.50"},
+		}},
+		invoice: Invoice{ID: "inv-live", Amount: "7.50", Currency: "USDT", CheckoutURL: "https://pay.example/inv-live", ExpiresAt: time.Unix(100, 0)},
+	}
+	bot := newTestBot(t, api, onboarding, time.Now)
+	if err := bot.HandleUpdate(context.Background(), privateUpdate(20, 42, renewButton)); err != nil {
+		t.Fatalf("show catalog: %v", err)
+	}
+	var selected string
+	for _, row := range api.last().keyboard {
+		for _, label := range row {
+			if strings.Contains(label, "7.50 USDT") {
+				selected = label
+			}
+		}
+	}
+	if selected == "" || strings.Contains(selected, string(contracts.SubscriptionPlanUnlimited)) {
+		t.Fatalf("safe user-facing selection = %q", selected)
+	}
+	if err := bot.HandleUpdate(context.Background(), privateUpdate(21, 42, selected)); err != nil {
+		t.Fatalf("select catalog offer: %v", err)
+	}
+	if len(onboarding.invoicePlan) != 1 || onboarding.invoicePlan[0] != contracts.SubscriptionPlanUnlimited || onboarding.invoiceCurrency[0] != "USDT" {
+		t.Fatalf("invoice selection plans=%v currencies=%v", onboarding.invoicePlan, onboarding.invoiceCurrency)
+	}
+}
+
+func TestRenderStatusDoesNotClaimExpiredSettledAccess(t *testing.T) {
+	expired := time.Now().Add(-time.Hour)
+	text := renderStatus(AccountStatus{
+		UserStatus: contracts.UserStatusActive,
+		Invoice:    &LatestInvoice{Status: "settled"},
+		Subscription: &contracts.Subscription{
+			ID: "sub-1", UserID: "user-1", Plan: contracts.SubscriptionPlanBasic,
+			Status: contracts.SubscriptionStatusExpired, ExpiresAt: &expired,
+		},
+	})
+	if strings.Contains(text, "Доступ активен") || !strings.Contains(text, "срок доступа закончился") {
+		t.Fatalf("expired settled status = %q", text)
 	}
 }
 

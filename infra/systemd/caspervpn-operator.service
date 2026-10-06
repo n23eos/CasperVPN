@@ -1,0 +1,25 @@
+[Unit]
+Description=CasperVPN private operator dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=caspervpn
+Group=caspervpn
+WorkingDirectory=/opt/caspervpn
+EnvironmentFile=-/etc/caspervpn/operations.env
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/caspervpn/scripts/operator.py --env /opt/caspervpn/.launch/production.env
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/caspervpn
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

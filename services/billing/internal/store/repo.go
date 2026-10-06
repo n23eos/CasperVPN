@@ -1,6 +1,6 @@
 // Package store is billing's persistence seam. The in-memory implementation keeps
 // the MVP self-contained and offline; a Postgres implementation drops in behind
-// the same interface (see docs/billing.md — production gap).
+// the same interface (see docs/billing.md - production gap).
 package store
 
 import (
@@ -18,10 +18,19 @@ var ErrNotFound = errors.New("store: not found")
 // compare-and-swap against stale state.
 var ErrConflict = errors.New("store: conflict")
 
+const maxRecentInvoices = 50
+
+func boundedRecentLimit(limit int) int {
+	if limit <= 0 || limit > maxRecentInvoices {
+		return maxRecentInvoices
+	}
+	return limit
+}
+
 // StuckSettlement identifies an invoice that was claimed for crediting but whose
 // settlement never completed (the process died between the claim commit and the
 // remote activation / status flip). Activated reports whether the remote activation
-// was already applied for this invoice — if true, recovery only needs to flip the
+// was already applied for this invoice - if true, recovery only needs to flip the
 // invoice to settled, NOT re-activate (re-activation would extend the period twice).
 type StuckSettlement struct {
 	InvoiceID string
@@ -40,6 +49,8 @@ type StuckSettlement struct {
 type Repository interface {
 	CreateInvoice(ctx context.Context, inv model.Invoice) error
 	GetInvoice(ctx context.Context, id string) (model.Invoice, error)
+	LatestInvoice(ctx context.Context, anonUserID string) (model.InvoiceOverview, error)
+	InvoiceSummary(ctx context.Context, recentLimit int) (model.InvoiceCounts, []model.InvoiceOverview, error)
 	SetInvoiceStatus(ctx context.Context, id string, s model.Status) error
 	OpenInvoices(ctx context.Context) ([]model.Invoice, error)
 
@@ -55,7 +66,7 @@ type Repository interface {
 	// guaranteed released (and the connection destroyed rather than returned to the
 	// pool if unlock ever fails; a crashed process drops the connection, which frees
 	// the lock). The memory backend uses a process-local mutex and is explicitly NOT
-	// cross-instance safe — horizontal production billing requires Postgres.
+	// cross-instance safe - horizontal production billing requires Postgres.
 	WithUserLock(ctx context.Context, userID string, fn func(ctx context.Context) error) error
 
 	// ClaimSettlement atomically claims the right to credit invoiceID. It returns
@@ -82,7 +93,7 @@ type Repository interface {
 	// taken at/after that deadline (last_negative_check_at >= deadline); every other
 	// provider expires at expires_at with no grace/check. An invoice is never expired
 	// while it carries a settlement claim OR a live poll lease. This is the sweep side
-	// of the "confirmed-before-deadline+grace" policy (variant A) — not proof of
+	// of the "confirmed-before-deadline+grace" policy (variant A) - not proof of
 	// broadcast time.
 	ExpireOverdue(ctx context.Context, now time.Time, onchainProviders []string, grace time.Duration) error
 
@@ -97,7 +108,7 @@ type Repository interface {
 	// owner can never release a lease reclaimed by someone else.
 	ReleasePollLease(ctx context.Context, invoiceID, token string) error
 	// RecordNegativeCheck stamps last_negative_check_at for a DEFINITIVE negative
-	// on-chain check (payment absent/insufficient with the chain reachable) — never
+	// on-chain check (payment absent/insufficient with the chain reachable) - never
 	// for a chain API error.
 	RecordNegativeCheck(ctx context.Context, invoiceID string, checkAt time.Time) error
 	// ClearNegativeCheck wipes last_negative_check_at once the chain shows the invoice

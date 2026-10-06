@@ -1,0 +1,55 @@
+openapi: 3.1.0
+info:
+  title: CasperVPN Billing API
+  version: 0.2.0
+  description: Private configured offers and secret-free invoice status. Existing creation and signed provider webhooks retain their behavior.
+paths:
+  /v1/plans:
+    get:
+      operationId: listBillingPlans
+      summary: Configured tariff durations and supported currency prices
+      responses:
+        "200":
+          description: Sorted immutable configured offers
+          content:
+            application/json:
+              schema: { $ref: "../schema/contracts.schema.json#/$defs/BillingPlanOffers" }
+        "401": { description: Missing or invalid private bearer token }
+        "405": { description: Method not allowed }
+  /v1/accounts/{anon_user_id}/invoices/latest:
+    get:
+      operationId: getLatestAccountInvoice
+      description: Private service callers supply the account ID resolved from authenticated sender identity. Invoice settlement alone does not prove usable subscription access.
+      parameters:
+        - { in: path, name: anon_user_id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Latest invoice ordered by creation time and ID
+          content:
+            application/json:
+              schema: { $ref: "../schema/contracts.schema.json#/$defs/BillingInvoiceStatus" }
+        "401": { description: Missing or invalid private bearer token }
+        "404": { description: No invoice for the account }
+        "405": { description: Method not allowed }
+        "503": { description: Invoice storage unavailable }
+  /v1/operator/summary:
+    get:
+      operationId: getBillingOperatorSummary
+      description: Aggregate invoice counts and at most 50 recent records. No payment destinations, checkout links or provider order identifiers.
+      responses:
+        "200":
+          description: Private operator overview
+          content:
+            application/json:
+              schema: { $ref: "../schema/contracts.schema.json#/$defs/BillingOperatorSummary" }
+        "401": { description: Missing or invalid private bearer token }
+        "405": { description: Method not allowed }
+        "503": { description: Invoice storage unavailable }
+components:
+  securitySchemes:
+    invoiceToken:
+      type: http
+      scheme: bearer
+      description: Configured billing private token, required in production.
+security:
+  - invoiceToken: []

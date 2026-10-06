@@ -20,12 +20,15 @@ const (
 	defaultPort = "8083"
 
 	// Bot rate-limit / antispam defaults.
-	defaultBotRatePerSec = 1
-	defaultBotBurst      = 5
-	defaultBotCooldown   = 3 * time.Second
-	defaultHTTPTimeout   = 10 * time.Second
-	defaultPollTimeout   = 25 * time.Second
-	defaultRetryDelay    = time.Second
+	defaultBotRatePerSec  = 1
+	defaultBotBurst       = 5
+	defaultBotCooldown    = 3 * time.Second
+	defaultHTTPTimeout    = 10 * time.Second
+	defaultPollTimeout    = 25 * time.Second
+	defaultRetryDelay     = time.Second
+	defaultNotifyInterval = 15 * time.Minute
+	defaultNotifyWindow   = 72 * time.Hour
+	defaultNotifyBatch    = 100
 )
 
 // Config is the fully-resolved delivery configuration.
@@ -48,7 +51,7 @@ type Config struct {
 	RetryDelay        time.Duration
 
 	// AdminToken guards the mutating admin surface (POST /v1/channels). Empty
-	// disables that path entirely (fail-closed) — a bare service exposes only
+	// disables that path entirely (fail-closed) - a bare service exposes only
 	// read/fetch. Operator-supplied via env; never hardcoded.
 	AdminToken string
 
@@ -71,7 +74,7 @@ type Config struct {
 	// generate an ephemeral key at boot (dev only).
 	SealKeyB64 string
 
-	// Channel endpoints — each optional; unset channels are not registered.
+	// Channel endpoints - each optional; unset channels are not registered.
 	DNSZone       string   // zone for DNS TXT / DoH delivery (e.g. cfg.example.)
 	DoHEndpoint   string   // DoH JSON endpoint URL
 	GitRawMirrors []string // raw base URLs, tried in order + rotated
@@ -91,6 +94,11 @@ type BotTunables struct {
 	Cooldown        time.Duration
 	DefaultPlan     contracts.SubscriptionPlan
 	DefaultCurrency string
+	SetupURL        string
+	SupportURL      string
+	NotifyInterval  time.Duration
+	NotifyWindow    time.Duration
+	NotifyBatchSize int
 }
 
 // Load reads configuration from the environment, applying defaults. A
@@ -134,6 +142,11 @@ func Load() (Config, error) {
 			Cooldown:        e.Duration("DELIVERY_BOT_COOLDOWN", defaultBotCooldown),
 			DefaultPlan:     contracts.SubscriptionPlan(e.Str("DELIVERY_BOT_DEFAULT_PLAN", string(contracts.SubscriptionPlanBasic))),
 			DefaultCurrency: strings.ToUpper(e.Str("DELIVERY_BOT_DEFAULT_CURRENCY", "XMR")),
+			SetupURL:        strings.TrimSpace(e.Str("DELIVERY_BOT_SETUP_URL", "")),
+			SupportURL:      strings.TrimSpace(e.Str("DELIVERY_BOT_SUPPORT_URL", "")),
+			NotifyInterval:  e.Duration("DELIVERY_NOTIFY_INTERVAL", defaultNotifyInterval),
+			NotifyWindow:    e.Duration("DELIVERY_NOTIFY_WINDOW", defaultNotifyWindow),
+			NotifyBatchSize: e.Int("DELIVERY_NOTIFY_BATCH_SIZE", defaultNotifyBatch),
 		},
 	}
 	if err := e.Err(); err != nil {
@@ -191,8 +204,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("config: %s is required when delivery bot is enabled", name)
 		}
 	}
-	if c.HTTPTimeout <= 0 || c.PollTimeout <= 0 || c.RetryDelay <= 0 {
-		return fmt.Errorf("config: delivery HTTP, poll, and retry durations must be positive")
+	if c.HTTPTimeout <= 0 || c.PollTimeout <= 0 || c.RetryDelay <= 0 ||
+		c.Bot.NotifyInterval <= 0 || c.Bot.NotifyWindow <= 0 || c.Bot.NotifyBatchSize <= 0 {
+		return fmt.Errorf("config: delivery HTTP, poll, retry, and notification settings must be positive")
 	}
 	if err := requireURL("DELIVERY_CONTROL_PLANE_BASE", c.ControlPlaneBase, false); err != nil {
 		return err
@@ -205,6 +219,16 @@ func (c Config) Validate() error {
 	}
 	if err := requireURL("DELIVERY_PUBLIC_SUBSCRIPTION_BASE", c.PublicSubBase, c.Env == "production"); err != nil {
 		return err
+	}
+	for name, raw := range map[string]string{
+		"DELIVERY_BOT_SETUP_URL":   c.Bot.SetupURL,
+		"DELIVERY_BOT_SUPPORT_URL": c.Bot.SupportURL,
+	} {
+		if raw != "" {
+			if err := requireURL(name, raw, c.Env == "production"); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

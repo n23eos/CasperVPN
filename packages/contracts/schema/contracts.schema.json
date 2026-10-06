@@ -482,7 +482,7 @@
     "Recommendations": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Full telemetry feedback payload for one evaluation window — the orchestrator's input for node rotation and transport prioritization (GET /v1/recommendations).",
+      "description": "Full telemetry feedback payload for one evaluation window - the orchestrator's input for node rotation and transport prioritization (GET /v1/recommendations).",
       "required": ["generated_at", "window_seconds"],
       "properties": {
         "generated_at": { "type": "string", "format": "date-time" },
@@ -512,6 +512,264 @@
         "nodes": { "type": "array", "items": { "$ref": "#/$defs/Node" } },
         "generated_at": { "type": "string", "format": "date-time" }
       }
+    },
+    "BillingPaymentStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "settled",
+        "expired",
+        "invalid"
+      ]
+    },
+    "BillingPlanOffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/SubscriptionPlan"
+        },
+        "duration_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "grace_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prices": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "duration_seconds",
+        "grace_seconds",
+        "prices"
+      ]
+    },
+    "BillingPlanOffers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BillingPlanOffer"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "BillingInvoiceStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invoice_id": {
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/SubscriptionPlan"
+        },
+        "status": {
+          "$ref": "#/$defs/BillingPaymentStatus"
+        },
+        "amount": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "invoice_id",
+        "plan",
+        "status",
+        "amount",
+        "currency",
+        "created_at",
+        "expires_at"
+      ]
+    },
+    "BillingInvoiceOverview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invoice_id": {
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/SubscriptionPlan"
+        },
+        "status": {
+          "$ref": "#/$defs/BillingPaymentStatus"
+        },
+        "amount": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "anon_user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "invoice_id",
+        "plan",
+        "status",
+        "amount",
+        "currency",
+        "created_at",
+        "expires_at",
+        "anon_user_id"
+      ]
+    },
+    "BillingInvoiceCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "settled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expired": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invalid": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "pending",
+        "settled",
+        "expired",
+        "invalid"
+      ]
+    },
+    "BillingOperatorSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "counts": {
+          "$ref": "#/$defs/BillingInvoiceCounts"
+        },
+        "recent": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/BillingInvoiceOverview"
+          }
+        }
+      },
+      "required": [
+        "counts",
+        "recent"
+      ]
+    },
+    "OperatorAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/UserStatus"
+        },
+        "subscription_id": {
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/SubscriptionPlan"
+        },
+        "subscription_status": {
+          "$ref": "#/$defs/SubscriptionStatus"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "grace_until": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "updated_at"
+      ]
+    },
+    "ControlPlaneOperatorSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "users": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/UserStatus"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "subscriptions": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/SubscriptionStatus"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "recent": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/OperatorAccount"
+          }
+        }
+      },
+      "required": [
+        "users",
+        "subscriptions",
+        "recent"
+      ]
     }
   }
 }

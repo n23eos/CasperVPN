@@ -27,6 +27,7 @@ func (h *Handler) Router() http.Handler {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(h.authenticate)
+		r.With(requireRole(authz.RoleAdmin)).Get("/operator/summary", h.operatorSummary)
 		r.With(requireRole(authz.RoleAdmin, authz.RoleDelivery)).Post("/users/ensure-telegram", h.ensureTelegram)
 		r.With(requireRole(authz.RoleAdmin, authz.RoleBilling)).Post("/users/{id}/ensure-subscription", h.ensureSubscription)
 		r.With(requireRole(authz.RoleAdmin, authz.RoleBilling)).Put("/subscriptions/{id}/billing-state", h.billingState)
@@ -44,7 +45,7 @@ func (h *Handler) Router() http.Handler {
 			r.With(requireRole(nodeWriters...)).Post("/nodes/{id}/rotate", h.rotateNode)
 			// Atomic status-only demote (reconciler barrier); orchestrator/admin.
 			r.With(requireRole(authz.RoleOrchestrator, authz.RoleAdmin)).Post("/nodes/{id}/demote", h.demoteNode)
-			// REALITY allow-list — live admission creds; orchestrator/admin only.
+			// REALITY allow-list - live admission creds; orchestrator/admin only.
 			r.With(requireRole(authz.RoleOrchestrator, authz.RoleAdmin)).Get("/nodes/{id}/reality-users", h.getNodeRealityUsers)
 			// Guarded provisioning->active; orchestrator/admin only.
 			r.With(requireRole(authz.RoleOrchestrator, authz.RoleAdmin)).Post("/nodes/{id}/activate", h.activateNode)
@@ -60,11 +61,11 @@ func (h *Handler) Router() http.Handler {
 			r.With(requireRole(authz.RoleSubscription, authz.RoleAdmin)).Get("/users/{id}/subscription-set", h.getSubscriptionSet)
 		})
 
-		// Subscriptions (entitlement only — no card/payment data here).
+		// Subscriptions (entitlement only - no card/payment data here).
 		r.Group(func(r chi.Router) {
 			r.With(requireRole(accountWriters...)).Post("/subscriptions", h.createSubscription)
 			r.With(requireRole(authz.RoleAdmin, authz.RoleBilling, authz.RoleSubscription, authz.RoleDelivery)).Get("/subscriptions/{id}", h.getSubscription)
-			// Additive Wave-2 endpoints (TZ-contract-changes §1–2): billing
+			// Additive Wave-2 endpoints (TZ-contract-changes §1-2): billing
 			// activation/renewal + leaked-link revocation.
 			r.With(requireRole(accountWriters...)).Patch("/subscriptions/{id}", h.patchSubscription)
 			r.With(requireRole(accountWriters...)).Post("/subscriptions/{id}/rotate-token", h.rotateSubscriptionToken)

@@ -109,7 +109,7 @@ func main() {
 	if cfg.Env == "dev" {
 		logger.Printf("WARNING: dev env; ensure CONTROL_PLANE_TOKENS is set for non-local use")
 	}
-	handler := httpapi.New(nodeSvc, userSvc, subSvc, bundleSvc, signalSvc, allowSvc, tokens).WithReadiness(pool.Ping)
+	handler := httpapi.New(nodeSvc, userSvc, subSvc, bundleSvc, signalSvc, allowSvc, tokens).WithReadiness(pool.Ping).WithOperatorSummary(postgres.NewOperatorReader(pool).Read)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

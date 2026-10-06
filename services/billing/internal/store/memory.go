@@ -21,7 +21,7 @@ type memSettlement struct {
 }
 
 // Memory is an in-memory Repository. Safe for concurrent use. All state is lost
-// on restart — fine for the MVP/tests, not for production (see docs/billing.md).
+// on restart - fine for the MVP/tests, not for production (see docs/billing.md).
 type Memory struct {
 	mu                sync.Mutex
 	invoices          map[string]model.Invoice
@@ -75,7 +75,7 @@ func NewMemoryWithClock(now func() time.Time) *Memory {
 }
 
 // WithUserLock serializes fn per user with a process-local mutex. This is NOT
-// cross-instance safe (a second billing process has its own map) — the Postgres
+// cross-instance safe (a second billing process has its own map) - the Postgres
 // store provides the real cross-instance guarantee; memory is for single-process
 // dev/tests only. The userLocks map keeps one tiny mutex per distinct user and is
 // never pruned; that unbounded growth is acceptable only because this store is
@@ -109,6 +109,70 @@ func (m *Memory) GetInvoice(_ context.Context, id string) (model.Invoice, error)
 		return model.Invoice{}, ErrNotFound
 	}
 	return inv, nil
+}
+
+func (m *Memory) LatestInvoice(_ context.Context, anonUserID string) (model.InvoiceOverview, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest model.Invoice
+	found := false
+	for _, inv := range m.invoices {
+		if inv.AnonUserID != anonUserID {
+			continue
+		}
+		if !found || invoiceBefore(inv, latest) {
+			latest = inv
+			found = true
+		}
+	}
+	if !found {
+		return model.InvoiceOverview{}, ErrNotFound
+	}
+	return overview(latest), nil
+}
+
+func (m *Memory) InvoiceSummary(_ context.Context, recentLimit int) (model.InvoiceCounts, []model.InvoiceOverview, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	recentLimit = boundedRecentLimit(recentLimit)
+	counts := model.InvoiceCounts{}
+	invoices := make([]model.Invoice, 0, len(m.invoices))
+	for _, inv := range m.invoices {
+		switch inv.Status {
+		case model.StatusPending:
+			counts.Pending++
+		case model.StatusSettled:
+			counts.Settled++
+		case model.StatusExpired:
+			counts.Expired++
+		case model.StatusInvalid:
+			counts.Invalid++
+		}
+		invoices = append(invoices, inv)
+	}
+	sort.Slice(invoices, func(i, j int) bool { return invoiceBefore(invoices[i], invoices[j]) })
+	if len(invoices) > recentLimit {
+		invoices = invoices[:recentLimit]
+	}
+	recent := make([]model.InvoiceOverview, len(invoices))
+	for i, inv := range invoices {
+		recent[i] = overview(inv)
+	}
+	return counts, recent, nil
+}
+
+func invoiceBefore(a, b model.Invoice) bool {
+	if a.CreatedAt.Equal(b.CreatedAt) {
+		return a.ID > b.ID
+	}
+	return a.CreatedAt.After(b.CreatedAt)
+}
+
+func overview(inv model.Invoice) model.InvoiceOverview {
+	return model.InvoiceOverview{
+		InvoiceID: inv.ID, AnonUserID: inv.AnonUserID, Plan: inv.Plan, Status: inv.Status,
+		Amount: inv.Amount, Currency: inv.Currency, CreatedAt: inv.CreatedAt.UTC(), ExpiresAt: inv.ExpiresAt.UTC(),
+	}
 }
 
 func (m *Memory) SetInvoiceStatus(_ context.Context, id string, s model.Status) error {
@@ -181,7 +245,7 @@ func (m *Memory) LeaseStuckSettlements(_ context.Context, olderThan time.Time, l
 	now := m.now()
 
 	// Collect eligible invoice ids, then lease deterministically (oldest claim first)
-	// so a limit picks a stable set — mirrors Postgres ORDER BY claimed_at.
+	// so a limit picks a stable set - mirrors Postgres ORDER BY claimed_at.
 	type cand struct {
 		id string
 		s  *memSettlement
@@ -193,7 +257,7 @@ func (m *Memory) LeaseStuckSettlements(_ context.Context, olderThan time.Time, l
 			continue
 		}
 		if s.claimedAt.After(olderThan) {
-			continue // younger than the recovery threshold — a live settle may own it
+			continue // younger than the recovery threshold - a live settle may own it
 		}
 		if !s.leasedUntil.IsZero() && s.leasedUntil.After(now) {
 			continue // already leased by another reconciler
@@ -512,7 +576,7 @@ func (m *Memory) GetSchedule(_ context.Context, subID string) (model.Schedule, e
 	return s, nil
 }
 
-// DueSchedules returns non-expired schedules whose expiry time has passed — the
+// DueSchedules returns non-expired schedules whose expiry time has passed - the
 // sweeper decides whether that means past_due or fully expired.
 func (m *Memory) DueSchedules(_ context.Context, now time.Time) ([]model.Schedule, error) {
 	m.mu.Lock()

@@ -1,0 +1,11 @@
+[Unit]
+Description=Create a daily encrypted CasperVPN backup bundle
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=caspervpn-backup.service
+
+[Install]
+WantedBy=timers.target

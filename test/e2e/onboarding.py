@@ -68,9 +68,13 @@ class FakeTelegram:
                 pass
 
             def do_POST(self):
-                data = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode())
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+                if self.headers.get("Content-Type", "").startswith("application/json"):
+                    data = json.loads(raw)
+                else:
+                    data = {key: values[0] for key, values in parse_qs(raw).items()}
                 if self.path == "/botlocal-test-token/getUpdates":
-                    offset = int(data.get("offset", ["0"])[0])
+                    offset = int(data.get("offset", "0"))
                     with owner.lock:
                         owner.offsets.append(offset)
                         result = [item for item in owner.updates if item["update_id"] >= offset]
@@ -78,7 +82,10 @@ class FakeTelegram:
                         time.sleep(0.1)
                 elif self.path == "/botlocal-test-token/sendMessage":
                     with owner.lock:
-                        owner.messages.append({"chat_id": int(data["chat_id"][0]), "text": data["text"][0]})
+                        markup = data.get("reply_markup", {})
+                        if isinstance(markup, str):
+                            markup = json.loads(markup)
+                        owner.messages.append({"chat_id": int(data["chat_id"]), "text": data["text"], "reply_markup": markup})
                     result = {"message_id": len(owner.messages)}
                 else:
                     self.send_error(404)
@@ -109,6 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, default=ROOT / "bin")
     parser.add_argument("--integration", action="store_true", help="also run isolated PostgreSQL integration suites")
+    parser.add_argument("--ui-handoff-dir", type=Path, help="keep isolated fixture services alive for local operator browser QA")
     args = parser.parse_args()
     for service in ("control-plane", "subscription", "billing", "delivery", "telemetry"):
         assert (args.bin_dir / service).is_file(), "run make build first"
@@ -165,6 +173,7 @@ def main():
                              "DELIVERY_BILLING_TOKEN": "billing-private", "DELIVERY_TELEGRAM_BASE": fake.url,
                              "DELIVERY_TELEGRAM_TOKEN": "local-test-token", "DELIVERY_PUBLIC_SUBSCRIPTION_BASE": urls["subscription"],
                              "DELIVERY_BOT_DEFAULT_CURRENCY": "BTC", "DELIVERY_BOT_COOLDOWN": "1ms", "DELIVERY_BOT_BURST": "100",
+                             "DELIVERY_NOTIFY_INTERVAL": "200ms", "DELIVERY_NOTIFY_WINDOW": "1h", "DELIVERY_NOTIFY_BATCH_SIZE": "10",
                              "DELIVERY_TELEGRAM_POLL_TIMEOUT": "1s", "DELIVERY_RETRY_DELAY": "50ms"},
                 "telemetry": {"TELEMETRY_INTERNAL_TOKEN": "telemetry-test"},
             }
@@ -182,11 +191,24 @@ def main():
             cp, sub, bill = urls["control-plane"], urls["subscription"], urls["billing"]
             fake.send(1, "/start")
             wait_for(lambda: len(fake.messages) >= 1, "/start reply")
+            menu = fake.messages[0]["reply_markup"]["keyboard"]
+            assert {button["text"] for row in menu for button in row} == {"Подключиться", "Моя подписка", "Продлить", "Помощь"}
+            offers = request(bill + "/v1/plans", token="billing-private")["items"]
+            assert any(offer["id"] == "basic" and "BTC" in offer["prices"] for offer in offers)
             before = len(fake.messages)
-            fake.send(2, "/pay basic BTC")
-            text = wait_for(lambda: fake.reply(before, "Invoice "), "/pay invoice")
-            invoice_id = re.search(r"Invoice ([^\s]+)", text)[1]
+            fake.send(2, "Продлить")
+            wait_for(lambda: any(m.get("reply_markup", {}).get("keyboard") and any(b["text"].startswith("Выбрать: Базовый") for row in m["reply_markup"]["keyboard"] for b in row) for m in fake.messages[before:]), "live plan selector")
+            label = next(b["text"] for m in fake.messages[before:] for row in m.get("reply_markup", {}).get("keyboard", []) for b in row if b["text"].startswith("Выбрать: Базовый") and b["text"].endswith(" BTC"))
+            fake.send(3, label)
+            text = wait_for(lambda: fake.reply(before, "Счёт "), "plan button invoice")
+            invoice_id = re.search(r"Счёт ([^\s]+)", text)[1]
             record = json.loads(sql("SELECT row_to_json(i) FROM invoices i WHERE id='" + invoice_id + "';"))
+            latest = request(bill + "/v1/accounts/" + record["anon_user_id"] + "/invoices/latest", token="billing-private")
+            assert latest["invoice_id"] == invoice_id and latest["status"] == "pending"
+            assert not {"provider_id", "address", "checkout_url"}.intersection(latest)
+            before = len(fake.messages)
+            fake.send(4, "Моя подписка")
+            wait_for(lambda: fake.reply(before, "ожидает подтверждения"), "pending status")
             webhook = {"external_id": "local-e2e-" + invoice_id, "invoice_id": invoice_id, "status": "settled",
                        "amount": record["amount"], "currency": record["currency"], "confirmations": 6,
                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
@@ -194,9 +216,13 @@ def main():
             signature = hmac.new(b"mock-test", raw, hashlib.sha256).hexdigest()
             request(bill + "/v1/webhooks/mock", webhook, headers={"X-Signature": signature})
             before = len(fake.messages)
-            fake.send(3, "/get")
-            text = wait_for(lambda: fake.reply(before, sub + "/sub/"), "/get subscription")
+            fake.send(5, "Моя подписка")
+            wait_for(lambda: fake.reply(before, "Платёж: подтверждён"), "settled status")
+            fake.send(6, "Подключиться")
+            text = wait_for(lambda: fake.reply(before, sub + "/sub/"), "connect subscription")
             link = re.search(re.escape(sub) + r"/sub/[^\s]+", text)[0]
+            happ = re.search(r"happ://add/([^\s]+)", text)[1]
+            assert base64.b64decode(happ).decode() == link
             profile = request(link + "?format=singbox")
             outbounds = profile["outbounds"]
             assert any(item["type"] == "vless" for item in outbounds)
@@ -205,9 +231,14 @@ def main():
             user = request(cp + "/v1/users/" + user_id, token="admin-test")
             state = request(cp + "/v1/subscriptions/" + user["subscription_id"], token="admin-test")
             expiry = state["expires_at"]
+            overview = request(cp + "/v1/operator/summary", token="admin-test")
+            assert any(item["id"] == user_id for item in overview["recent"])
+            assert request(bill + "/v1/operator/summary", token="billing-private")["counts"]["settled"] == 1
+            wait_for(lambda: fake.reply(0, "доступ уже активирован"), "activation notification")
+            wait_for(lambda: sql("SELECT count(*) FROM delivery_bot_notifications;") == "1", "durable successful notification")
             request(bill + "/v1/webhooks/mock", webhook, headers={"X-Signature": signature})
             assert request(cp + "/v1/subscriptions/" + user["subscription_id"], token="admin-test")["expires_at"] == expiry
-            print("PASS: Telegram /start /pay /get -> PostgreSQL billing -> personal VLESS+Hy2; webhook replay")
+            print("PASS: Telegram menu, live offers, payment status, Happ import, private summaries, VLESS+Hy2; webhook replay")
 
             # All service state must survive restart, including poll cursor and encrypted links.
             for service, process in processes.items():
@@ -219,15 +250,16 @@ def main():
             assert sql("SELECT count(*) FROM invoices;") == "1"
             assert request(link + "?format=singbox")["outbounds"] == outbounds
             before = len(fake.messages)
-            fake.send(4, "/get")
+            fake.send(7, "/get")
             assert link in wait_for(lambda: fake.reply(before, sub + "/sub/"), "stable link after restart")
-            assert len([m for m in fake.messages if "Invoice " in m["text"]]) == 1
+            assert len([m for m in fake.messages if re.match(r"Счёт \S+\nСумма:", m["text"])]) == 1
+            assert len([m for m in fake.messages if "доступ уже активирован" in m["text"]]) == 1
             print("PASS: restart preserves exact link, credentials, paid term and Telegram dedup cursor")
 
             # Ignore group messages; command text cannot select another account.
             before = len(fake.messages)
-            fake.send(5, "/get", chat_type="group", chat_id=-100)
-            fake.send(6, "/get " + user_id, sender=900002)
+            fake.send(8, "/get", chat_type="group", chat_id=-100)
+            fake.send(9, "/get " + user_id, sender=900002)
             wait_for(lambda: any(m["chat_id"] == 900002 for m in fake.messages[before:]), "second user response")
             assert not any(m["chat_id"] == -100 or link in m["text"] for m in fake.messages[before:])
             print("PASS: group privacy and sender-bound account isolation")
@@ -247,7 +279,7 @@ def main():
             subprocess.run(["docker", "exec", "-i", name, "pg_restore", "-U", "caspervpn", "-d", "restore_check", "--exit-on-error", "--single-transaction"], input=dump, check=True)
             assert sql("SELECT count(*) FROM invoices;", "restore_check") == "1"
             assert sql("SELECT count(*) FROM users;", "restore_check") == sql("SELECT count(*) FROM users;")
-            for table in ("subscriptions", "subscription_delivery_tokens", "schedules", "billing_deliveries"):
+            for table in ("subscriptions", "subscription_delivery_tokens", "schedules", "billing_deliveries", "delivery_bot_users", "delivery_bot_notifications"):
                 # Compare durable entitlement and ciphertext, never print their contents.
                 statement = "SELECT row_to_json(t)::text FROM " + table + " t ORDER BY row_to_json(t)::text;"
                 assert sql(statement, "restore_check") == sql(statement), "restored state differs: " + table
@@ -260,10 +292,18 @@ def main():
                 start(service)
             request(cp + "/v1/users/" + user_id, {"status": "active"}, token="admin-test", method="PATCH")
             before = len(fake.messages)
-            fake.send(7, "/get")
+            fake.send(10, "/get")
             assert link in wait_for(lambda: fake.reply(before, sub + "/sub/"), "stable link from restored database")
             assert request(link + "?format=singbox")["outbounds"] == outbounds
             print("PASS: restored DB boots all services and recovers exact link, credentials and entitlement")
+            if args.ui_handoff_dir:
+                args.ui_handoff_dir.mkdir(parents=True, exist_ok=True)
+                fixture_env = args.ui_handoff_dir / "operator.env"
+                fixture_env.write_text("\n".join([*("OPERATOR_" + name.upper().replace("-", "_") + "_URL=" + url for name, url in urls.items()), "CP_ADMIN_TOKEN=admin-test", "BILLING_INTERNAL_TOKEN=billing-private"]) + "\n")
+                fixture_env.chmod(0o600)
+                (args.ui_handoff_dir / "ready").write_text("Isolated local fixtures ready\n")
+                print("READY: local operator UI fixtures", flush=True)
+                wait_for(lambda: (args.ui_handoff_dir / "stop").exists(), "browser QA completion", timeout=600)
         except Exception:
             for service in logs:
                 print("Service log:", service)

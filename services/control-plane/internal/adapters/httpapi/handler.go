@@ -9,20 +9,22 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/caspervpn/contracts"
 	"github.com/caspervpn/control-plane/internal/authz"
 	"github.com/caspervpn/control-plane/internal/usecase"
 )
 
 // Handler holds the usecase services and the token store.
 type Handler struct {
-	nodes   *usecase.NodeService
-	users   *usecase.UserService
-	subs    *usecase.SubscriptionService
-	bundles *usecase.BundleService
-	signals *usecase.SignalService
-	allow   *usecase.AllowListService
-	tokens  *authz.TokenStore
-	ready   func(context.Context) error
+	nodes    *usecase.NodeService
+	users    *usecase.UserService
+	subs     *usecase.SubscriptionService
+	bundles  *usecase.BundleService
+	signals  *usecase.SignalService
+	allow    *usecase.AllowListService
+	tokens   *authz.TokenStore
+	ready    func(context.Context) error
+	operator func(context.Context) (contracts.ControlPlaneOperatorSummary, error)
 }
 
 // New builds a Handler.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/caspervpn/contracts"
@@ -31,7 +32,21 @@ type Catalog struct {
 // Get returns the plan for id.
 func (c *Catalog) Get(id contracts.SubscriptionPlan) (Plan, bool) {
 	p, ok := c.plans[id]
-	return p, ok
+	if !ok {
+		return Plan{}, false
+	}
+	return clonePlan(p), true
+}
+
+// List returns every plan sorted by id. Plans and their price maps are copies,
+// so callers cannot mutate the catalog through a read response.
+func (c *Catalog) List() []Plan {
+	plans := make([]Plan, 0, len(c.plans))
+	for _, p := range c.plans {
+		plans = append(plans, clonePlan(p))
+	}
+	sort.Slice(plans, func(i, j int) bool { return plans[i].ID < plans[j].ID })
+	return plans
 }
 
 // Price returns the decimal amount for (plan, currency).
@@ -84,7 +99,7 @@ func Load(r io.Reader) (*Catalog, error) {
 		if len(p.Prices) == 0 {
 			return nil, fmt.Errorf("plan %q: no prices configured", p.ID)
 		}
-		plans[id] = Plan{
+		plans[id] = clonePlan(Plan{
 			ID:                id,
 			Duration:          dur,
 			Grace:             grace,
@@ -92,7 +107,7 @@ func Load(r io.Reader) (*Catalog, error) {
 			TrafficLimitBytes: p.TrafficLimitBytes,
 			SpeedLimitMbps:    p.SpeedLimitMbps,
 			DeviceLimit:       p.DeviceLimit,
-		}
+		})
 	}
 	return &Catalog{plans: plans}, nil
 }
@@ -101,7 +116,16 @@ func Load(r io.Reader) (*Catalog, error) {
 func NewCatalog(plans ...Plan) *Catalog {
 	m := make(map[contracts.SubscriptionPlan]Plan, len(plans))
 	for _, p := range plans {
-		m[p.ID] = p
+		m[p.ID] = clonePlan(p)
 	}
 	return &Catalog{plans: m}
+}
+
+func clonePlan(p Plan) Plan {
+	prices := make(map[string]string, len(p.Prices))
+	for currency, amount := range p.Prices {
+		prices[currency] = amount
+	}
+	p.Prices = prices
+	return p
 }

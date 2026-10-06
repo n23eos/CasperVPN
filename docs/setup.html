@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Connect a device | CasperVPN</title>
+<meta name="description" content="Install Happ, receive your personal CasperVPN link in the pilot bot, import it and verify the connection on iOS, Android or desktop.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 140'%3E%3Cpath d='M60 12C33 12 21 33 21 62v56q6-9 12 0t12 0q6-9 12 0t12 0q6-9 12 0t12 0V62c0-29-12-50-33-50Z' fill='%23ece4d4'/%3E%3Cellipse cx='47' cy='58' rx='4.5' ry='7' fill='%23231d15'/%3E%3Cellipse cx='74' cy='55' rx='4.5' ry='7' fill='%23231d15'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tomorrow:wght@500;600&amp;family=Geist:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+<link rel="alternate" hreflang="ru" href="setup-ru.html">
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+
+<div class="nav-wrap">
+  <nav class="nav-pill" aria-label="Primary navigation">
+    <a class="brand" href="index.html" aria-label="CasperVPN home">
+      <svg width="18" height="21" viewBox="0 0 120 140" aria-hidden="true">
+        <path d="M60 12C33 12 21 33 21 62v56q6-9 12 0t12 0q6-9 12 0t12 0q6-9 12 0t12 0V62c0-29-12-50-33-50Z" fill="var(--color-ghost)"/>
+        <ellipse cx="47" cy="58" rx="4.5" ry="7" fill="var(--color-paper)"/>
+        <ellipse cx="74" cy="55" rx="4.5" ry="7" fill="var(--color-paper)"/>
+      </svg>
+      CasperVPN
+    </a>
+    <ul class="nav-links">
+      <li><a href="#steps">Four steps</a></li>
+      <li><a href="#devices">Devices</a></li>
+      <li><a href="#help">Help</a></li>
+    </ul>
+    <a class="language-link" href="setup-ru.html" hreflang="ru" lang="ru">RU</a>
+    <a class="nav-cta" href="index.html">Overview</a>
+  </nav>
+</div>
+
+<main id="content" class="shell">
+  <header class="guide-hero">
+    <span class="eyebrow">Device setup</span>
+    <h1>Connect in four clear steps.</h1>
+    <p>Install Happ, tap <span lang="ru">«Подключиться»</span> in the pilot bot, import your personal link and verify the connection. The legacy <code>/get</code> command also works.</p>
+    <nav class="device-nav" aria-label="Choose your device">
+      <a class="device-card" href="#ios">
+        <h3>iPhone and iPad</h3>
+        <p>Import the link and allow the iOS VPN profile.</p>
+        <span>Go to iOS setup</span>
+      </a>
+      <a class="device-card" href="#android">
+        <h3>Android</h3>
+        <p>Paste the subscription and approve the VPN request.</p>
+        <span>Go to Android setup</span>
+      </a>
+      <a class="device-card" href="#desktop">
+        <h3>Desktop</h3>
+        <p>Windows, macOS and Linux use the same import flow.</p>
+        <span>Go to desktop setup</span>
+      </a>
+    </nav>
+  </header>
+
+  <div class="notice">
+    <p><strong>Before you start:</strong> you need Happ, an active pilot account and the bot address supplied by the operator. This public page does not issue access or contain server credentials.</p>
+  </div>
+
+  <section class="section" id="steps">
+    <div class="guide-grid">
+      <div class="guide-grid__aside">
+        <span class="eyebrow">Shared flow</span>
+        <h2>From invitation to connection</h2>
+        <p>These steps are the same on phone and desktop.</p>
+      </div>
+      <ol class="steps-list">
+        <li class="step-card">
+          <h3>Install Happ</h3>
+          <p>CasperVPN uses Happ instead of a separate custom app. Choose your platform on the <a class="text-link" href="https://www.happ.su/main">official Happ website</a> and install it from the source linked there.</p>
+          <ul>
+            <li>Do not install an app or package forwarded by an unknown account.</li>
+            <li>The pilot will check the current Happ version with VLESS REALITY and Hysteria2.</li>
+          </ul>
+        </li>
+        <li class="step-card">
+          <h3>Receive your personal link</h3>
+          <p>Open the approved bot in a private chat. After it confirms that access is active, tap <span lang="ru">«Подключиться»</span>. The legacy <code>/get</code> command does the same. The reply contains your persistent subscription URL and a Happ import link.</p>
+          <p class="secret-note">Treat the subscription URL like a password. Do not post it, forward it or include it in screenshots.</p>
+        </li>
+        <li class="step-card">
+          <h3>Import the subscription</h3>
+          <p>Open the Happ import link in the bot's reply. If direct import is unavailable on the device, copy the HTTPS subscription URL and add it in Happ as a link, URL or subscription.</p>
+          <ul>
+            <li>Paste the complete URL without spaces.</li>
+            <li>Save or update the profile after import.</li>
+            <li>During the pilot, verify that Happ shows the personal VLESS REALITY and Hysteria2 entries.</li>
+          </ul>
+        </li>
+        <li class="step-card">
+          <h3>Enable and verify</h3>
+          <p>Select an imported entry, turn the connection on and accept the operating system's VPN permission. Open a normal website, then compare your public IP before and after connecting using a service you trust.</p>
+          <ul>
+            <li>If one transport fails, try the other entry.</li>
+            <li>Confirm that DNS and ordinary browsing work.</li>
+            <li>If neither works, record the device, app version, network and error text for support. Do not include the subscription URL.</li>
+          </ul>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" id="devices">
+    <div class="section__heading">
+      <h2>Device-specific details</h2>
+      <p>Labels differ slightly between client versions. Look for actions named Add, Import, Subscription, URL or Clipboard.</p>
+    </div>
+    <div class="platforms">
+      <article class="setup-panel" id="ios">
+        <span class="setup-panel__label">iOS and iPadOS</span>
+        <h3>Import, then allow the VPN configuration</h3>
+        <ul>
+          <li>Open the iOS option on the official Happ website and follow its current store link.</li>
+          <li>Return to the private bot and tap <span lang="ru">«Подключиться»</span>, then open the Happ import link or copy the subscription URL.</li>
+          <li>In the app, add a subscription from the clipboard or URL and save it.</li>
+          <li>When iOS asks to add a VPN configuration, review the app name and approve it with the device passcode.</li>
+        </ul>
+      </article>
+      <article class="setup-panel" id="android">
+        <span class="setup-panel__label">Android</span>
+        <h3>Add the subscription and approve the VPN prompt</h3>
+        <ul>
+          <li>Open the Android option on the official Happ website and follow its current store or official package link.</li>
+          <li>Tap <span lang="ru">«Подключиться»</span> in the bot. Open the Happ import link or copy the subscription URL and import it from the clipboard.</li>
+          <li>Save the profile, select an entry and turn it on.</li>
+          <li>Approve Android's connection request after confirming it names the app you installed.</li>
+        </ul>
+      </article>
+      <article class="setup-panel" id="desktop">
+        <span class="setup-panel__label">Windows, macOS and Linux</span>
+        <h3>Install from the publisher and import by URL</h3>
+        <ul>
+          <li>Choose Windows, macOS or Linux on the official Happ website and download the current build linked there.</li>
+          <li>Open Add subscription or Import from URL and paste the complete link returned by <span lang="ru">«Подключиться»</span>.</li>
+          <li>Save, refresh the subscription if the app asks, then select a VLESS REALITY or Hysteria2 entry.</li>
+          <li>Allow only the operating system permissions needed to create the VPN or proxy connection.</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" id="help">
+    <div class="section__heading">
+      <h2>If something does not work</h2>
+      <p>Start with the symptom. Most setup problems can be separated from service access without exposing the private link.</p>
+    </div>
+    <div class="faq">
+      <details>
+        <summary>The bot does not return a link</summary>
+        <p>Make sure you are in a private chat with the approved bot and that payment or pilot activation is confirmed. Tap <span lang="ru">«Подключиться»</span> again, or use <code>/get</code>. If access is pending, wait for the status to change or contact the pilot operator.</p>
+      </details>
+      <details>
+        <summary>The app says the link is invalid</summary>
+        <p>Open the Happ import link again or copy the full subscription URL without punctuation or spaces around it. Do not paste the private link into a public validator.</p>
+      </details>
+      <details>
+        <summary>The profile imports but does not connect</summary>
+        <p>Check that ordinary internet works without the VPN, try both imported transports and restart the app once. Send support the device model, OS, app version, network type and exact error. Remove the subscription URL from any screenshot or log excerpt.</p>
+      </details>
+      <details>
+        <summary>The link worked before and now fails</summary>
+        <p>Tap <span lang="ru">«Моя подписка»</span> to check expiry and access state, then tap <span lang="ru">«Подключиться»</span> to receive the same subscription again. An expired, revoked or suspended account cannot import usable access.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="final-cta" aria-labelledby="back-title">
+    <h2 id="back-title">Waiting for a pilot invitation?</h2>
+    <p>You can install Happ from its official website. The real bot address, current plans and support contact should come from the same trusted invitation.</p>
+    <div class="cta-actions">
+      <a class="btn btn--primary" href="index.html#status">Check pilot status</a>
+      <a class="btn btn--secondary" href="https://github.com/n23eos/CasperVPN">View the project</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="shell footer-row">
+    <span>CasperVPN setup guide</span>
+    <span><a href="index.html">Overview</a> · <a href="setup-ru.html" hreflang="ru" lang="ru">Русский</a> · <a href="https://github.com/n23eos/CasperVPN">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>

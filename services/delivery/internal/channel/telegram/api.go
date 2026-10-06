@@ -1,8 +1,8 @@
 // Package telegram implements the messenger delivery channel: a bot that hands a
 // user their current subscription URL / Happ deep-link on command, plus the same
 // bot acting as a generic artifact channel (it can serve the signed directory
-// blob). A Max-compatible adapter rides the SAME bot logic — only the send API
-// differs — so the messenger channel is itself redundant across two networks.
+// blob). A Max-compatible adapter rides the SAME bot logic - only the send API
+// differs - so the messenger channel is itself redundant across two networks.
 package telegram
 
 import (
@@ -36,12 +36,24 @@ type Update struct {
 
 // BotAPI is the outbound send surface. Two implementations (Telegram, Max) let
 // the same handler serve two messenger networks; tests inject a fake. No bot
-// token or API base is hardcoded — both come from config.
+// token or API base is hardcoded - both come from config.
 type BotAPI interface {
 	// Send delivers text to a chat. Network/name is the adapter's concern.
 	Send(ctx context.Context, chatID int64, text string) error
 	// Network names the messenger ("telegram"/"max") for logs and telemetry.
 	Network() string
+}
+
+// Message describes a text reply with an optional persistent reply keyboard.
+// Custom URI schemes are intentionally kept in text because Telegram URL
+// buttons accept only HTTP(S) and tg links.
+type Message struct {
+	Text          string
+	ReplyKeyboard [][]string
+}
+
+type messageSender interface {
+	SendMessage(ctx context.Context, chatID int64, message Message) error
 }
 
 // httpDoer is the http.Client slice this package needs (mockable in tests).
@@ -51,8 +63,8 @@ type httpDoer interface {
 
 // API is the real Bot API adapter. Base + Token come from config.
 type API struct {
-	Base  string   // e.g. https://api.telegram.org — config-supplied, never hardcoded
-	Token string   // bot token — from env/secret manager (security.md)
+	Base  string   // e.g. https://api.telegram.org - config-supplied, never hardcoded
+	Token string   // bot token - from env/secret manager (security.md)
 	HTTP  httpDoer // nil => http.DefaultClient
 }
 
@@ -69,6 +81,58 @@ func (t API) Send(ctx context.Context, chatID int64, text string) error {
 	form.Set("chat_id", fmt.Sprintf("%d", chatID))
 	form.Set("text", text)
 	return postTelegramForm(ctx, t.HTTP, endpoint, form, nil)
+}
+
+// SendMessage uses Telegram's JSON sendMessage shape when a reply keyboard is
+// needed. Plain sends keep using Send so existing channel callers are unchanged.
+func (t API) SendMessage(ctx context.Context, chatID int64, message Message) error {
+	if len(message.ReplyKeyboard) == 0 {
+		return t.Send(ctx, chatID, message.Text)
+	}
+	if t.Base == "" || t.Token == "" {
+		return fmt.Errorf("telegram: base and token required")
+	}
+	type keyboardButton struct {
+		Text string `json:"text"`
+	}
+	type replyMarkup struct {
+		Keyboard     [][]keyboardButton `json:"keyboard"`
+		Resize       bool               `json:"resize_keyboard"`
+		IsPersistent bool               `json:"is_persistent"`
+	}
+	keyboard := make([][]keyboardButton, 0, len(message.ReplyKeyboard))
+	for _, row := range message.ReplyKeyboard {
+		buttons := make([]keyboardButton, 0, len(row))
+		for _, label := range row {
+			if label != "" {
+				buttons = append(buttons, keyboardButton{Text: label})
+			}
+		}
+		if len(buttons) > 0 {
+			keyboard = append(keyboard, buttons)
+		}
+	}
+	body, err := json.Marshal(struct {
+		ChatID      int64       `json:"chat_id"`
+		Text        string      `json:"text"`
+		ReplyMarkup replyMarkup `json:"reply_markup"`
+	}{
+		ChatID: chatID,
+		Text:   message.Text,
+		ReplyMarkup: replyMarkup{
+			Keyboard: keyboard, Resize: true, IsPersistent: true,
+		},
+	})
+	if err != nil {
+		return errors.New("telegram: encode message")
+	}
+	endpoint := fmt.Sprintf("%s/bot%s/sendMessage", t.Base, t.Token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return errors.New("telegram: create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return doTelegramRequest(t.HTTP, req, nil)
 }
 
 // GetUpdates performs one bounded Telegram long-poll request. Sender identity
@@ -126,8 +190,8 @@ func (t API) GetUpdates(ctx context.Context, offset int64, timeout time.Duration
 // MaxAPI is the Max messenger adapter. Same shape, different endpoint scheme, so
 // the identical bot logic serves Max users too.
 type MaxAPI struct {
-	Base  string   // Max bot API base — config-supplied
-	Token string   // bot token — from env/secret manager
+	Base  string   // Max bot API base - config-supplied
+	Token string   // bot token - from env/secret manager
 	HTTP  httpDoer // nil => http.DefaultClient
 }
 
@@ -155,6 +219,10 @@ func postTelegramForm(ctx context.Context, doer httpDoer, endpoint string, form 
 		return errors.New("telegram: create request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return doTelegramRequest(doer, req, dst)
+}
+
+func doTelegramRequest(doer httpDoer, req *http.Request, dst interface{}) error {
 	if doer == nil {
 		doer = defaultHTTPClient
 	}

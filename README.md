@@ -33,6 +33,11 @@ available; verify the actual client app before the pilot. AmneziaWG is not
 part of the supported public launch profile. Plan metadata does not enforce
 traffic, speed or device quotas.
 
+Service polish adds a Russian Telegram menu, live offers, payment/access status,
+Happ import and durable reminders. A loopback operator overview and authenticated
+encrypted backup scheduling are documented in [operations](docs/OPERATIONS.md).
+New changes use [Spec Kit specifications](specs/001-service-polish/).
+
 ## Services
 
 Eight Go workspace modules: contracts, platform and six services.

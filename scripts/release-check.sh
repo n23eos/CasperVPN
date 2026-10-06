@@ -16,6 +16,7 @@ done
   docker run --rm -i --network none "ghcr.io/sagernet/sing-box:v${SINGBOX_VERSION}" check -c /dev/stdin
 make e2e-user-removal
 python3 -m unittest discover -s test/launch -p 'test_*.py'
+python3 -m unittest discover -s test/ops -p 'test_*.py'
 python3 test/e2e/onboarding.py --integration
 for module in packages/contracts packages/platform services/control-plane services/subscription services/billing services/delivery services/telemetry services/orchestrator; do
   (cd "$module" && govulncheck ./...)

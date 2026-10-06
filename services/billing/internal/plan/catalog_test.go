@@ -59,3 +59,31 @@ func TestLoad_RejectsEmptyCatalog(t *testing.T) {
 		t.Fatal("expected error for empty catalog")
 	}
 }
+
+func TestCatalog_ListSortedAndPricesAreImmutableCopies(t *testing.T) {
+	prices := map[string]string{"BTC": "0.0001"}
+	c := NewCatalog(
+		Plan{ID: contracts.SubscriptionPlanUnlimited, Prices: map[string]string{"BTC": "0.0003"}},
+		Plan{ID: contracts.SubscriptionPlanBasic, Prices: prices},
+	)
+	prices["BTC"] = "changed"
+
+	plans := c.List()
+	if len(plans) != 2 || plans[0].ID != contracts.SubscriptionPlanBasic || plans[1].ID != contracts.SubscriptionPlanUnlimited {
+		t.Fatalf("list order = %+v, want basic then unlimited", plans)
+	}
+	if plans[0].Prices["BTC"] != "0.0001" {
+		t.Fatalf("stored price = %q, want immutable input copy", plans[0].Prices["BTC"])
+	}
+	plans[0].Prices["BTC"] = "mutated"
+	got, _ := c.Price(contracts.SubscriptionPlanBasic, "BTC")
+	if got != "0.0001" {
+		t.Fatalf("catalog price changed through List: %q", got)
+	}
+	p, _ := c.Get(contracts.SubscriptionPlanBasic)
+	p.Prices["BTC"] = "mutated-again"
+	got, _ = c.Price(contracts.SubscriptionPlanBasic, "BTC")
+	if got != "0.0001" {
+		t.Fatalf("catalog price changed through Get: %q", got)
+	}
+}

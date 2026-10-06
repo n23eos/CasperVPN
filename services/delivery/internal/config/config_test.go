@@ -7,7 +7,7 @@ import (
 
 func TestLoadDefaults(t *testing.T) {
 	// With no env set, defaults apply and no channel endpoints are present
-	// (unset channels are simply not configured — dynamic, not hardcoded).
+	// (unset channels are simply not configured - dynamic, not hardcoded).
 	t.Setenv("PORT", "")
 	t.Setenv("ENV", "dev")
 	cfg, err := Load()
@@ -23,6 +23,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Bot.RatePerSec != defaultBotRatePerSec || cfg.Bot.Cooldown != defaultBotCooldown {
 		t.Fatalf("bot defaults not applied: %+v", cfg.Bot)
 	}
+	if cfg.Bot.NotifyInterval != defaultNotifyInterval || cfg.Bot.NotifyWindow != defaultNotifyWindow || cfg.Bot.NotifyBatchSize != defaultNotifyBatch {
+		t.Fatalf("notification defaults not applied: %+v", cfg.Bot)
+	}
 }
 
 func TestLoadFromEnv(t *testing.T) {
@@ -32,6 +35,11 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("DELIVERY_VERIFY_KEYS", "old:AAAA,new:BBBB")
 	t.Setenv("DELIVERY_BOT_COOLDOWN", "10s")
 	t.Setenv("DELIVERY_BOT_RATE_PER_SEC", "4")
+	t.Setenv("DELIVERY_NOTIFY_INTERVAL", "200ms")
+	t.Setenv("DELIVERY_NOTIFY_WINDOW", "48h")
+	t.Setenv("DELIVERY_NOTIFY_BATCH_SIZE", "25")
+	t.Setenv("DELIVERY_BOT_SETUP_URL", "https://example.com/setup")
+	t.Setenv("DELIVERY_BOT_SUPPORT_URL", "https://example.com/support")
 
 	cfg, err := Load()
 	if err != nil {
@@ -48,6 +56,10 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.Bot.Cooldown != 10*time.Second || cfg.Bot.RatePerSec != 4 {
 		t.Fatalf("bot tunables = %+v", cfg.Bot)
+	}
+	if cfg.Bot.NotifyInterval != 200*time.Millisecond || cfg.Bot.NotifyWindow != 48*time.Hour || cfg.Bot.NotifyBatchSize != 25 ||
+		cfg.Bot.SetupURL != "https://example.com/setup" || cfg.Bot.SupportURL != "https://example.com/support" {
+		t.Fatalf("notification and help tunables = %+v", cfg.Bot)
 	}
 }
 

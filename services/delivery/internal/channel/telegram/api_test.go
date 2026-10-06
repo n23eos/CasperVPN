@@ -2,10 +2,12 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,37 @@ func TestAPISend(t *testing.T) {
 	}
 	if !strings.Contains(d.body, "chat_id=42") || !strings.Contains(d.body, "text=hi") {
 		t.Fatalf("form body = %q", d.body)
+	}
+}
+
+func TestAPISendMessageUsesPersistentReplyKeyboard(t *testing.T) {
+	d := &recordDoer{status: http.StatusOK}
+	api := API{Base: "https://api.telegram.org", Token: "TOK", HTTP: d}
+	if err := api.SendMessage(context.Background(), 42, Message{
+		Text: "Выберите", ReplyKeyboard: [][]string{{connectButton, statusButton}},
+	}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if d.lastCT != "application/json" {
+		t.Fatalf("content type = %q", d.lastCT)
+	}
+	var body struct {
+		ChatID      int64 `json:"chat_id"`
+		ReplyMarkup struct {
+			Keyboard [][]struct {
+				Text string `json:"text"`
+			} `json:"keyboard"`
+			Resize     bool `json:"resize_keyboard"`
+			Persistent bool `json:"is_persistent"`
+		} `json:"reply_markup"`
+	}
+	if err := json.Unmarshal([]byte(d.body), &body); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if body.ChatID != 42 || len(body.ReplyMarkup.Keyboard) != 1 ||
+		body.ReplyMarkup.Keyboard[0][0].Text != connectButton ||
+		!body.ReplyMarkup.Resize || !body.ReplyMarkup.Persistent {
+		t.Fatalf("sendMessage body = %s", d.body)
 	}
 }
 
@@ -146,11 +179,23 @@ func TestFakeTelegramNetworkPrivateSenderFlow(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"ok":true,"result":[{"update_id":15,"message":{"from":{"id":42},"chat":{"id":42,"type":"private"},"text":"/get 777"}}]}`)
 		case "/botTOKEN/sendMessage":
-			if err := r.ParseForm(); err != nil {
-				t.Errorf("parse send form: %v", err)
+			if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+				var request struct {
+					ChatID int64  `json:"chat_id"`
+					Text   string `json:"text"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode send JSON: %v", err)
+				}
+				sentChatID = strconv.FormatInt(request.ChatID, 10)
+				sentText = request.Text
+			} else {
+				if err := r.ParseForm(); err != nil {
+					t.Errorf("parse send form: %v", err)
+				}
+				sentChatID = r.Form.Get("chat_id")
+				sentText = r.Form.Get("text")
 			}
-			sentChatID = r.Form.Get("chat_id")
-			sentText = r.Form.Get("text")
 			_, _ = io.WriteString(w, `{"ok":true,"result":{}}`)
 		default:
 			http.NotFound(w, r)

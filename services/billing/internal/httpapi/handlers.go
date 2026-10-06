@@ -1,6 +1,6 @@
-// Package httpapi exposes the billing HTTP surface: invoice creation, gateway
-// webhooks and a health probe. It carries no PII — accounts are referenced by an
-// opaque anon_user_id only.
+// Package httpapi exposes the billing HTTP surface: invoice creation, private
+// reads, gateway webhooks and health probes. Accounts use opaque anon_user_id
+// values rather than direct identifiers.
 package httpapi
 
 import (
@@ -40,6 +40,8 @@ type Config struct {
 	RequireInvoiceAuth bool
 }
 
+const privateReadTimeout = 2 * time.Second
+
 // New builds the API.
 func New(registry *payment.Registry, processor *payment.Processor, repo store.Repository, catalog *plan.Catalog) *API {
 	return NewWithConfig(registry, processor, repo, catalog, Config{})
@@ -63,6 +65,9 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("/healthz", a.health)
 	mux.HandleFunc("/readyz", a.ready)
 	mux.HandleFunc("/v1/invoices", a.createInvoice)
+	mux.HandleFunc("/v1/plans", a.listPlans)
+	mux.HandleFunc("/v1/accounts/", a.latestInvoice)
+	mux.HandleFunc("/v1/operator/summary", a.operatorSummary)
 	mux.HandleFunc("/v1/webhooks/", a.webhook)
 	return mux
 }
@@ -96,6 +101,122 @@ type createInvoiceResp struct {
 	Currency    string `json:"currency"`
 	ExpiresAt   string `json:"expires_at"`
 	CheckoutURL string `json:"checkout_url"`
+}
+
+func (a *API) listPlans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if !a.invoiceReadAuthorized(r) {
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	plans := a.catalog.List()
+	offers := make([]contracts.BillingPlanOffer, 0, len(plans))
+	for _, p := range plans {
+		prices := make(map[string]string, len(p.Prices))
+		for currency, amount := range p.Prices {
+			if _, err := a.registry.Select("", currency); err == nil {
+				prices[currency] = amount
+			}
+		}
+		if len(prices) == 0 {
+			continue
+		}
+		offers = append(offers, contracts.BillingPlanOffer{
+			ID: p.ID, DurationSeconds: int64(p.Duration / time.Second),
+			GraceSeconds: int64(p.Grace / time.Second), Prices: prices,
+		})
+	}
+	httpjson.Write(w, http.StatusOK, contracts.BillingPlanOffers{Items: offers})
+}
+
+func (a *API) latestInvoice(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if !a.invoiceReadAuthorized(r) {
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	anonUserID, ok := latestInvoiceAccount(r.URL.Path)
+	if !ok {
+		httpjson.Error(w, http.StatusNotFound, "not found")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), privateReadTimeout)
+	defer cancel()
+	inv, err := a.store.LatestInvoice(ctx, anonUserID)
+	if errors.Is(err, store.ErrNotFound) {
+		httpjson.Error(w, http.StatusNotFound, "invoice not found")
+		return
+	}
+	if err != nil {
+		httpjson.Error(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	httpjson.Write(w, http.StatusOK, invoiceStatus(inv))
+}
+
+func (a *API) operatorSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if !a.invoiceReadAuthorized(r) {
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), privateReadTimeout)
+	defer cancel()
+	counts, recent, err := a.store.InvoiceSummary(ctx, 50)
+	if err != nil {
+		httpjson.Error(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	overviews := make([]contracts.BillingInvoiceOverview, len(recent))
+	for i, inv := range recent {
+		overviews[i] = contracts.BillingInvoiceOverview{
+			BillingInvoiceStatus: invoiceStatus(inv),
+			AnonUserID:           inv.AnonUserID,
+		}
+	}
+	httpjson.Write(w, http.StatusOK, contracts.BillingOperatorSummary{
+		Counts: contracts.BillingInvoiceCounts{
+			Pending: counts.Pending, Settled: counts.Settled,
+			Expired: counts.Expired, Invalid: counts.Invalid,
+		},
+		Recent: overviews,
+	})
+}
+
+func (a *API) invoiceReadAuthorized(r *http.Request) bool {
+	return !a.requireInvoiceAuth || validBearer(r.Header.Get("Authorization"), a.invoiceToken)
+}
+
+func latestInvoiceAccount(path string) (string, bool) {
+	parts := strings.Split(strings.TrimPrefix(path, "/v1/accounts/"), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] != "invoices" || parts[2] != "latest" {
+		return "", false
+	}
+	return parts[0], true
+}
+
+func invoiceStatus(inv model.InvoiceOverview) contracts.BillingInvoiceStatus {
+	return contracts.BillingInvoiceStatus{
+		InvoiceID: inv.InvoiceID,
+		Plan:      contracts.SubscriptionPlan(inv.Plan),
+		Status:    contracts.BillingPaymentStatus(inv.Status),
+		Amount:    inv.Amount,
+		Currency:  inv.Currency,
+		CreatedAt: inv.CreatedAt.UTC(),
+		ExpiresAt: inv.ExpiresAt.UTC(),
+	}
 }
 
 // createInvoice validates input, prices the plan from the catalog and asks the
@@ -291,7 +412,7 @@ func (a *API) webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	ev, err := gw.ParseWebhook(webhookSignature(r), body)
 	if err != nil {
-		// Bad signature or unparseable payload — reject, change nothing.
+		// Bad signature or unparseable payload - reject, change nothing.
 		httpjson.Error(w, http.StatusUnauthorized, "invalid webhook")
 		return
 	}

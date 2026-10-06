@@ -1,7 +1,7 @@
 // Command delivery is the multi-channel subscription delivery service: it hands
 // the SAME signed artifact (subscription payload, or an encrypted directory
-// pointer) over several channels of different nature — messenger (Telegram/Max),
-// DNS (DoH + TXT), git-raw mirrors, and a steganographic carrier — so a blocked
+// pointer) over several channels of different nature - messenger (Telegram/Max),
+// DNS (DoH + TXT), git-raw mirrors, and a steganographic carrier - so a blocked
 // primary domain never cuts off config delivery. Every artifact is Ed25519-signed
 // and the client MUST verify it. See services/delivery/docs/delivery.md.
 package main
@@ -44,6 +44,7 @@ func main() {
 	var (
 		pool       *pgxpool.Pool
 		poller     *telegram.Poller
+		notifier   *telegram.Notifier
 		appOptions []app.Option
 	)
 	if cfg.BotEnabled {
@@ -74,11 +75,18 @@ func main() {
 		bot, err := telegram.NewBot(botAPI, onboardingService, telegram.BotConfig{
 			RatePerSec: cfg.Bot.RatePerSec, Burst: cfg.Bot.Burst, Cooldown: cfg.Bot.Cooldown,
 			DefaultPlan: cfg.Bot.DefaultPlan, DefaultCurrency: cfg.Bot.DefaultCurrency,
+			SetupURL: cfg.Bot.SetupURL, SupportURL: cfg.Bot.SupportURL, Tracker: store,
 		})
 		if err != nil {
 			log.Fatalf("%s: bot configuration failed", serviceName)
 		}
 		poller = telegram.NewPoller(botAPI, bot, store, cfg.PollTimeout, cfg.RetryDelay)
+		notifier, err = telegram.NewNotifier(botAPI, onboardingService, store, telegram.NotifierConfig{
+			Interval: cfg.Bot.NotifyInterval, Window: cfg.Bot.NotifyWindow, BatchSize: cfg.Bot.NotifyBatchSize,
+		})
+		if err != nil {
+			log.Fatalf("%s: notifier configuration failed", serviceName)
+		}
 		appOptions = append(appOptions, app.WithReadiness(poller))
 	}
 
@@ -111,6 +119,9 @@ func main() {
 	pollerErr := make(chan error, 1)
 	if poller != nil {
 		go func() { pollerErr <- poller.Run(ctx) }()
+	}
+	if notifier != nil {
+		go notifier.Run(ctx)
 	}
 
 	select {

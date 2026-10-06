@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: >
     Authoritative internal API for the node registry, users, subscriptions and
-    per-user REALITY id / secret issuance. FROZEN INTERFACE — signatures only, no
+    per-user REALITY id / secret issuance. FROZEN INTERFACE - signatures only, no
     implementation. Owned by the control-plane team. Schemas $ref the frozen
     JSON Schema in ../schema/contracts.schema.json.
 servers:
@@ -106,7 +106,7 @@ paths:
         probe); and the current allow-list revision equals expected_revision. Any
         mismatch, a concurrent activation, or missing/invalid exit evidence returns
         409 (the node stays provisioning). The plain PATCH provisioning->active
-        transition is rejected — this is the only activation path. Restricted to
+        transition is rejected - this is the only activation path. Restricted to
         orchestrator/admin. Responses set Cache-Control: no-store.
       operationId: activateNode
       requestBody:
@@ -127,7 +127,7 @@ paths:
       tags: [nodes]
       summary: Atomically set a node's status to provisioning (reconciler barrier)
       description: >
-        Status-only, single locked update — unlike the full-body PATCH it cannot
+        Status-only, single locked update - unlike the full-body PATCH it cannot
         clobber a concurrent rotation's IP/keys/transports. Used by the reconciler
         to demote a node before converging it. Restricted to orchestrator/admin.
       operationId: demoteNode
@@ -142,7 +142,7 @@ paths:
       tags: [nodes]
       summary: REALITY allow-list for a node (eligible users + revision)
       description: >
-        The exact (uuid, short_id) set a node must admit — every user whose
+        The exact (uuid, short_id) set a node must admit - every user whose
         account is active AND whose subscription is servable (status in
         active/trialing/past_due) AND not past expires_at, matching the
         subscription service's eligibility. Includes a revision (SHA-256 digest of
@@ -395,6 +395,16 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/operator/summary:
+    get:
+      operationId: getControlPlaneOperatorSummary
+      description: Admin-only private account/subscription aggregate and up to 50 safe recent accounts. No contact identity, token hashes, or transport secrets.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "../schema/contracts.schema.json#/$defs/ControlPlaneOperatorSummary" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Role forbidden }
+        "503": { description: Operator overview unavailable }
 
 components:
   schemas:

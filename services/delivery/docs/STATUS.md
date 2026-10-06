@@ -1,7 +1,19 @@
-# Delivery — статус подсистемы (handoff-заметка)
+# Delivery - статус подсистемы (handoff-заметка)
+
+> **Обновление 2026-10-06:** Telegram UX переведён на русское постоянное меню
+> `Подключиться / Моя подписка / Продлить / Помощь`. Тарифы, сроки и валюты
+> загружаются из billing catalog, а статус оплаты показывается вместе с
+> фактической доступностью подписки из control-plane. Стабильная ссылка дополнена
+> текстовым `happ://add/<base64>` и настраиваемыми ссылками на инструкцию и
+> поддержку. Добавлен фоновый notifier: он обходит только пользователей,
+> замеченных в личном чате, хранит курсор, pending-очередь и отправленные события в
+> PostgreSQL, повторяет неуспешные отправки и напоминает об активации, окончании
+> подписки и grace-периода. Проверено: `go test -race ./...`, `go vet ./...`,
+> `golangci-lint run ./...` в модуле delivery. PostgreSQL integration в этом ходе
+> не запускался: локальный контейнер БД проекта остановлен.
 
 Дата: 2026-07-07. Ветка: `feat/delivery-multichannel`. Автор части: delivery.
-Границы соблюдены — правки только в `services/delivery/`. Контракты не менялись.
+Границы соблюдены - правки только в `services/delivery/`. Контракты не менялись.
 
 > **Обновление 2026-07-11:** закрыты два самодостаточных hardening-пункта:
 > `POST /v1/channels` защищён bearer-токеном и fail-closed при пустом токене,
@@ -27,41 +39,41 @@
 
 **Что это НЕ значит:** сервис ещё не подключён к соседним подсистемам и к реальным
 внешним медиа. Многие каналы по умолчанию **read-only** (интерфейс есть, prod-адаптер
-публикации — нет). Это ожидаемо для фазы: сначала ядро+контракты каналов, потом
+публикации - нет). Это ожидаемо для фазы: сначала ядро+контракты каналов, потом
 интеграция.
 
 ## ✅ Сделано (готово к ревью/использованию как библиотека)
 
-- `internal/artifact` — конверт, детерминированная сериализация, `Sign`/`Open`.
-- `internal/sign` — Ed25519, verifier-keyring (ротация ключей).
-- `internal/seal` — AES-256-GCM шифр указателя.
-- `internal/pointer` — `Directory` + `Pack`/`Unpack` (verify→decrypt).
-- `internal/channel` — интерфейс, registry (динамич.), resolver (failover), publisher.
+- `internal/artifact` - конверт, детерминированная сериализация, `Sign`/`Open`.
+- `internal/sign` - Ed25519, verifier-keyring (ротация ключей).
+- `internal/seal` - AES-256-GCM шифр указателя.
+- `internal/pointer` - `Directory` + `Pack`/`Unpack` (verify→decrypt).
+- `internal/channel` - интерфейс, registry (динамич.), resolver (failover), publisher.
 - Каналы: `telegram` (+Max-адаптер, rate-limit/антиспам), `dns` (DoH+TXT),
   `gitraw` (ротация зеркал), `steg` (стего в analytics-JSON).
-- `internal/httpapi` — `/healthz`, `/readyz`, `GET/POST /v1/channels`,
+- `internal/httpapi` - `/healthz`, `/readyz`, `GET/POST /v1/channels`,
   `GET /d/{channel}/{token}`; mutating admin surface требует bearer-токен.
 - `internal/config`, `internal/app`, `internal/memkv`, `cmd/delivery`.
-- `internal/bridge` — Snowflake-модель как интерфейс-заглушка.
-- `docs/delivery.md` — threat-model по каждому каналу.
+- `internal/bridge` - Snowflake-модель как интерфейс-заглушка.
+- `docs/delivery.md` - threat-model по каждому каналу.
 - Тесты: unit по каналам (моки), sign/verify, seal, failover, e2e round-trip, HTTP.
 
 ## ❌ НЕ сделано / заглушки (следующая фаза)
 
 **Интеграция с соседями (главное):**
-- **Цикл обновления directory отсутствует** — нет шедулера, который пересобирает
+- **Цикл обновления directory отсутствует** - нет шедулера, который пересобирает
   `Directory` из control-plane/БД и `Broadcast`-ит по всем каналам при
   ротации/блоке. `Publisher.Broadcast` есть, но его никто не вызывает.
 
 **Реальные внешние адаптеры публикации (сейчас каналы fetch-only):**
-- DNS `Publisher.SetTXT` — нет prod-реализации через API DNS-провайдера.
-- gitraw `RawWriter` — нет реализации коммита файла в репо (наполнение зеркал — CI).
-- steg `Carrier` — нет реального endpoint’а, только in-memory фейк в тестах.
+- DNS `Publisher.SetTXT` - нет prod-реализации через API DNS-провайдера.
+- gitraw `RawWriter` - нет реализации коммита файла в репо (наполнение зеркал - CI).
+- steg `Carrier` - нет реального endpoint’а, только in-memory фейк в тестах.
 - Telegram `BlobStore` = in-memory (`memkv`) → не переживает рестарт, не кросс-процесс.
 
 **Ключи / крипта-операции:**
-- Ключи подписи/шифра — только из env. **Нет процедуры ротации**, нет раздачи pubkey
-  клиентам, нет endpoint’а публикации pubkey. Ephemeral-fallback — только dev.
+- Ключи подписи/шифра - только из env. **Нет процедуры ротации**, нет раздачи pubkey
+  клиентам, нет endpoint’а публикации pubkey. Ephemeral-fallback - только dev.
 - Anti-rollback по времени закрыт опциональным `Artifact.IssuedAt` max-age в
   resolver. Проверка монотонности `Directory.Revision` между процессными
   рестартами остаётся будущей задачей, потому что требует persistent client state.
@@ -71,10 +83,10 @@
   каналов/зеркал. `Registry.Remove` есть, но его никто не дёргает.
 
 **Прочее:**
-- `bridge` — целиком заглушка (`ErrNotImplemented`): нет rendezvous/NAT-traversal.
-- `POST /v1/channels` — только валидация дескриптора, живые каналы не конструирует.
-- Нет HTTPS-канала (`KindHTTPS` объявлен, не разведён) — базовый HTTPS как ещё один
-  транспорт не строил (фокус задачи — 4 альт-канала).
+- `bridge` - целиком заглушка (`ErrNotImplemented`): нет rendezvous/NAT-traversal.
+- `POST /v1/channels` - только валидация дескриптора, живые каналы не конструирует.
+- Нет HTTPS-канала (`KindHTTPS` объявлен, не разведён) - базовый HTTPS как ещё один
+  транспорт не строил (фокус задачи - 4 альт-канала).
 - Нет rate-limit на HTTP-путях (`/d/`), нет метрик/алертинга/health-check
   интеграции с LB. Админский `POST /v1/channels` теперь закрыт bearer-токеном.
 - Стего: один статичный шаблон cover, без ротации; низкая ёмкость, хрупкость
@@ -83,8 +95,8 @@
 ## 🔭 Что отслеживать потом
 
 - Здоровье реальных каналов (`GET /v1/channels` → `healthy`) после подключения живых
-  endpoint’ов — сейчас doh/dns_txt/github_raw = `false` на фейковых адресах.
-- Событие ротации ключа подписи (клиенты должны принимать старый+новый — keyring
+  endpoint’ов - сейчас doh/dns_txt/github_raw = `false` на фейковых адресах.
+- Событие ротации ключа подписи (клиенты должны принимать старый+новый - keyring
   готов, нужен процесс раздачи).
 - Работает ли автоснятие канала по телеметрии, когда петля будет подключена.
 - Доля восстановлений через каждый канал (какой реально несёт нагрузку, какой мёртв).

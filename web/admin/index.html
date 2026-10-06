@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CasperVPN - панель оператора</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="shell header">
+    <div>
+      <p class="eyebrow">CasperVPN</p>
+      <h1>Панель оператора</h1>
+      <p class="lede">Приватный обзор состояния. Только чтение.</p>
+    </div>
+    <button id="retry" type="button">Обновить</button>
+  </header>
+
+  <main class="shell">
+    <p id="demo" class="banner demo" hidden></p>
+    <p id="loading" class="banner">Загрузка актуальных данных...</p>
+    <div id="global-error" class="banner error" role="alert" hidden>
+      Не удалось загрузить обзор. Проверьте локальный сервер и повторите.
+    </div>
+    <p class="updated">Обновлено: <time id="updated">-</time></p>
+
+    <section aria-labelledby="health-title">
+      <div class="section-title">
+        <h2 id="health-title">Сервисы</h2>
+        <span id="health-summary" class="muted"></span>
+      </div>
+      <div id="health" class="health-grid"></div>
+    </section>
+
+    <section aria-labelledby="fleet-title">
+      <div class="section-title">
+        <h2 id="fleet-title">Флот</h2>
+        <span id="fleet-error" class="inline-error"></span>
+      </div>
+      <div id="fleet-table" class="table-wrap">
+        <table>
+          <thead><tr><th>Нода</th><th>Регион</th><th>Роль</th><th>Статус</th><th>Транспорты</th><th>Создана</th></tr></thead>
+          <tbody id="fleet"></tbody>
+        </table>
+      </div>
+      <p id="fleet-empty" class="empty" hidden>Нод пока нет.</p>
+    </section>
+
+    <div class="split">
+      <section aria-labelledby="accounts-title">
+        <div class="section-title">
+          <h2 id="accounts-title">Аккаунты</h2>
+          <span id="accounts-error" class="inline-error"></span>
+        </div>
+        <div id="accounts" class="metric-grid"></div>
+      </section>
+
+      <section aria-labelledby="subscriptions-title">
+        <div class="section-title">
+          <h2 id="subscriptions-title">Подписки</h2>
+          <span id="subscriptions-error" class="inline-error"></span>
+        </div>
+        <div id="subscriptions" class="metric-grid"></div>
+      </section>
+    </div>
+
+    <section aria-labelledby="billing-title">
+      <div class="section-title">
+        <h2 id="billing-title">Оплаты</h2>
+        <span id="billing-error" class="inline-error"></span>
+      </div>
+      <div id="billing-counts" class="metric-grid wide"></div>
+      <div id="billing-table" class="table-wrap">
+        <table>
+          <thead><tr><th>Invoice</th><th>Аккаунт</th><th>Тариф</th><th>Статус</th><th>Сумма</th><th>Создан</th><th>Истекает</th></tr></thead>
+          <tbody id="billing-recent"></tbody>
+        </table>
+      </div>
+      <p id="billing-empty" class="empty" hidden>Счетов пока нет.</p>
+    </section>
+
+    <section aria-labelledby="plans-title">
+      <div class="section-title">
+        <h2 id="plans-title">Тарифы</h2>
+        <span id="plans-error" class="inline-error"></span>
+      </div>
+      <div id="plans" class="plan-grid"></div>
+      <p id="plans-empty" class="empty" hidden>Каталог тарифов пуст.</p>
+    </section>
+  </main>
+</body>
+</html>

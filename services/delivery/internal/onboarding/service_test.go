@@ -2,6 +2,7 @@ package onboarding
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ type fakeBackends struct {
 	billingCalls    int
 	linkCalls       int
 	subscription    contracts.Subscription
+	latest          *contracts.BillingInvoiceStatus
 }
 
 func newFakeBackends(t *testing.T) *fakeBackends {
@@ -74,6 +76,24 @@ func stringPointer(value string) *string { return &value }
 func (f *fakeBackends) handleBilling(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "Bearer billing-token" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/plans":
+		writeJSON(w, http.StatusOK, contracts.BillingPlanOffers{Items: []contracts.BillingPlanOffer{{
+			ID: contracts.SubscriptionPlanBasic, DurationSeconds: 30 * 24 * 60 * 60,
+			GraceSeconds: 24 * 60 * 60, Prices: map[string]string{"XMR": "0.2"},
+		}}})
+		return
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/accounts/user-1/invoices/latest":
+		if f.latest == nil {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, f.latest)
+		return
+	case r.Method != http.MethodPost || r.URL.Path != "/v1/invoices":
+		http.NotFound(w, r)
 		return
 	}
 	var request struct {
@@ -152,10 +172,38 @@ func TestSubscriptionLinkIsStableAndUsesGrace(t *testing.T) {
 	if first.SubscriptionURL != "https://subscriptions.example/sub/stable-token" || second != first {
 		t.Fatalf("links = %+v, %+v", first, second)
 	}
+	encoded := strings.TrimPrefix(first.HappDeepLink, "happ://add/")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || string(decoded) != first.SubscriptionURL {
+		t.Fatalf("Happ deep link = %q, decode=%q, err=%v", first.HappDeepLink, decoded, err)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.linkCalls != 2 {
 		t.Fatalf("delivery link calls = %d", f.linkCalls)
+	}
+}
+
+func TestCatalogAndStatusUseAuthenticatedReadAPIs(t *testing.T) {
+	f := newFakeBackends(t)
+	now := time.Now().UTC()
+	f.latest = &contracts.BillingInvoiceStatus{
+		InvoiceID: "inv-2", Plan: contracts.SubscriptionPlanBasic,
+		Status: contracts.BillingPaymentSettled, Amount: "0.2", Currency: "XMR",
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	service := f.service()
+	service.now = func() time.Time { return now }
+	plans, err := service.Catalog(context.Background())
+	if err != nil || len(plans) != 1 || plans[0].Prices["XMR"] != "0.2" {
+		t.Fatalf("Catalog = %+v, %v", plans, err)
+	}
+	status, err := service.Status(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.Eligible || status.Invoice == nil || status.Invoice.ID != "inv-2" || status.Subscription == nil {
+		t.Fatalf("status = %+v", status)
 	}
 }
 

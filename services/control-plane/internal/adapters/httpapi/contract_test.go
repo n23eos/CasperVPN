@@ -38,7 +38,7 @@ func newTestRouter(t *testing.T) http.Handler {
 }
 
 // newTestRouterWithNodes also returns the node repo, so a test can seed an ACTIVE
-// node via explicit internal setup (nodes.Create) — registration itself refuses
+// node via explicit internal setup (nodes.Create) - registration itself refuses
 // status:active, so the HTTP path can no longer be used to seed serving nodes.
 func newTestRouterWithNodes(t *testing.T) (http.Handler, *memory.Nodes) {
 	t.Helper()
@@ -70,7 +70,7 @@ func newTestRouterWithNodes(t *testing.T) (http.Handler, *memory.Nodes) {
 		billTok:     authz.RoleBilling,
 		deliveryTok: authz.RoleDelivery,
 	})
-	return httpapi.New(nodeSvc, userSvc, subSvc, bundle, sigSvc, allowSvc, tokens).Router(), nodes
+	return httpapi.New(nodeSvc, userSvc, subSvc, bundle, sigSvc, allowSvc, tokens).WithOperatorSummary(memory.NewOperatorReader(users, subs).Read).Router(), nodes
 }
 
 type openAPISpec struct {
@@ -81,7 +81,7 @@ var httpMethods = map[string]bool{"get": true, "post": true, "put": true, "patch
 
 // TestContract_EveryFrozenOperationIsWiredAndSecured loads the frozen OpenAPI and
 // asserts every declared operation exists in the router (not 404) and rejects an
-// unauthenticated caller (401) — except the public /healthz.
+// unauthenticated caller (401) - except the public /healthz.
 func TestContract_EveryFrozenOperationIsWiredAndSecured(t *testing.T) {
 	raw, err := os.ReadFile(specPath)
 	if err != nil {
@@ -119,7 +119,7 @@ func TestContract_EveryFrozenOperationIsWiredAndSecured(t *testing.T) {
 				continue
 			}
 			if rec.Code == http.StatusNotFound {
-				t.Errorf("%s %s not routed (404) — missing implementation of frozen op", method, path)
+				t.Errorf("%s %s not routed (404) - missing implementation of frozen op", method, path)
 			}
 			if rec.Code != http.StatusUnauthorized {
 				t.Errorf("%s %s without auth = %d, want 401", method, path, rec.Code)
@@ -168,7 +168,7 @@ func TestContract_HappyPath(t *testing.T) {
 		t.Fatal("GET subscription leaked the token")
 	}
 
-	// Seed an ACTIVE node via internal setup — registration refuses status:active,
+	// Seed an ACTIVE node via internal setup - registration refuses status:active,
 	// so a serving node is created directly through the repo, not the HTTP path.
 	node := contracts.Node{
 		ID: "n-happy", Role: contracts.NodeRoleCombined, Status: contracts.NodeStatusActive, Region: "eu",
